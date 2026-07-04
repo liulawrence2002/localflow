@@ -29,6 +29,8 @@ History storage is controlled by retention settings. Later milestones must enfor
 - Delete after 7 days.
 - Keep until manually deleted.
 
+The shared domain layer includes build-tested retention helpers for disabled history, transcript-only history, original-and-cleaned history, and delete-after windows. Native SQLite writes still need to use those helpers before production dictation is enabled.
+
 ## Context
 
 Context awareness is optional and narrowly scoped. LocalFlow may read:

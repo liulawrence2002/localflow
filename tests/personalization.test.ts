@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { runDeterministicPersonalization } from "../src/domain/personalization";
+import {
+  resolveExplicitSelfCorrections,
+  runDeterministicPersonalization,
+} from "../src/domain/personalization";
 
 describe("deterministic personalization", () => {
   it("applies boundary-aware replacements without touching unrelated words", () => {
@@ -40,5 +43,22 @@ describe("deterministic personalization", () => {
     );
 
     expect(result.text).toBe("hello,\n\n- ship it");
+  });
+
+  it("resolves explicit self-correction examples conservatively", () => {
+    expect(resolveExplicitSelfCorrections("Meet me Tuesday no Wednesday")).toBe(
+      "Meet me Wednesday",
+    );
+    expect(resolveExplicitSelfCorrections("The total was fifteen sorry fifty dollars")).toBe(
+      "The total was fifty dollars",
+    );
+    expect(resolveExplicitSelfCorrections("Send it to James actually send it to Sarah")).toBe(
+      "send it to Sarah",
+    );
+    expect(
+      resolveExplicitSelfCorrections(
+        "We should deploy Friday let me restart We should deploy Monday after testing",
+      ),
+    ).toBe("We should deploy Monday after testing");
   });
 });

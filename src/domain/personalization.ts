@@ -26,7 +26,8 @@ export function runDeterministicPersonalization(
   replacements: ReplacementRule[],
   snippets: Snippet[],
 ): PersonalizationResult {
-  const snippetResult = applySnippets(rawText, snippets);
+  const correctedText = resolveExplicitSelfCorrections(rawText);
+  const snippetResult = applySnippets(correctedText, snippets);
   const replacementResult = applyReplacements(snippetResult.text, replacements);
   const punctuated = applySpokenPunctuation(replacementResult.text);
 
@@ -111,6 +112,49 @@ export function normalizeWhitespaceAroundPunctuation(text: string): string {
     .replace(/\n[ \t]+/g, "\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
+}
+
+export function resolveExplicitSelfCorrections(text: string): string {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return normalized;
+  }
+
+  const restartMatch = normalized.match(/\blet me restart\b[,.]?\s*(?<restart>.+)$/iu);
+  if (restartMatch?.groups?.restart) {
+    return restartMatch.groups.restart.trim();
+  }
+
+  const actuallyMatch = normalized.match(/^(?<before>.+?)\s+actually\s+(?<after>.+)$/iu);
+  if (actuallyMatch?.groups && wordCount(actuallyMatch.groups.before) >= 3) {
+    return actuallyMatch.groups.after.trim();
+  }
+
+  const sorryMatch = normalized.match(/^(?<before>.+?)\s+sorry\s+(?<after>.+)$/iu);
+  if (sorryMatch?.groups) {
+    return replaceLastToken(sorryMatch.groups.before, sorryMatch.groups.after);
+  }
+
+  const noMatch = normalized.match(
+    /^(?<before>(?:\S+\s+){2,}\S+)\s+no\s+(?<after>\S+(?:\s+\S+){0,2})$/iu,
+  );
+  if (noMatch?.groups) {
+    return replaceLastToken(noMatch.groups.before, noMatch.groups.after);
+  }
+
+  return normalized;
+}
+
+function replaceLastToken(before: string, after: string): string {
+  const prefix = before
+    .trim()
+    .replace(/\s+\S+$/u, "")
+    .trim();
+  return `${prefix} ${after.trim()}`.trim();
+}
+
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
 function tokenBoundaryPattern(phrase: string): RegExp {

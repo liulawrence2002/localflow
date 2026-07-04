@@ -23,6 +23,10 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 ## Frontend Layer
 
 - `src/domain`: shared state machine, deterministic cleanup, transcript stabilization, insertion spacing, and response validation.
+- `src/domain/audio.ts`: bounded PCM buffers, RMS/VAD, mono downmixing, and linear resampling helpers.
+- `src/domain/asrWindows.ts`: rolling-window planning for overlapped ASR hypotheses.
+- `src/domain/refinementPipeline.ts`: strict local-LLM JSON contract runner with repair retry and deterministic fallback.
+- `src/domain/privacy.ts`: history retention and redaction helpers.
 - `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
 - `src/components`: focused UI components.
 - `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.

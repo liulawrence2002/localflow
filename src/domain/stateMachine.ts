@@ -14,13 +14,13 @@ export type WorkflowEvent =
       target: TargetSnapshot;
       timestamp: string;
     }
-  | { type: "CaptureStarted" }
-  | { type: "RecordingStopped" }
-  | { type: "TranscriptReady"; transcript: string }
-  | { type: "DeterministicTextReady"; text: string }
-  | { type: "RefinementReady"; text: string; confidence: number }
-  | { type: "InsertionStarted" }
-  | { type: "Inserted"; timestamp: string }
+  | { type: "CaptureStarted"; sessionId: string }
+  | { type: "RecordingStopped"; sessionId: string }
+  | { type: "TranscriptReady"; sessionId: string; transcript: string }
+  | { type: "DeterministicTextReady"; sessionId: string; text: string }
+  | { type: "RefinementReady"; sessionId: string; text: string; confidence: number }
+  | { type: "InsertionStarted"; sessionId: string }
+  | { type: "Inserted"; sessionId: string; timestamp: string }
   | { type: "Cancel"; reason: string }
   | { type: "Fail"; error: string }
   | { type: "Reset" };
@@ -82,6 +82,13 @@ export function transition(state: WorkflowState, event: WorkflowEvent): Workflow
     return {
       ...state,
       warning: `Ignored ${event.type} because no session is active.`,
+    };
+  }
+
+  if ("sessionId" in event && event.sessionId !== state.activeSession.id) {
+    return {
+      ...state,
+      warning: `Ignored stale ${event.type} for ${event.sessionId}.`,
     };
   }
 

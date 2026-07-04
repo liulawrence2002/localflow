@@ -2,7 +2,7 @@
 
 LocalFlow is a local-first Windows desktop voice-dictation app built with Tauri 2, Rust, React, TypeScript, SQLite, `whisper.cpp`, and local LLM refinement through Ollama.
 
-The current repository contains Milestone 1 foundation work: the Tauri shell, tray setup, global-hotkey integration, typed dictation state machine, mock ASR/refinement/insertion providers, SQLite schema initialization, settings UI, and automated TypeScript tests.
+The current repository contains Milestone 1 foundation work plus build-tested shared logic for early Milestone 2/3 concerns: session-id stale-result rejection, audio ring buffers, VAD/end-of-speech detection, rolling ASR windows, cleanup JSON repair/fallback, timeout guards, and privacy retention helpers.
 
 ## Prerequisites
 
@@ -66,5 +66,5 @@ Check Ollama:
 ## Current Limitations
 
 - The current environment used to create this milestone did not have Rust/Cargo on PATH, so native Tauri compilation must be run after prerequisites are installed.
-- Audio capture, real `whisper.cpp` sidecar execution, Windows UI Automation insertion, and Ollama calls are planned for later milestones.
+- Real `cpal` audio capture, `whisper.cpp` sidecar execution, Windows UI Automation insertion, and Ollama calls are planned for later milestones.
 - The UI currently exercises the mock local pipeline and settings model.

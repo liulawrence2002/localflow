@@ -45,16 +45,29 @@ export function runMockDictation(
     target: defaultTarget,
     timestamp: startedAt,
   });
-  workflow = transition(workflow, { type: "CaptureStarted" });
-  workflow = transition(workflow, { type: "RecordingStopped" });
-  workflow = transition(workflow, { type: "TranscriptReady", transcript: rawTranscript });
-  workflow = transition(workflow, { type: "DeterministicTextReady", text: deterministic.text });
+  workflow = transition(workflow, { type: "CaptureStarted", sessionId });
+  workflow = transition(workflow, { type: "RecordingStopped", sessionId });
+  workflow = transition(workflow, {
+    type: "TranscriptReady",
+    sessionId,
+    transcript: rawTranscript,
+  });
+  workflow = transition(workflow, {
+    type: "DeterministicTextReady",
+    sessionId,
+    text: deterministic.text,
+  });
   workflow = transition(workflow, {
     type: "RefinementReady",
+    sessionId,
     text: inserted,
     confidence: refined.ok ? refined.response.confidence : 0,
   });
-  workflow = transition(workflow, { type: "Inserted", timestamp: new Date().toISOString() });
+  workflow = transition(workflow, {
+    type: "Inserted",
+    sessionId,
+    timestamp: new Date().toISOString(),
+  });
 
   return {
     workflow,

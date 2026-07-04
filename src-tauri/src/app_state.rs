@@ -161,13 +161,16 @@ pub fn begin_mock_session(runtime: State<'_, LocalFlowRuntime>) -> Result<Workfl
     *workflow = transition(
         workflow.clone(),
         WorkflowEvent::BeginActivation {
-            session_id,
+            session_id: session_id.clone(),
             mode: ActivationMode::PushToTalk,
             target: TargetSnapshot::mock(),
             timestamp: Utc::now().to_rfc3339(),
         },
     );
-    *workflow = transition(workflow.clone(), WorkflowEvent::CaptureStarted);
+    *workflow = transition(
+        workflow.clone(),
+        WorkflowEvent::CaptureStarted { session_id },
+    );
 
     Ok(workflow.clone())
 }
@@ -189,34 +192,52 @@ pub fn finish_mock_session(
 
     let mut workflow = runtime.workflow.lock().map_err(lock_error)?;
     if workflow.active_session.is_none() {
+        let session_id = format!("native-{}", Utc::now().timestamp_millis());
         *workflow = transition(
             workflow.clone(),
             WorkflowEvent::BeginActivation {
-                session_id: format!("native-{}", Utc::now().timestamp_millis()),
+                session_id: session_id.clone(),
                 mode: ActivationMode::PushToTalk,
                 target: TargetSnapshot::mock(),
                 timestamp: Utc::now().to_rfc3339(),
             },
         );
-        *workflow = transition(workflow.clone(), WorkflowEvent::CaptureStarted);
+        *workflow = transition(
+            workflow.clone(),
+            WorkflowEvent::CaptureStarted { session_id },
+        );
     }
 
-    *workflow = transition(workflow.clone(), WorkflowEvent::RecordingStopped);
+    let session_id = workflow
+        .active_session
+        .as_ref()
+        .map(|session| session.id.clone())
+        .ok_or_else(|| "No active session is available to finish.".to_string())?;
+
+    *workflow = transition(
+        workflow.clone(),
+        WorkflowEvent::RecordingStopped {
+            session_id: session_id.clone(),
+        },
+    );
     *workflow = transition(
         workflow.clone(),
         WorkflowEvent::TranscriptReady {
+            session_id: session_id.clone(),
             transcript: transcript.clone(),
         },
     );
     *workflow = transition(
         workflow.clone(),
         WorkflowEvent::DeterministicTextReady {
+            session_id: session_id.clone(),
             text: transcript.clone(),
         },
     );
     *workflow = transition(
         workflow.clone(),
         WorkflowEvent::RefinementReady {
+            session_id: session_id.clone(),
             text: inserted.clone(),
             confidence: refined.confidence,
         },
@@ -224,6 +245,7 @@ pub fn finish_mock_session(
     *workflow = transition(
         workflow.clone(),
         WorkflowEvent::Inserted {
+            session_id,
             timestamp: Utc::now().to_rfc3339(),
         },
     );

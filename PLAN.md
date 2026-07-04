@@ -14,13 +14,19 @@ Completed:
 - Added SQLite schema initialization for settings, history, and dictionary data.
 - Added Tauri tray setup and global-hotkey plugin registration for `Ctrl+Alt+Space`.
 - Added unit tests for state transitions, transcript stabilization, deterministic personalization, insertion spacing, and LLM JSON validation.
+- Added session-id validation for result-bearing workflow events to reject stale ASR/refinement/insertion results.
+- Added build-tested audio helpers for bounded PCM ring buffers, RMS calculation, mono downmixing, linear resampling, and VAD/end-of-speech detection.
+- Added rolling ASR window planning for overlap-based incremental transcription.
+- Added local cleanup JSON contract runner with one repair attempt and deterministic fallback that preserves the raw transcript.
+- Added privacy retention helpers for disabled history, transcript-only history, delete-after windows, context retention, and redacted diagnostics.
+- Added timeout guard for local providers.
 
 Verified:
 
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 11 passing tests.
+- `npm run test` with 28 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, module script present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, and mock transcript UI markers.
@@ -54,18 +60,40 @@ Acceptance criteria for this milestone:
 
 ## Milestone 2: Audio and Local ASR
 
+Status: partial, shared logic verified.
+
+Completed:
+
+- Bounded audio ring buffer.
+- Mono downmixing and sample-rate normalization helper.
+- RMS-based VAD/end-of-speech detector.
+- Rolling-window planner with overlap.
+- Timeout guard for local provider calls.
+
+Not yet completed:
+
 - Add `cpal` microphone capture.
-- Add VAD and bounded ring buffers.
 - Add `whisper.cpp` sidecar process manager.
 - Add final transcription with cancellation, timeout, model-not-found errors, and latency metrics.
-- Keep rolling partial transcription in a tested stabilizer.
+- Wire rolling partial transcription into real ASR events.
 
 ## Milestone 3: Insertion and Cleanup
+
+Status: partial, shared cleanup contract verified.
+
+Completed:
+
+- Strict local-cleanup JSON validation.
+- One repair attempt for invalid cleanup responses.
+- Deterministic fallback that preserves raw transcript.
+- Timeout guard for provider calls.
+
+Not yet completed:
 
 - Add Windows target tracking.
 - Add UI Automation insertion where safe.
 - Add simulated keyboard and clipboard fallback.
-- Add Ollama provider, JSON repair retry, and undo cleanup.
+- Add Ollama provider and undo cleanup.
 
 ## Milestone 4: Personalization
 

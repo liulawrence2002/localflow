@@ -6,13 +6,22 @@ Current tests cover:
 
 - State-machine transitions.
 - Overlapping-session rejection.
+- Stale-session rejection.
 - Transcript stable-prefix commitment.
 - Duplicate-free final transcript commitment.
+- Rolling ASR overlap-window planning.
+- Bounded audio ring buffers.
+- RMS-based VAD and end-of-speech detection.
+- Mono downmixing and sample-rate normalization helpers.
 - Boundary-aware replacements.
 - Snippet expansion.
 - Spoken punctuation.
+- Explicit self-correction examples.
 - LLM JSON validation.
+- LLM JSON repair retry and deterministic fallback.
+- Timeout handling.
 - Cursor-aware insertion spacing.
+- Privacy and retention rules.
 
 Run:
 

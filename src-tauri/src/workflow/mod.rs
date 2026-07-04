@@ -84,19 +84,27 @@ pub enum WorkflowEvent {
         target: TargetSnapshot,
         timestamp: String,
     },
-    CaptureStarted,
-    RecordingStopped,
+    CaptureStarted {
+        session_id: String,
+    },
+    RecordingStopped {
+        session_id: String,
+    },
     TranscriptReady {
+        session_id: String,
         transcript: String,
     },
     DeterministicTextReady {
+        session_id: String,
         text: String,
     },
     RefinementReady {
+        session_id: String,
         text: String,
         confidence: f32,
     },
     Inserted {
+        session_id: String,
         timestamp: String,
     },
     Cancel {
@@ -120,6 +128,20 @@ impl Default for WorkflowState {
     }
 }
 
+impl WorkflowEvent {
+    fn session_id(&self) -> Option<&str> {
+        match self {
+            WorkflowEvent::CaptureStarted { session_id }
+            | WorkflowEvent::RecordingStopped { session_id }
+            | WorkflowEvent::TranscriptReady { session_id, .. }
+            | WorkflowEvent::DeterministicTextReady { session_id, .. }
+            | WorkflowEvent::RefinementReady { session_id, .. }
+            | WorkflowEvent::Inserted { session_id, .. } => Some(session_id),
+            _ => None,
+        }
+    }
+}
+
 impl TargetSnapshot {
     pub fn mock() -> Self {
         Self {
@@ -132,6 +154,20 @@ impl TargetSnapshot {
 }
 
 pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowState {
+    if let Some(event_session_id) = event.session_id() {
+        match state.active_session.as_ref() {
+            Some(session) if session.id == event_session_id => {}
+            Some(_) => {
+                state.warning = Some(format!("Ignored stale event for {event_session_id}."));
+                return state;
+            }
+            None => {
+                state.warning = Some("Ignored event because no session is active.".to_string());
+                return state;
+            }
+        }
+    }
+
     match event {
         WorkflowEvent::Reset => WorkflowState::default(),
         WorkflowEvent::Fail { error } => {
@@ -173,15 +209,19 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
             state.error = None;
             state
         }
-        WorkflowEvent::CaptureStarted => guard_phase(state, &[DictationPhase::Preparing], |mut next| {
-            next.phase = DictationPhase::Listening;
-            next
-        }),
-        WorkflowEvent::RecordingStopped => guard_phase(state, &[DictationPhase::Listening], |mut next| {
-            next.phase = DictationPhase::Transcribing;
-            next
-        }),
-        WorkflowEvent::TranscriptReady { transcript } => {
+        WorkflowEvent::CaptureStarted { .. } => {
+            guard_phase(state, &[DictationPhase::Preparing], |mut next| {
+                next.phase = DictationPhase::Listening;
+                next
+            })
+        }
+        WorkflowEvent::RecordingStopped { .. } => {
+            guard_phase(state, &[DictationPhase::Listening], |mut next| {
+                next.phase = DictationPhase::Transcribing;
+                next
+            })
+        }
+        WorkflowEvent::TranscriptReady { transcript, .. } => {
             guard_phase(state, &[DictationPhase::Transcribing], |mut next| {
                 next.phase = DictationPhase::Refining;
                 if let Some(session) = next.active_session.as_mut() {
@@ -190,7 +230,7 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
                 next
             })
         }
-        WorkflowEvent::DeterministicTextReady { text } => {
+        WorkflowEvent::DeterministicTextReady { text, .. } => {
             guard_phase(state, &[DictationPhase::Refining], |mut next| {
                 if let Some(session) = next.active_session.as_mut() {
                     session.deterministic_text = Some(text);
@@ -198,7 +238,7 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
                 next
             })
         }
-        WorkflowEvent::RefinementReady { text, confidence } => {
+        WorkflowEvent::RefinementReady { text, confidence, .. } => {
             guard_phase(state, &[DictationPhase::Refining], |mut next| {
                 next.phase = DictationPhase::Inserting;
                 if let Some(session) = next.active_session.as_mut() {
@@ -208,7 +248,7 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
                 next
             })
         }
-        WorkflowEvent::Inserted { timestamp } => {
+        WorkflowEvent::Inserted { timestamp, .. } => {
             guard_phase(state, &[DictationPhase::Inserting], |mut next| {
                 if let Some(session) = next.active_session.take() {
                     let final_text = session
@@ -279,17 +319,29 @@ mod tests {
                 timestamp: "2026-07-04T00:00:00Z".to_string(),
             },
         );
-        state = transition(state, WorkflowEvent::CaptureStarted);
-        state = transition(state, WorkflowEvent::RecordingStopped);
+        state = transition(
+            state,
+            WorkflowEvent::CaptureStarted {
+                session_id: "one".to_string(),
+            },
+        );
+        state = transition(
+            state,
+            WorkflowEvent::RecordingStopped {
+                session_id: "one".to_string(),
+            },
+        );
         state = transition(
             state,
             WorkflowEvent::TranscriptReady {
+                session_id: "one".to_string(),
                 transcript: "hello world".to_string(),
             },
         );
         state = transition(
             state,
             WorkflowEvent::RefinementReady {
+                session_id: "one".to_string(),
                 text: "Hello world.".to_string(),
                 confidence: 0.9,
             },
@@ -297,6 +349,7 @@ mod tests {
         state = transition(
             state,
             WorkflowEvent::Inserted {
+                session_id: "one".to_string(),
                 timestamp: "2026-07-04T00:00:03Z".to_string(),
             },
         );
@@ -329,5 +382,47 @@ mod tests {
 
         assert_eq!(state.active_session.unwrap().id, "one");
         assert!(state.warning.unwrap().contains("already active"));
+    }
+
+    #[test]
+    fn rejects_stale_session_results() {
+        let mut state = WorkflowState::default();
+        state = transition(
+            state,
+            WorkflowEvent::BeginActivation {
+                session_id: "current".to_string(),
+                mode: ActivationMode::PushToTalk,
+                target: TargetSnapshot::mock(),
+                timestamp: "2026-07-04T00:00:00Z".to_string(),
+            },
+        );
+        state = transition(
+            state,
+            WorkflowEvent::CaptureStarted {
+                session_id: "current".to_string(),
+            },
+        );
+        state = transition(
+            state,
+            WorkflowEvent::RecordingStopped {
+                session_id: "current".to_string(),
+            },
+        );
+        state = transition(
+            state,
+            WorkflowEvent::TranscriptReady {
+                session_id: "previous".to_string(),
+                transcript: "stale transcript".to_string(),
+            },
+        );
+
+        assert_eq!(state.phase, DictationPhase::Transcribing);
+        assert!(state
+            .active_session
+            .as_ref()
+            .unwrap()
+            .raw_transcript
+            .is_none());
+        assert!(state.warning.unwrap().contains("stale"));
     }
 }

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { defaultStatus } from "../domain/defaults";
 import { runMockDictation } from "../domain/mockPipeline";
+import { applyHistoryRetention } from "../domain/privacy";
 import { transition } from "../domain/stateMachine";
 import type { AppStatus, WorkflowState } from "../domain/types";
 
@@ -24,7 +25,11 @@ export async function beginMockSession(): Promise<WorkflowState> {
       },
       timestamp: new Date().toISOString(),
     });
-    fallbackStatus.workflow = transition(fallbackStatus.workflow, { type: "CaptureStarted" });
+    const sessionId = fallbackStatus.workflow.activeSession?.id ?? "";
+    fallbackStatus.workflow = transition(fallbackStatus.workflow, {
+      type: "CaptureStarted",
+      sessionId,
+    });
     return fallbackStatus.workflow;
   });
 }
@@ -32,12 +37,13 @@ export async function beginMockSession(): Promise<WorkflowState> {
 export async function finishMockSession(rawTranscript: string): Promise<AppStatus> {
   return invokeOrFallback("finish_mock_session", { rawTranscript }, () => {
     const result = runMockDictation(fallbackStatus.settings, rawTranscript);
+    const nextHistory = result.workflow.lastCompleted
+      ? [result.workflow.lastCompleted, ...fallbackStatus.history]
+      : fallbackStatus.history;
     fallbackStatus = {
       ...fallbackStatus,
       workflow: result.workflow,
-      history: result.workflow.lastCompleted
-        ? [result.workflow.lastCompleted, ...fallbackStatus.history]
-        : fallbackStatus.history,
+      history: applyHistoryRetention(nextHistory, fallbackStatus.settings.privacy, new Date()),
     };
     return fallbackStatus;
   });
