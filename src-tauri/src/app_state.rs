@@ -28,6 +28,17 @@ impl Default for LocalFlowRuntime {
     }
 }
 
+impl LocalFlowRuntime {
+    /// A snapshot of the current settings for the native dictation path to read. Recovers a
+    /// poisoned lock rather than propagating, so a panic elsewhere cannot wedge dictation.
+    pub fn current_settings(&self) -> SettingsSnapshot {
+        self.settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStatus {
@@ -386,8 +397,13 @@ fn default_settings() -> SettingsSnapshot {
 fn default_diagnostics() -> Vec<DiagnosticMetric> {
     vec![
         DiagnosticMetric {
-            label: "Tray".to_string(),
-            value: "Configured at startup".to_string(),
+            label: "Dictation pipeline".to_string(),
+            value: "Native cpal capture -> whisper.cpp -> deterministic formatting -> local Ollama cleanup".to_string(),
+            status: "ok".to_string(),
+        },
+        DiagnosticMetric {
+            label: "Insertion safety".to_string(),
+            value: "Session guard + target-window revalidation; Escape cancels; recover with Copy last transcript".to_string(),
             status: "ok".to_string(),
         },
         DiagnosticMetric {
@@ -397,12 +413,12 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
         },
         DiagnosticMetric {
             label: "Refinement model".to_string(),
-            value: "gemma4:12b-it-qat through local Ollama for native dictation".to_string(),
+            value: "Configurable local Ollama model (default gemma4:12b-it-qat); dictionary biases ASR".to_string(),
             status: "ok".to_string(),
         },
         DiagnosticMetric {
-            label: "ASR provider".to_string(),
-            value: "Native whisper.cpp path plus mock UI controls".to_string(),
+            label: "Streaming ASR".to_string(),
+            value: "One-shot whisper.cpp per utterance; persistent/streaming runtime is planned".to_string(),
             status: "warning".to_string(),
         },
     ]

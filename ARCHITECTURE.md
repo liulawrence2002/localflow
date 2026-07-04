@@ -4,16 +4,27 @@ LocalFlow is split into a Tauri native layer and a React settings/history interf
 
 ## Native Layer
 
-- `src-tauri/src/workflow`: explicit dictation state machine.
+- `src-tauri/src/workflow`: explicit dictation state machine. **Note:** this reducer is
+  currently exercised only by the mock-session Tauri commands, not by the live hotkey path.
+  See `docs/REPO_AUDIT.md` §2 for the three current session representations and the plan to
+  unify them.
 - `src-tauri/src/audio`: microphone capture interface, mock capture, and shared audio helpers.
 - `src-tauri/src/asr`: ASR provider trait and initial mock provider; `WhisperCppProviderConfig` defines the sidecar boundary.
 - `src-tauri/src/refinement`: refinement provider trait, mock provider, no-op provider, and future native Ollama/llama.cpp configs.
 - `src-tauri/src/context`: local context snapshot interface.
 - `src-tauri/src/insertion`: text insertion interface and mock insertion.
 - `src-tauri/src/hotkeys`: global hotkey registration through Tauri's global-shortcut plugin.
-- `src-tauri/src/native_dictation`: first Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, pinned local Ollama `gemma4:12b-it-qat` cleanup, a waveform overlay event stream, and clipboard paste fallback.
+- `src-tauri/src/native_dictation`: the live Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, pinned local Ollama `gemma4:12b-it-qat` cleanup, a waveform overlay event stream, and clipboard paste fallback. Carries a native `SessionRegistry` (session identity + supersede/cancel guard); the transcribe/refine/insert tail runs on a worker thread and revalidates the session before every side effect so a superseded or cancelled session never inserts.
+- `src-tauri/src/transcript`: **authoritative** deterministic formatting for the native path — spoken punctuation, explicit self-corrections, filler/stutter cleanup, sentence capitalization, user replacements/snippets, and URL/email/decimal protection. Runs before the LLM and is the fallback when the LLM is unavailable.
 - `src-tauri/src/storage`: SQLite schema initialization.
 - `src-tauri/src/privacy`: redaction helpers for logs and diagnostics.
+
+The native dictation pipeline is: capture (`cpal`) → deterministic formatting
+(`transcript`) seeded from the user's settings (replacements, snippets, dictionary → whisper
+`--prompt`) → local Ollama cleanup with the configured model → session + target-window
+revalidation → clipboard paste. Each recording carries a session id; the transcribe/refine/
+insert tail runs on a worker thread that never inserts for a superseded, cancelled
+(Escape), or focus-changed session, and the last transcript is recoverable.
 
 The workflow is state-driven:
 

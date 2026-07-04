@@ -63,6 +63,16 @@ export async function finishMockSession(rawTranscript: string): Promise<AppStatu
   });
 }
 
+export async function getLastTranscript(): Promise<string | null> {
+  return invokeOrFallback<string | null>("get_last_transcript", {}, () => null);
+}
+
+export async function copyLastTranscript(): Promise<void> {
+  await invokeOrFallback<void>("copy_last_transcript", {}, async () => {
+    // Browser dev fallback: nothing to copy from the native runtime.
+  });
+}
+
 export async function cancelSession(): Promise<WorkflowState> {
   return invokeOrFallback("cancel_session", {}, () => {
     fallbackStatus.workflow = transition(fallbackStatus.workflow, {

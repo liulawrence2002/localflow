@@ -44,6 +44,7 @@ import {
   updateSnippet,
   updateStyleProfile,
 } from "./domain/settings";
+import { describeLastTranscript } from "./domain/recovery";
 import { canUndoCleanup, restorePreCleanupText } from "./domain/undo";
 import type {
   AppStatus,
@@ -58,7 +59,9 @@ import type {
 import {
   beginMockSession,
   cancelSession,
+  copyLastTranscript,
   finishMockSession,
+  getLastTranscript,
   getStatus,
   saveSettings,
 } from "./services/localflowClient";
@@ -104,9 +107,13 @@ export function App() {
   const [isCheckingOllama, setIsCheckingOllama] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus>();
   const [diagnosticsExport, setDiagnosticsExport] = useState("");
+  const [lastTranscript, setLastTranscript] = useState<string | null>(null);
+  const [revealTranscript, setRevealTranscript] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState("");
 
   useEffect(() => {
     void getStatus().then(setStatus);
+    void getLastTranscript().then(setLastTranscript);
   }, []);
 
   const settings = status.settings;
@@ -138,6 +145,15 @@ export function App() {
     const workflow = await cancelSession();
     setStatus((current) => ({ ...current, workflow }));
     setIsBusy(false);
+  }
+
+  async function refreshLastTranscript() {
+    setLastTranscript(await getLastTranscript());
+  }
+
+  async function copyRecoveryTranscript() {
+    await copyLastTranscript();
+    setRecoveryNotice("Copied. Paste it where you want with Ctrl+V.");
   }
 
   function undoLastCleanup() {
@@ -237,13 +253,17 @@ export function App() {
           <section className="panel-grid panel-grid--home">
             <div className="panel">
               <div className="panel-heading">
-                <h2>Session</h2>
+                <h2>Simulated test</h2>
                 <span className={`status-pill status-pill--${status.workflow.phase.toLowerCase()}`}>
                   {status.workflow.phase}
                 </span>
               </div>
+              <p className="field-hint">
+                This panel simulates the pipeline for testing. Real dictation runs from the global
+                hotkey (Ctrl+Alt+Space) into the focused app.
+              </p>
               <label className="field">
-                <span>Mock transcript</span>
+                <span>Test transcript</span>
                 <textarea
                   value={mockTranscript}
                   onChange={(event) => setMockTranscript(event.currentTarget.value)}
@@ -286,6 +306,56 @@ export function App() {
               <output className="transcript-output">
                 {status.workflow.lastCompleted?.finalText ?? "No completed dictation yet."}
               </output>
+            </div>
+
+            <div className="panel">
+              <div className="panel-heading">
+                <h2>Recovery</h2>
+                <button
+                  type="button"
+                  onClick={() => void refreshLastTranscript()}
+                  title="Refresh last transcript"
+                >
+                  <RefreshCw size={16} aria-hidden="true" />
+                  Refresh
+                </button>
+              </div>
+              {(() => {
+                const recovery = describeLastTranscript(lastTranscript, revealTranscript);
+                return (
+                  <>
+                    <p className="field-hint">
+                      {recovery.available
+                        ? `Last dictation transcript available (${recovery.charCount} characters). ` +
+                          "Use this if automatic insertion was skipped because focus changed."
+                        : "No native transcript captured yet. After a dictation, its transcript can be recovered here or from the tray."}
+                    </p>
+                    {recovery.preview !== null ? (
+                      <output className="transcript-output">{recovery.preview}</output>
+                    ) : null}
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        onClick={() => void copyRecoveryTranscript()}
+                        disabled={!recovery.available}
+                        title="Copy last transcript"
+                      >
+                        <ClipboardList size={16} aria-hidden="true" />
+                        Copy last transcript
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRevealTranscript((value) => !value)}
+                        disabled={!recovery.available}
+                        title="Toggle transcript preview"
+                      >
+                        {revealTranscript ? "Hide preview" : "Reveal preview"}
+                      </button>
+                    </div>
+                    {recoveryNotice ? <p className="field-hint">{recoveryNotice}</p> : null}
+                  </>
+                );
+              })()}
             </div>
           </section>
         )}

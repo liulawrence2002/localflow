@@ -9,6 +9,7 @@ mod platform;
 mod privacy;
 mod refinement;
 mod storage;
+mod transcript;
 mod workflow;
 
 use app_state::{
@@ -47,7 +48,9 @@ pub fn run() {
             save_settings,
             begin_mock_session,
             finish_mock_session,
-            cancel_session
+            cancel_session,
+            native_dictation::get_last_transcript,
+            native_dictation::copy_last_transcript
         ])
         .run(tauri::generate_context!())
         .expect("error while running LocalFlow");
@@ -55,8 +58,10 @@ pub fn run() {
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show LocalFlow", true, None::<&str>)?;
+    let copy_last =
+        MenuItem::with_id(app, "copy_last", "Copy last transcript", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &copy_last, &quit])?;
 
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
@@ -68,6 +73,11 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                }
+            }
+            "copy_last" => {
+                if let Err(error) = native_dictation::copy_last_transcript_to_clipboard(app) {
+                    tracing::info!(error = %error, "copy last transcript from tray failed");
                 }
             }
             "quit" => app.exit(0),

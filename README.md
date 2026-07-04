@@ -2,7 +2,14 @@
 
 LocalFlow is a local-first Windows desktop voice-dictation app built with Tauri 2, Rust, React, TypeScript, SQLite, `whisper.cpp`, and local LLM refinement through Ollama.
 
-The current build is a lightweight Tauri tray app. It launches quietly, keeps the settings window hidden until opened from the tray, and shows a small floating audio-ribbon waveform while dictation is active. Tap the global hotkey, speak into the default microphone, then pause briefly after speaking; LocalFlow transcribes with local `whisper.cpp`, cleans with your local Ollama `gemma4:12b-it-qat` model, then pastes the result into the focused field. Longer hold-and-release dictation is still supported.
+The current build is a lightweight Tauri tray app. It launches quietly, keeps the settings window hidden until opened from the tray, and shows a small floating audio-ribbon waveform while dictation is active. Tap the global hotkey, speak into the default microphone, then pause briefly after speaking; LocalFlow transcribes with local `whisper.cpp`, applies deterministic formatting, cleans with your configured local Ollama model, then pastes the result into the field where you started. Longer hold-and-release dictation is still supported.
+
+On the native path LocalFlow:
+
+- **Formats deterministically before the LLM** — spoken punctuation ("comma", "new line", "bullet point"), explicit self-corrections ("meet Tuesday, actually Wednesday"), filler/stutter cleanup, and sentence capitalization, while protecting URLs, emails, and decimals.
+- **Personalizes from your settings** — exact replacements and snippets are applied, and your dictionary biases recognition via whisper's initial prompt. The refinement model is configurable (default `gemma4:12b-it-qat`).
+- **Inserts safely** — each dictation has a session id; it never pastes into a different window than where you started, a superseded dictation never inserts, and **Escape cancels** while you are speaking.
+- **Never loses a transcript** — if insertion is skipped (focus changed) or the LLM is unavailable, the transcript is recoverable with "Copy last transcript" (tray or Home) and the deterministically formatted text is used as a fallback.
 
 ## Prerequisites
 
@@ -60,7 +67,7 @@ If `Ctrl+Alt+Space` is already registered by another app, LocalFlow automaticall
 5. Speak for 2-5 seconds.
 6. Stop speaking and pause briefly, or press the hotkey again, then wait for local Whisper transcription plus local `gemma4:12b-it-qat` cleanup.
 
-The floating waveform appears while listening and processing. It uses live microphone level, pitch, and brightness estimates to draw layered audio ribbons: higher-pitch speech lifts warmer upper strands, while lower-pitch speech deepens cooler lower strands. The current native path inserts the cleaned transcript through clipboard paste and restores the previous text clipboard afterward. If local Ollama or `gemma4:12b-it-qat` is unavailable, LocalFlow preserves the raw Whisper transcript instead of losing the dictation.
+The floating waveform appears while listening and processing. It uses live microphone level, pitch, and brightness estimates to draw layered audio ribbons: higher-pitch speech lifts warmer upper strands, while lower-pitch speech deepens cooler lower strands. The native path inserts the cleaned transcript through clipboard paste (restoring the previous text clipboard afterward) only after confirming the original window still has focus. If the local Ollama model is unavailable, LocalFlow uses the deterministically formatted transcript instead of losing the dictation; if focus changed, it keeps the transcript for "Copy last transcript".
 
 For multi-channel microphones, LocalFlow selects the loudest active input channel instead of averaging channels, which avoids phase-cancellation recordings that sound like blank audio to Whisper.
 

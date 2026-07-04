@@ -296,22 +296,110 @@ Recent verification on this workstation:
 
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 77 frontend tests.
+- `npm run test` with 80 frontend tests (77 baseline + 3 recovery tests, Slice 3).
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test` with 14 Rust tests.
+- `cargo test` with 47 Rust tests (14 baseline; +3 session-guard Slice 1; +2 target-window Slice 2; +10 deterministic-formatting Slice 4; +3 personalization Slice 5; +15 streaming-ASR foundation Slice 8).
 - `cargo check`
 - `npm run tauri:build`
 
-Known Rust warnings are from scaffolded provider traits and future-facing structs that are defined but not yet fully wired.
+Known Rust warnings (14) are from scaffolded provider traits and future-facing structs that are defined but not yet fully wired.
+
+### Phase 0 audit + Slice 1 (session identity & cancellation)
+
+- `docs/REPO_AUDIT.md` and `docs/PARITY_MATRIX.md` capture the evidence-based current
+  state, doc-vs-code discrepancies, risk-ranked debt, target architecture, and the ASR
+  benchmark plan.
+- Slice 1 adds a native `SessionRegistry` in `native_dictation.rs`. Each recording gets a
+  session id; the transcribe -> refine -> insert tail now runs on a worker thread. The
+  worker revalidates its session id before whisper, before refinement, and immediately
+  before pasting, so a **superseded (new recording started) or cancelled session never
+  inserts text** (spec §4.4). A `"cancel"` recorder command invalidates the active session
+  (mechanism for Escape-to-cancel; the Escape hotkey itself is a later slice).
+- Not yet runtime-verifiable here (no mic/whisper/Ollama in this environment). Manual
+  validation: (1) start dictation, immediately start a second dictation before the first
+  finishes → only the second inserts; (2) once a `cancel` hotkey is wired, cancel mid-
+  processing → nothing inserts.
+
+### Slice 2 (target-window revalidation before insertion)
+
+- `start_recording` captures the foreground window (`TargetWindow { hwnd, pid }`) via
+  `GetForegroundWindow` + `GetWindowThreadProcessId`. Before the `Ctrl+V` paste,
+  `process_session` calls `target_matches(captured, foreground_target())` and **skips the
+  paste** (with a clear "focus changed" error) unless the same window is still focused.
+  Fails closed if either target is unknown (spec §6.2 — never insert into a target that
+  cannot be revalidated). Added `Win32_Foundation` + `Win32_UI_WindowsAndMessaging`
+  features to the `windows` crate. +2 Rust tests.
+- Manual validation: start dictation in Notepad, alt-tab to another app before it finishes
+  → transcript is NOT pasted and the overlay shows the focus-changed error; staying in
+  Notepad → normal paste.
+
+### Slice 3 (copy/last-transcript recovery)
+
+- `NativeDictationRuntime` now keeps the last finalized transcript in volatile memory
+  (`last_transcript`), stored just before the insertion attempt so it survives a skipped
+  paste. Nothing is written to disk (retention-safe).
+- New Tauri commands `get_last_transcript` and `copy_last_transcript`, a tray item
+  "Copy last transcript" (needs no focus, always safe), and a Home > Recovery card that
+  shows availability + char count, a Copy button, and an opt-in Reveal preview (the
+  transcript is not shown by default). Pure helper `src/domain/recovery.ts` + 3 tests.
+- Manual validation: after a dictation whose paste was skipped (focus changed), click the
+  tray "Copy last transcript" (or the Recovery card's Copy) → transcript is on the
+  clipboard for manual Ctrl+V.
+
+### Slices 4-7 (smart formatting, personalization, escape-to-cancel, honesty)
+
+- **Slice 4 — `src-tauri/src/transcript/mod.rs`.** Authoritative deterministic formatting:
+  spoken punctuation ("comma"/"new line"/"bullet point"...), explicit self-corrections
+  ("actually", "no", "sorry", "let me restart"), filler/stutter removal, sentence
+  capitalization, and URL/email/decimal protection. Runs before the LLM and is the fallback
+  when Ollama is down. The TS `personalization.ts` is now the browser-dev-only copy.
+- **Slice 5 — personalization + model config.** `process_session` reads
+  `LocalFlowRuntime::current_settings()`: enabled replacements + snippets are applied by
+  `apply_deterministic_formatting_with`; dictionary phrases seed whisper's `--prompt`
+  (bounded to 800 chars); the Ollama model comes from settings (falls back to the default
+  constant). Warm-up uses the configured model too.
+- **Slice 6 — Escape-to-cancel.** `set_escape_cancel` registers bare Escape only while
+  recording; the hotkey handler routes it to the `cancel` command. It is unregistered when
+  recording ends or is cancelled, so Escape is not suppressed system-wide otherwise. Manual
+  validation: start dictation, press Escape while speaking → nothing inserts, overlay hides.
+- **Slice 7 — honesty.** Diagnostics describe the real pipeline and flag the one-shot ASR as
+  a known limitation; the Home panel is labeled "Simulated test" with a note that real
+  dictation uses the hotkey.
+
+### Slice 8 (streaming ASR foundation — `src-tauri/src/asr/`)
+
+- `stabilizer.rs` — `TranscriptStabilizer`: commits the longest stable token prefix across
+  overlapping-window hypotheses so committed words are never duplicated or rewritten
+  (spec §3.2). Authoritative Rust port of `transcriptStabilizer.ts`.
+- `windows.rs` — `plan_rolling_windows`: rolling/overlapping window boundaries for a
+  persistent runtime. Port of `asrWindows.ts`.
+- `streaming.rs` — typed `AsrEvent` contract, `AsrCapabilities`, `StreamingAsrProvider`
+  trait, and a `StreamingSession` coordinator turning rolling-window decodes into
+  SessionStarted/SpeechStarted/Committed/Partial/SpeechEnded/Final events. A scripted
+  `MockStreamingProvider` proves the trait end to end in tests.
+- `metrics.rs` — `word_error_rate` (token Levenshtein), the accuracy measure for the
+  benchmark harness.
+- **Status:** these are the Phase 3 foundation, exercised by unit tests but not yet on the
+  default one-shot path (marked `#![allow(dead_code)]`). Next: implement a persistent
+  whisper provider behind `StreamingAsrProvider`, feed rolling windows through
+  `StreamingSession`, emit partials to the overlay, and build the benchmark harness. That
+  step needs local models + a mic to verify, which this environment lacks.
 
 ## Known Limitations
 
 - Native hotkey dictation currently uses the default Windows input device.
-- Native dictation cleanup is pinned to `gemma4:12b-it-qat`.
-- Deterministic personalization is implemented in shared logic/UI but not yet wired into the production native hotkey path.
-- UI Automation text insertion is pending.
-- Target-window verification before insertion is pending.
+- Native dictation cleanup model is configurable via settings (default `gemma4:12b-it-qat`);
+  ASR language is still fixed to English and the whisper model path/threads are not yet
+  settings-driven.
+- Deterministic formatting + user replacements/snippets/dictionary now run on the native
+  hotkey path (Slices 4-5). Style profiles are not yet applied to the cleanup prompt.
+- UI Automation text insertion is pending (insertion is still clipboard + Ctrl+V).
+- Target-window verification before insertion is implemented (HWND + PID, fail-closed);
+  hardening (process start time, UIA element identity, protected-field detection) is pending.
+- When the target changes, the transcript is preserved for recovery: "Copy last transcript"
+  is available from the tray and the Home > Recovery card. Paste-last-into-focus via a
+  dedicated global hotkey is still pending.
 - Rich clipboard preservation is pending.
 - Startup-at-login is pending.
 - Rolling partial transcription and live word-synchronous overlay animation are pending.

@@ -11,6 +11,12 @@ struct HotkeyPayload {
     state: String,
 }
 
+/// The bare Escape shortcut used to cancel an active dictation. Registered only while a
+/// dictation is in progress so it does not suppress Escape system-wide the rest of the time.
+pub fn escape_cancel_shortcut() -> Shortcut {
+    Shortcut::new(None, Code::Escape)
+}
+
 pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
     let fallback_shortcut = Shortcut::new(
@@ -19,10 +25,22 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     );
     let handler_default_shortcut = default_shortcut.clone();
     let handler_fallback_shortcut = fallback_shortcut.clone();
+    let handler_escape_shortcut = escape_cancel_shortcut();
 
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(move |app, shortcut, event| {
+                // Escape is registered only while a dictation is active (see
+                // native_dictation), so here it always means "cancel the current session".
+                if shortcut == &handler_escape_shortcut {
+                    if matches!(event.state(), ShortcutState::Pressed) {
+                        if let Err(error) = native_dictation::handle_hotkey(app.clone(), "cancel") {
+                            tracing::warn!(error = %error, "escape-to-cancel handling failed");
+                        }
+                    }
+                    return;
+                }
+
                 let shortcut_label = if shortcut == &handler_default_shortcut {
                     Some("Ctrl+Alt+Space")
                 } else if shortcut == &handler_fallback_shortcut {

@@ -28,9 +28,97 @@ use std::os::windows::process::CommandExt;
 pub struct NativeDictationRuntime {
     command_tx: Mutex<mpsc::Sender<RecorderCommand>>,
     overlay_epoch: AtomicU64,
+    sessions: Mutex<SessionRegistry>,
+    last_transcript: Mutex<Option<String>>,
+}
+
+/// Tracks which dictation session is currently authorized to insert text.
+///
+/// Every recording is assigned a monotonically increasing `id`. `active` holds the
+/// id that is allowed to reach insertion. Starting a new recording or cancelling
+/// bumps the sequence so any in-flight worker for an older id becomes non-current
+/// and aborts before pasting. This is the native-path equivalent of the spec's
+/// session-identity + stale-event rejection requirement (§4.4): a cancelled or
+/// superseded session must never insert text.
+#[derive(Debug, Default, Clone, Copy)]
+struct SessionRegistry {
+    seq: u64,
+    active: u64,
+}
+
+impl SessionRegistry {
+    /// Assign and activate a fresh session id.
+    fn begin(&mut self) -> u64 {
+        self.seq += 1;
+        self.active = self.seq;
+        self.seq
+    }
+
+    /// Invalidate the current session without starting a new recording (cancel).
+    /// The active id becomes one that no worker holds, so any in-flight worker aborts.
+    fn invalidate(&mut self) {
+        self.seq += 1;
+        self.active = self.seq;
+    }
+
+    /// Whether `id` is still the session authorized to insert.
+    fn is_current(&self, id: u64) -> bool {
+        id != 0 && self.active == id
+    }
+}
+
+/// The focused window captured when dictation started, used to verify the insertion
+/// target has not changed before pasting. `hwnd` is stored as an `isize` (the raw handle
+/// value) so the token is `Send` and can cross to the worker thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TargetWindow {
+    hwnd: isize,
+    pid: u32,
+}
+
+/// Read the current foreground window as an insertion target. Returns `None` if no window
+/// is focused or its owning process cannot be determined.
+#[cfg(windows)]
+fn foreground_target() -> Option<TargetWindow> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        Some(TargetWindow {
+            hwnd: hwnd.0 as isize,
+            pid,
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn foreground_target() -> Option<TargetWindow> {
+    None
+}
+
+/// Whether it is safe to insert into the current foreground window. Fails closed: unless
+/// the captured target and the current foreground window are both known and identical, the
+/// caller must not paste (spec: never insert into a target that cannot be revalidated).
+fn target_matches(captured: Option<TargetWindow>, current: Option<TargetWindow>) -> bool {
+    match (captured, current) {
+        (Some(captured), Some(current)) => {
+            captured.hwnd == current.hwnd && captured.pid == current.pid
+        }
+        _ => false,
+    }
 }
 
 struct RecordingSession {
+    session_id: u64,
+    target: Option<TargetWindow>,
     stream: Stream,
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
@@ -122,8 +210,100 @@ impl Default for NativeDictationRuntime {
         Self {
             command_tx: Mutex::new(command_tx),
             overlay_epoch: AtomicU64::new(0),
+            sessions: Mutex::new(SessionRegistry::default()),
+            last_transcript: Mutex::new(None),
         }
     }
+}
+
+/// Lock the session registry, recovering (rather than propagating) a poisoned lock so
+/// a panic elsewhere can never wedge dictation.
+fn with_sessions<T>(app: &AppHandle, f: impl FnOnce(&mut SessionRegistry) -> T) -> T {
+    let runtime = app.state::<NativeDictationRuntime>();
+    let mut guard = runtime
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut guard)
+}
+
+/// Assign and activate a fresh session id, superseding any in-flight worker.
+fn begin_session(app: &AppHandle) -> u64 {
+    with_sessions(app, SessionRegistry::begin)
+}
+
+/// Cancel the active session; any in-flight worker for the old id will abort before pasting.
+fn invalidate_session(app: &AppHandle) {
+    with_sessions(app, SessionRegistry::invalidate);
+}
+
+/// Whether `session_id` is still authorized to insert text.
+fn session_is_current(app: &AppHandle, session_id: u64) -> bool {
+    with_sessions(app, |registry| registry.is_current(session_id))
+}
+
+/// Register (or unregister) the Escape-to-cancel global shortcut. It is only active while a
+/// dictation is recording, so pressing Escape mid-utterance cancels without ever inserting,
+/// and Escape is not suppressed system-wide the rest of the time.
+fn set_escape_cancel(app: &AppHandle, enable: bool) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let shortcut = crate::hotkeys::escape_cancel_shortcut();
+    let manager = app.global_shortcut();
+
+    if enable {
+        if let Err(error) = manager.register(shortcut) {
+            tracing::debug!(error = %error, "escape-to-cancel shortcut unavailable");
+        }
+    } else {
+        let _ = manager.unregister(shortcut);
+    }
+}
+
+/// Remember the most recent finalized transcript in volatile memory so the user can
+/// recover it (copy / paste-last) if automatic insertion was skipped or failed. This is
+/// session-scoped memory only; nothing is written to disk (retention-safe by default).
+fn store_last_transcript(app: &AppHandle, text: &str) {
+    let runtime = app.state::<NativeDictationRuntime>();
+    let mut guard = runtime
+        .last_transcript
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some(text.to_string());
+}
+
+/// The most recent finalized transcript, if any.
+fn last_transcript(app: &AppHandle) -> Option<String> {
+    let runtime = app.state::<NativeDictationRuntime>();
+    let guard = runtime
+        .last_transcript
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clone()
+}
+
+/// Copy the last finalized transcript to the clipboard for manual pasting. Reachable from
+/// the tray and the settings UI; needs no target focus, so it is always safe to run.
+pub fn copy_last_transcript_to_clipboard(app: &AppHandle) -> Result<(), String> {
+    let text = last_transcript(app)
+        .ok_or_else(|| "No transcript is available to copy yet.".to_string())?;
+    let mut clipboard =
+        Clipboard::new().map_err(|error| format!("Could not open clipboard: {error}"))?;
+    clipboard
+        .set_text(text)
+        .map_err(|error| format!("Could not set clipboard text: {error}"))
+}
+
+/// Return the most recent finalized transcript (or `null`) for the recovery UI.
+#[tauri::command]
+pub fn get_last_transcript(app: AppHandle) -> Option<String> {
+    last_transcript(&app)
+}
+
+/// Copy the most recent finalized transcript to the clipboard (explicit recovery action).
+#[tauri::command]
+pub fn copy_last_transcript(app: AppHandle) -> Result<(), String> {
+    copy_last_transcript_to_clipboard(&app)
 }
 
 pub fn handle_hotkey(app: AppHandle, state: &str) -> Result<(), String> {
@@ -183,6 +363,18 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
                     Ok(())
                 }
             }
+            "cancel" => {
+                // Stop any live recording and invalidate the current session so an
+                // in-flight transcription/refinement worker aborts before pasting.
+                if let Some(active_session) = session.take() {
+                    let _ = active_session.level_stop_tx.send(());
+                    drop(active_session.stream);
+                }
+                set_escape_cancel(&command.app, false);
+                invalidate_session(&command.app);
+                emit_status(&command.app, "cancelled", "Cancelled");
+                Ok(())
+            }
             _ => Ok(()),
         };
 
@@ -204,6 +396,14 @@ fn should_toggle_stop(elapsed: Duration) -> bool {
 fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> Result<(), String> {
     if session.is_some() {
         return Ok(());
+    }
+
+    // Capture the window that had focus when dictation started. Insertion is revalidated
+    // against this before pasting so a transcript never lands in a different window (spec
+    // §6.1/§6.2). Captured before device setup to stay close to the hotkey-press instant.
+    let target = foreground_target();
+    if target.is_none() {
+        tracing::warn!("could not capture a foreground insertion target at record start");
     }
 
     let host = cpal::default_host();
@@ -234,7 +434,13 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
         .clone();
     let level_stop_tx = start_level_meter(app.clone(), samples.clone(), sample_rate, command_tx);
 
+    // Assign and activate a fresh session id; this supersedes any worker still
+    // processing a previous recording so it cannot insert stale text.
+    let session_id = begin_session(app);
+
     *session = Some(RecordingSession {
+        session_id,
+        target,
         stream,
         samples,
         sample_rate,
@@ -246,7 +452,18 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     });
 
     emit_status(app, "listening", "Listening");
-    warm_pinned_ollama_in_background();
+    set_escape_cancel(app, true);
+    let warm_model = {
+        let settings = app
+            .state::<crate::app_state::LocalFlowRuntime>()
+            .current_settings();
+        if settings.models.ollama_model.trim().is_empty() {
+            OLLAMA_MODEL.to_string()
+        } else {
+            settings.models.ollama_model.trim().to_string()
+        }
+    };
+    warm_ollama_in_background(warm_model);
     tracing::info!(
         device = %device_name,
         sample_rate,
@@ -259,6 +476,8 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
 
 fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), String> {
     let RecordingSession {
+        session_id,
+        target,
         stream,
         samples,
         sample_rate,
@@ -271,6 +490,7 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
 
     let _ = level_stop_tx.send(());
     drop(stream);
+    set_escape_cancel(&app, false);
     emit_status(&app, "processing", "Transcribing with local whisper.cpp");
 
     let captured = samples
@@ -302,6 +522,71 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         ));
     }
 
+    // Run the blocking transcribe -> refine -> insert tail off the recorder thread so the
+    // recorder stays responsive and a newer or cancelled session can supersede this one.
+    // The worker revalidates its session id before every side effect and, crucially, never
+    // pastes if it is no longer the current session (spec §4.4).
+    thread::spawn(move || {
+        match process_session(
+            &app,
+            &captured,
+            sample_rate,
+            channels,
+            session_id,
+            target,
+            started_at,
+        ) {
+            Ok(()) => {}
+            Err(error) => {
+                if session_is_current(&app, session_id) {
+                    tracing::warn!(error = %error, "native dictation processing failed");
+                    emit_status(&app, "error", &error);
+                } else {
+                    tracing::info!(
+                        error = %error,
+                        "native dictation error suppressed for superseded session"
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Transcribe -> refine -> insert. Runs on a worker thread. Revalidates the session before
+/// every side effect; a superseded or cancelled session aborts without pasting.
+fn process_session(
+    app: &AppHandle,
+    captured: &[f32],
+    sample_rate: u32,
+    channels: u16,
+    session_id: u64,
+    target: Option<TargetWindow>,
+    started_at: Instant,
+) -> Result<(), String> {
+    if !session_is_current(app, session_id) {
+        emit_cancelled(app);
+        return Ok(());
+    }
+
+    // Read the user's current settings so the native path honors their model choice,
+    // dictionary (ASR biasing), replacements, and snippets instead of hardcoded defaults.
+    let settings = app
+        .state::<crate::app_state::LocalFlowRuntime>()
+        .current_settings();
+    let dictionary_terms: Vec<String> = settings
+        .dictionary
+        .iter()
+        .map(|entry| entry.phrase.clone())
+        .filter(|phrase| !phrase.trim().is_empty())
+        .collect();
+    let ollama_model = if settings.models.ollama_model.trim().is_empty() {
+        OLLAMA_MODEL.to_string()
+    } else {
+        settings.models.ollama_model.trim().to_string()
+    };
+
     let output_dir = env::temp_dir().join("localflow");
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("Could not create temporary audio directory: {error}"))?;
@@ -309,30 +594,104 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
     let wav_path = output_dir.join(format!("dictation-{stamp}.wav"));
     let output_base = output_dir.join(format!("dictation-{stamp}"));
 
-    let mono_16k = resample_to_16khz(&captured, sample_rate);
+    let mono_16k = resample_to_16khz(captured, sample_rate);
     write_wav(&wav_path, &mono_16k)?;
 
-    let transcript = run_whisper(&app, &wav_path, &output_base)?;
+    let transcribe_result = run_whisper(app, &wav_path, &output_base, &dictionary_terms);
+    let _ = fs::remove_file(&wav_path);
+    let _ = fs::remove_file(output_base.with_extension("json"));
+    let transcript = transcribe_result?;
+
     if transcript.trim().is_empty() || is_blank_transcript(&transcript) {
         return Err("Local whisper.cpp did not return any transcript text.".to_string());
     }
 
-    emit_status(&app, "refining", "Cleaning with local gemma4:12b-it-qat");
-    let final_text = match refine_with_pinned_ollama(&transcript) {
-        Ok(text) => text,
-        Err(error) => {
-            tracing::warn!(error = %error, "gemma4:12b-it-qat cleanup failed; using raw transcript");
-            emit_status(
-                &app,
-                "error",
-                "gemma4:12b-it-qat cleanup failed; using raw transcript",
-            );
+    if !session_is_current(app, session_id) {
+        emit_cancelled(app);
+        return Ok(());
+    }
+
+    // Deterministic formatting (spoken punctuation, self-corrections, filler/stutter
+    // cleanup) is applied before the LLM. It seeds the cleanup prompt and is the safe
+    // fallback when the model is unavailable. Never let it collapse a non-empty transcript
+    // to nothing (e.g. an all-filler utterance) — fall back to the raw transcript then.
+    let replacements: Vec<crate::transcript::Replacement> = settings
+        .replacements
+        .iter()
+        .map(|rule| crate::transcript::Replacement {
+            incorrect: rule.incorrect.clone(),
+            correct: rule.correct.clone(),
+            enabled: rule.enabled,
+        })
+        .collect();
+    let snippets: Vec<crate::transcript::Snippet> = settings
+        .snippets
+        .iter()
+        .map(|snippet| crate::transcript::Snippet {
+            trigger: snippet.trigger.clone(),
+            expansion: snippet.expansion.clone(),
+            enabled: snippet.enabled,
+        })
+        .collect();
+
+    let deterministic = {
+        let formatted = crate::transcript::apply_deterministic_formatting_with(
+            &transcript,
+            &replacements,
+            &snippets,
+        );
+        if formatted.trim().is_empty() {
             transcript.clone()
+        } else {
+            formatted
         }
     };
 
+    emit_status(
+        app,
+        "refining",
+        &format!("Cleaning with local {ollama_model}"),
+    );
+    let final_text = match refine_with_pinned_ollama(&transcript, &deterministic, &ollama_model) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::warn!(error = %error, "local model cleanup failed; using formatted transcript");
+            emit_status(
+                app,
+                "error",
+                "Local model cleanup failed; using the deterministically formatted transcript.",
+            );
+            deterministic.clone()
+        }
+    };
+
+    // Final guard before the only irreversible side effect: never paste into whatever is
+    // focused now if this session was superseded or cancelled while we were working.
+    if !session_is_current(app, session_id) {
+        emit_cancelled(app);
+        return Ok(());
+    }
+
+    // Remember the finalized transcript before attempting insertion so it is recoverable
+    // (copy / paste-last) even if the paste is skipped because focus changed.
+    store_last_transcript(app, &final_text);
+
+    // Revalidate the insertion target. If focus moved to another window (or we cannot
+    // confirm the original), do not paste — a Ctrl+V would land in the wrong app, possibly
+    // a password or unrelated field. Fail closed and tell the user (spec §6.2). The
+    // transcript is kept for recovery via "Copy last transcript".
+    if !target_matches(target, foreground_target()) {
+        tracing::warn!("insertion target changed since dictation started; skipping paste");
+        emit_status(
+            app,
+            "error",
+            "Focus changed before insertion. The transcript was not pasted; use \"Copy last transcript\" to recover it.",
+        );
+        return Ok(());
+    }
+
     paste_text(&final_text)?;
-    emit_status(&app, "inserted", "Inserted transcript");
+    emit_status(app, "inserted", "Inserted transcript");
     tracing::info!(
         elapsed_ms = started_at.elapsed().as_millis(),
         chars = final_text.chars().count(),
@@ -341,10 +700,12 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         "native dictation inserted transcript"
     );
 
-    let _ = fs::remove_file(&wav_path);
-    let _ = fs::remove_file(output_base.with_extension("json"));
-
     Ok(())
+}
+
+fn emit_cancelled(app: &AppHandle) {
+    tracing::info!("native dictation session superseded or cancelled before insertion");
+    emit_status(app, "cancelled", "Cancelled");
 }
 
 fn start_level_meter(
@@ -740,7 +1101,12 @@ fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
         .map_err(|error| format!("WAV finalize failed: {error}"))
 }
 
-fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<String, String> {
+fn run_whisper(
+    app: &AppHandle,
+    wav_path: &Path,
+    output_base: &Path,
+    dictionary_terms: &[String],
+) -> Result<String, String> {
     let cli = whisper_cli_path(app)?;
     let model = whisper_model_path(app)?;
     let thread_count = whisper_thread_count().to_string();
@@ -748,7 +1114,8 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
         .parent()
         .ok_or_else(|| "Could not resolve whisper.cpp runtime directory.".to_string())?;
 
-    let output = hidden_sidecar_command(&cli)
+    let mut command = hidden_sidecar_command(&cli);
+    command
         .current_dir(whisper_dir)
         .stdin(Stdio::null())
         .arg("-m")
@@ -763,7 +1130,14 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
         .arg("-l")
         .arg("en")
         .arg("-t")
-        .arg(thread_count)
+        .arg(&thread_count);
+
+    // Bias recognition toward the user's dictionary terms via whisper's initial prompt.
+    if let Some(prompt) = build_whisper_prompt(dictionary_terms) {
+        command.arg("--prompt").arg(prompt);
+    }
+
+    let output = command
         .output()
         .map_err(|error| format!("Could not start whisper.cpp: {error}"))?;
 
@@ -775,6 +1149,35 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
     }
 
     parse_whisper_json(&output_base.with_extension("json"))
+}
+
+/// Build a bounded whisper initial prompt from the user's dictionary terms. Whisper's
+/// prompt window is small, so we cap the joined length.
+fn build_whisper_prompt(terms: &[String]) -> Option<String> {
+    const MAX_PROMPT_CHARS: usize = 800;
+
+    let mut joined = String::new();
+    for term in terms
+        .iter()
+        .map(|term| term.trim())
+        .filter(|term| !term.is_empty())
+    {
+        let addition = if joined.is_empty() {
+            term.to_string()
+        } else {
+            format!(", {term}")
+        };
+        if joined.len() + addition.len() > MAX_PROMPT_CHARS {
+            break;
+        }
+        joined.push_str(&addition);
+    }
+
+    if joined.is_empty() {
+        None
+    } else {
+        Some(format!("Glossary: {joined}."))
+    }
 }
 
 fn hidden_sidecar_command(program: &Path) -> Command {
@@ -834,32 +1237,37 @@ fn is_blank_transcript(transcript: &str) -> bool {
     )
 }
 
-fn refine_with_pinned_ollama(raw_transcript: &str) -> Result<String, String> {
-    let first_prompt = build_cleanup_prompt(raw_transcript);
-    let first_payload = request_ollama_cleanup(&first_prompt)?;
+fn refine_with_pinned_ollama(
+    raw_transcript: &str,
+    deterministic_text: &str,
+    model: &str,
+) -> Result<String, String> {
+    let first_prompt = build_cleanup_prompt(raw_transcript, deterministic_text);
+    let first_payload = request_ollama_cleanup(&first_prompt, model)?;
 
     match parse_cleanup_text(&first_payload) {
         Ok(text) => Ok(text),
         Err(first_error) => {
             let repair_prompt = build_repair_prompt(&first_payload, &first_error);
-            let repaired_payload = request_ollama_cleanup(&repair_prompt)?;
+            let repaired_payload = request_ollama_cleanup(&repair_prompt, model)?;
             parse_cleanup_text(&repaired_payload).map_err(|repair_error| {
                 format!(
-                    "gemma4:12b-it-qat returned invalid cleanup JSON twice: {first_error}; {repair_error}"
+                    "{model} returned invalid cleanup JSON twice: {first_error}; {repair_error}"
                 )
             })
         }
     }
 }
 
-fn request_ollama_cleanup(prompt: &str) -> Result<String, String> {
-    request_ollama_generate(prompt, Duration::from_secs(60), 0.1)
+fn request_ollama_cleanup(prompt: &str, model: &str) -> Result<String, String> {
+    request_ollama_generate(prompt, Duration::from_secs(60), 0.1, model)
 }
 
 fn request_ollama_generate(
     prompt: &str,
     timeout: Duration,
     temperature: f32,
+    model: &str,
 ) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
@@ -869,7 +1277,7 @@ fn request_ollama_generate(
     let response = client
         .post(OLLAMA_GENERATE_URL)
         .json(&OllamaGenerateRequest {
-            model: OLLAMA_MODEL,
+            model,
             prompt,
             stream: false,
             format: "json",
@@ -886,7 +1294,7 @@ fn request_ollama_generate(
         let body = response.text().unwrap_or_default();
         if status.as_u16() == 404 {
             return Err(format!(
-                "Ollama model \"{OLLAMA_MODEL}\" was not found locally. {body}"
+                "Ollama model \"{model}\" was not found locally. {body}"
             ));
         }
         return Err(format!("Ollama returned HTTP {status}: {body}"));
@@ -899,8 +1307,8 @@ fn request_ollama_generate(
     Ok(payload.response)
 }
 
-fn warm_pinned_ollama_in_background() {
-    thread::spawn(|| {
+fn warm_ollama_in_background(model: String) {
+    thread::spawn(move || {
         let prompt = serde_json::json!({
             "task": "localflow.warm_dictation_cleanup",
             "instruction": "Return only JSON.",
@@ -913,8 +1321,8 @@ fn warm_pinned_ollama_in_background() {
         })
         .to_string();
 
-        if let Err(error) = request_ollama_generate(&prompt, Duration::from_secs(12), 0.0) {
-            tracing::debug!(error = %error, "gemma4:12b-it-qat warmup skipped");
+        if let Err(error) = request_ollama_generate(&prompt, Duration::from_secs(12), 0.0, &model) {
+            tracing::debug!(error = %error, model = %model, "ollama warmup skipped");
         }
     });
 }
@@ -948,20 +1356,23 @@ fn parse_json_value(payload: &str) -> Result<serde_json::Value, String> {
     })
 }
 
-fn build_cleanup_prompt(raw_transcript: &str) -> String {
+fn build_cleanup_prompt(raw_transcript: &str, deterministic_text: &str) -> String {
     serde_json::json!({
         "task": "localflow.dictation_cleanup",
         "contract": "Return only strict JSON with text, confidence, resolved_corrections, and warnings.",
         "rules": [
+            "Start from deterministicText: it already has spoken punctuation, self-corrections, and filler cleanup applied. Preserve its wording and formatting unless it is clearly wrong.",
             "Preserve meaning, facts, names, numbers, uncertainty, and intent.",
             "Never answer the dictated content.",
             "Never add new claims.",
             "Remove filler words only when meaning is unchanged.",
             "Resolve explicit self-corrections in favor of the latest correction.",
+            "Keep code identifiers, file paths, URLs, and email addresses verbatim.",
             "Add punctuation and capitalization conservatively.",
             "Return only JSON."
         ],
         "cleanupLevel": "balanced",
+        "deterministicText": deterministic_text,
         "rawTranscript": raw_transcript
     })
     .to_string()
@@ -1315,6 +1726,80 @@ mod tests {
         assert!(is_blank_transcript("[BLANK_AUDIO]"));
         assert!(is_blank_transcript("(silence)"));
         assert!(!is_blank_transcript("hello local flow"));
+    }
+
+    #[test]
+    fn session_registry_begin_activates_new_id() {
+        let mut registry = SessionRegistry::default();
+
+        // id 0 (never started) is never authorized to insert.
+        assert!(!registry.is_current(0));
+
+        let first = registry.begin();
+        assert_eq!(first, 1);
+        assert!(registry.is_current(first));
+    }
+
+    #[test]
+    fn new_session_supersedes_previous_in_flight_worker() {
+        let mut registry = SessionRegistry::default();
+        let first = registry.begin();
+
+        // A second recording starts while the first is still being processed.
+        let second = registry.begin();
+
+        assert_ne!(first, second);
+        assert!(!registry.is_current(first)); // stale worker must abort before pasting
+        assert!(registry.is_current(second));
+    }
+
+    #[test]
+    fn target_matches_only_identical_foreground_window() {
+        let a = TargetWindow {
+            hwnd: 0x1234,
+            pid: 42,
+        };
+        let same = TargetWindow {
+            hwnd: 0x1234,
+            pid: 42,
+        };
+        let other_window = TargetWindow {
+            hwnd: 0x9999,
+            pid: 42,
+        };
+        let other_process = TargetWindow {
+            hwnd: 0x1234,
+            pid: 7,
+        };
+
+        assert!(target_matches(Some(a), Some(same)));
+        assert!(!target_matches(Some(a), Some(other_window)));
+        assert!(!target_matches(Some(a), Some(other_process)));
+    }
+
+    #[test]
+    fn target_matches_fails_closed_when_target_unknown() {
+        let a = TargetWindow {
+            hwnd: 0x1234,
+            pid: 42,
+        };
+
+        // Cannot revalidate -> must not paste.
+        assert!(!target_matches(None, Some(a)));
+        assert!(!target_matches(Some(a), None));
+        assert!(!target_matches(None, None));
+    }
+
+    #[test]
+    fn cancel_invalidates_the_current_session() {
+        let mut registry = SessionRegistry::default();
+        let session = registry.begin();
+        assert!(registry.is_current(session));
+
+        registry.invalidate();
+
+        // The cancelled session can no longer insert, and no worker holds the new id.
+        assert!(!registry.is_current(session));
     }
 
     fn sine_wave(frequency_hz: f32, sample_rate: u32, duration_secs: f32) -> Vec<f32> {

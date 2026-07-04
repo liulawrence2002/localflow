@@ -1,5 +1,50 @@
 # LocalFlow Plan
 
+## Wispr-class upgrade (spec-driven)
+
+Phase 0 (evidence-based audit): completed. See `docs/REPO_AUDIT.md` and
+`docs/PARITY_MATRIX.md` for current-state, discrepancies, risk-ranked debt, target
+architecture, and the ASR/refinement benchmark plan. Baseline: 77 frontend tests,
+14 Rust tests, all lint/format/type checks green.
+
+Phase 1 (unify the production pipeline): in progress.
+
+- **Slice 1 — session identity & cancellation (done).** Native `SessionRegistry` in
+  `native_dictation.rs`; transcribe/refine/insert tail moved to a worker thread that
+  revalidates the session before every side effect. A superseded or cancelled session
+  never inserts (spec §4.4). +3 Rust tests.
+- **Slice 2 — target-window revalidation (done).** Capture the foreground window
+  (`TargetWindow { hwnd, pid }`) at record start; before pasting, skip insertion (fail
+  closed) unless the same window is still focused (spec §6.1/§6.2). Addresses the top
+  safety risk (wrong-window insertion). +2 Rust tests (19 total).
+- **Slice 3 — copy/last-transcript recovery (done).** The last finalized transcript is
+  kept in volatile memory and recoverable via a tray item and a Home > Recovery card
+  (`get_last_transcript`/`copy_last_transcript`), so a skipped/failed insertion is never
+  lost. Reveal-preview is opt-in; nothing is persisted. +3 frontend tests.
+- **Slice 4 — deterministic smart formatting (done).** New authoritative Rust `transcript`
+  module: spoken punctuation, explicit self-corrections, filler/stutter cleanup, sentence
+  capitalization, URL/email/decimal protection. Applied before the LLM (seeds the cleanup
+  prompt) and used as the safe fallback when the model is unavailable. +10 Rust tests.
+- **Slice 5 — personalization + model config on the native path (done).** The native path
+  now reads the user's settings: exact replacements + snippets are applied deterministically,
+  dictionary terms bias whisper via its initial prompt, and the Ollama model is configurable
+  (no longer hardcoded). +3 Rust tests.
+- **Slice 6 — Escape-to-cancel (done).** Escape is registered only while recording and
+  cancels the active dictation (routed to the existing `cancel` command); nothing inserts.
+- **Slice 7 — honest diagnostics + labeled test controls (done).** Diagnostics describe the
+  real native pipeline; the Home simulated-test panel is clearly labeled as a test, not
+  production dictation.
+- **Slice 8 — streaming ASR foundation (done, not yet on the default path).** New
+  `src-tauri/src/asr` submodules: a typed `AsrEvent` contract + `StreamingAsrProvider` trait
+  (spec §3.2/§4.3), an overlap-dedup `TranscriptStabilizer` and `StreamingSession` coordinator
+  that never duplicate committed words, a rolling-window planner, and a `word_error_rate`
+  metric for the benchmark harness. All unit-tested (+15 Rust tests, 47 total). This is the
+  Phase 3 foundation; wiring a persistent whisper provider onto it + the benchmark harness is
+  next (requires local models to verify).
+- Follow-ups (roadmap): persistent/streaming whisper provider + benchmark harness; native
+  SQLite persistence + retention jobs; UI Automation insertion; native context capture;
+  paste-last-into-focus hotkey; module split of `native_dictation.rs`.
+
 ## Milestone 1: Foundation
 
 Status: completed.
