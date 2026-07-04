@@ -45,6 +45,7 @@ Completed:
 - Added no-speech timeout after tap-to-start so the overlay does not stay open forever when no voice is detected.
 - Added native `gemma4:12b-it-qat` warmup on recording start and longer Ollama keep-alive to reduce cleanup wait on repeated dictations.
 - Refined the floating overlay into a wider polished waveform with live bars, generated wave paths, processing sheen, and success/error state colors.
+- Hid the `whisper-cli.exe` sidecar process window on Windows so hotkey dictation only surfaces the waveform overlay.
 
 Verified:
 
@@ -119,6 +120,7 @@ Completed:
 - Capture diagnostics compute duration, peak, RMS, and nonzero sample ratio before Whisper runs.
 - Temporary mono 16 kHz WAV writing for the current sidecar path, with cleanup after transcription.
 - Local `whisper-cli.exe` launch against `ggml-tiny.en-q5_1.bin` with JSON output parsing, no timestamps, and adaptive CPU thread count.
+- Hidden Windows sidecar launch prevents terminal flashes during transcription.
 - Near-silence captures and blank Whisper markers are rejected with clearer errors.
 - Clear missing-runtime and missing-model errors for the native path.
 - Live microphone level sampling for the floating waveform overlay.

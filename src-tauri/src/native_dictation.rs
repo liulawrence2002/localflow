@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -21,6 +21,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 pub struct NativeDictationRuntime {
     command_tx: Mutex<mpsc::Sender<RecorderCommand>>,
@@ -99,6 +102,8 @@ const NO_SPEECH_TIMEOUT_MS: u64 = 6_000;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
 const OVERLAY_WIDTH: i32 = 320;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 impl Default for NativeDictationRuntime {
     fn default() -> Self {
@@ -649,8 +654,9 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
         .parent()
         .ok_or_else(|| "Could not resolve whisper.cpp runtime directory.".to_string())?;
 
-    let output = Command::new(&cli)
+    let output = hidden_sidecar_command(&cli)
         .current_dir(whisper_dir)
+        .stdin(Stdio::null())
         .arg("-m")
         .arg(&model)
         .arg("-f")
@@ -675,6 +681,15 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
     }
 
     parse_whisper_json(&output_base.with_extension("json"))
+}
+
+fn hidden_sidecar_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
+
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command
 }
 
 fn whisper_thread_count() -> usize {

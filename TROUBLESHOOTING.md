@@ -46,6 +46,10 @@ Native dictation listens for end-of-speech after the shortcut starts recording. 
 
 Update to the latest build from this repository. Quick shortcut releases are treated as tap-to-start, so the waveform should stay open long enough for you to speak. If it still closes immediately, check whether another app is also intercepting `Ctrl+Alt+Space` or `Ctrl+Alt+Shift+Space`.
 
+## Terminal Window Flashes During Dictation
+
+Update to the latest build from this repository. LocalFlow launches the bundled `whisper-cli.exe` sidecar with the Windows no-console flag, so ordinary hotkey dictation should show only the small waveform overlay.
+
 ## Blank Or Silent Audio
 
 LocalFlow now rejects near-silent recordings before Whisper runs and reports the opened input device with peak/RMS diagnostics in the native log. The capture path also avoids multi-channel phase cancellation by selecting the loudest active input channel instead of averaging channels together.
