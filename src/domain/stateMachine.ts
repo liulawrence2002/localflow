@@ -151,6 +151,8 @@ export function transition(state: WorkflowState, event: WorkflowEvent): Workflow
         completedAt: event.timestamp,
         targetApplication: state.activeSession.target.applicationName,
         rawTranscript: state.activeSession.rawTranscript ?? "",
+        deterministicText: state.activeSession.deterministicText,
+        refinedText: state.activeSession.refinedText,
         finalText,
         cleanupLevel: "balanced",
       };

@@ -21,7 +21,13 @@ Current tests cover:
 - LLM JSON repair retry and deterministic fallback.
 - Timeout handling.
 - Cursor-aware insertion spacing.
+- Insertion target validation.
+- Clipboard fallback delayed-restoration planning.
+- Duplicate insertion rejection.
+- Command-mode selected-text requirement, OS-command rejection, preview decisions, and undo text.
+- Undo AI cleanup restore behavior.
 - Privacy and retention rules.
+- Localhost-only dictation network policy.
 - Settings mutations for dictionary entries, replacements, snippets, and style profiles.
 - Saved-settings normalization for older local fallback data.
 

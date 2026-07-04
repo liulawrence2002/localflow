@@ -73,6 +73,8 @@ pub struct SessionHistoryItem {
     pub completed_at: String,
     pub target_application: String,
     pub raw_transcript: String,
+    pub deterministic_text: Option<String>,
+    pub refined_text: Option<String>,
     pub final_text: String,
 }
 
@@ -261,7 +263,9 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
                         id: session.id,
                         completed_at: timestamp,
                         target_application: session.target.application_name,
-                        raw_transcript: session.raw_transcript.unwrap_or_default(),
+                        raw_transcript: session.raw_transcript.clone().unwrap_or_default(),
+                        deterministic_text: session.deterministic_text.clone(),
+                        refined_text: session.refined_text.clone(),
                         final_text,
                     });
                 }

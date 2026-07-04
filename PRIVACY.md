@@ -62,3 +62,5 @@ Not allowed during ordinary dictation:
 - Silent remote fallback.
 
 Automated network-denial checks are planned before real dictation providers are enabled.
+
+The shared domain layer now includes an allowlist check that permits localhost provider URLs and rejects remote URLs for ordinary dictation. Native providers still need to call this policy before production network-capable model integrations are enabled.

@@ -47,6 +47,8 @@ export interface SessionHistoryItem {
   completedAt: string;
   targetApplication: string;
   rawTranscript: string;
+  deterministicText?: string;
+  refinedText?: string;
   finalText: string;
   cleanupLevel: CleanupLevel;
 }

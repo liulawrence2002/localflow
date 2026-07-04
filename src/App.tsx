@@ -40,6 +40,7 @@ import {
   updateSnippet,
   updateStyleProfile,
 } from "./domain/settings";
+import { canUndoCleanup, restorePreCleanupText } from "./domain/undo";
 import type {
   AppStatus,
   AppCategory,
@@ -124,6 +125,34 @@ export function App() {
     const workflow = await cancelSession();
     setStatus((current) => ({ ...current, workflow }));
     setIsBusy(false);
+  }
+
+  function undoLastCleanup() {
+    const lastCompleted = status.workflow.lastCompleted;
+    if (!lastCompleted || !canUndoCleanup(lastCompleted)) {
+      return;
+    }
+
+    const restored = restorePreCleanupText(lastCompleted);
+    setStatus((current) => {
+      if (!current.workflow.lastCompleted) {
+        return current;
+      }
+
+      const restoredItem = {
+        ...current.workflow.lastCompleted,
+        finalText: restored,
+      };
+
+      return {
+        ...current,
+        workflow: {
+          ...current.workflow,
+          lastCompleted: restoredItem,
+        },
+        history: current.history.map((item) => (item.id === restoredItem.id ? restoredItem : item)),
+      };
+    });
   }
 
   function updateSettings(updater: (settings: LocalFlowSettings) => LocalFlowSettings) {
@@ -221,7 +250,14 @@ export function App() {
             <div className="panel">
               <div className="panel-heading">
                 <h2>Last Output</h2>
-                <FileClock size={18} aria-hidden="true" />
+                {canUndoCleanup(status.workflow.lastCompleted) ? (
+                  <button type="button" onClick={undoLastCleanup} title="Undo AI cleanup">
+                    <RotateCcw size={16} aria-hidden="true" />
+                    Undo
+                  </button>
+                ) : (
+                  <FileClock size={18} aria-hidden="true" />
+                )}
               </div>
               <output className="transcript-output">
                 {status.workflow.lastCompleted?.finalText ?? "No completed dictation yet."}

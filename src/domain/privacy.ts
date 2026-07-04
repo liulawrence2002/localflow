@@ -18,6 +18,8 @@ export function applyHistoryRetention(
         return {
           ...item,
           rawTranscript: "",
+          deterministicText: undefined,
+          refinedText: undefined,
         };
       }
 

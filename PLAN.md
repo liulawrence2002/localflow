@@ -23,16 +23,20 @@ Completed:
 - Added editable dictionary, replacement, snippet, and style-profile controls in the settings UI.
 - Added settings mutation helpers for personalization CRUD and browser fallback persistence.
 - Extended style profiles with greeting, sign-off, filler-removal, and sentence-fragment behavior fields.
+- Added command-mode planning with selected-text requirement, OS-command rejection, preview decisions, strict JSON parsing, and undo text.
+- Added insertion planning helpers for target validation, ordered accessibility/keyboard/clipboard fallback, delayed clipboard restoration, and duplicate insertion rejection.
+- Added “Undo AI cleanup” UI action for the mock workflow output.
+- Added localhost-only dictation network policy checks.
 
 Verified:
 
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 33 passing tests.
+- `npm run test` with 45 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
-- Live dev-server smoke check: page status 200, root element present, module script present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, and editable personalization UI markers.
+- Live dev-server smoke check: page status 200, root element present, module script present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, and command-mode module task marker.
 
 Blocked:
 
@@ -90,13 +94,15 @@ Completed:
 - One repair attempt for invalid cleanup responses.
 - Deterministic fallback that preserves raw transcript.
 - Timeout guard for provider calls.
+- Undo AI cleanup helper and UI action for restoring deterministic/raw text.
+- Insertion target validation, method ordering, clipboard restoration plan, and duplicate insertion guard.
 
 Not yet completed:
 
 - Add Windows target tracking.
 - Add UI Automation insertion where safe.
 - Add simulated keyboard and clipboard fallback.
-- Add Ollama provider and undo cleanup.
+- Add Ollama provider.
 
 ## Milestone 4: Personalization
 
@@ -118,8 +124,19 @@ Not yet completed:
 
 ## Milestone 5: Advanced Workflow
 
+Status: partial, command-mode planning verified.
+
+Completed:
+
+- Command mode requires selected text.
+- Command mode rejects operating-system command execution.
+- Command mode classifies common editing intents and chooses preview for large selected text.
+- Command mode preserves undo text.
+
+Not yet completed:
+
 - Add optional live insertion.
-- Add command mode with selected-text preview and undo.
+- Wire command mode to native selected-text capture, preview UI, local model execution, and insertion.
 - Add history, diagnostics export, privacy controls, and retention enforcement.
 
 ## Milestone 6: Packaging and Hardening

@@ -28,6 +28,10 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/refinementPipeline.ts`: strict local-LLM JSON contract runner with repair retry and deterministic fallback.
 - `src/domain/privacy.ts`: history retention and redaction helpers.
 - `src/domain/settings.ts`: typed personalization and style-profile mutations used by the UI and local fallback.
+- `src/domain/commandMode.ts`: selected-text command planning, OS-command rejection, preview decisions, and command response parsing.
+- `src/domain/insertionPlan.ts`: target validation, insertion method ordering, clipboard fallback restoration timing, and duplicate insertion guards.
+- `src/domain/undo.ts`: deterministic/raw restore helpers for undoing cleanup.
+- `src/domain/networkPolicy.ts`: local-only network allowlist for ordinary dictation provider URLs.
 - `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
 - `src/components`: focused UI components.
 - `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.

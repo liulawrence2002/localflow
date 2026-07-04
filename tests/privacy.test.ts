@@ -22,6 +22,8 @@ const history: SessionHistoryItem[] = [
     completedAt: "2026-07-04T00:00:00.000Z",
     targetApplication: "Notepad",
     rawTranscript: "raw recent",
+    deterministicText: "deterministic recent",
+    refinedText: "Raw recent.",
     finalText: "Raw recent.",
     cleanupLevel: "balanced",
   },
@@ -54,6 +56,8 @@ describe("privacy retention", () => {
     );
 
     expect(retained[0]?.rawTranscript).toBe("");
+    expect(retained[0]?.deterministicText).toBeUndefined();
+    expect(retained[0]?.refinedText).toBeUndefined();
     expect(retained[0]?.finalText).toBe("Raw recent.");
   });
 

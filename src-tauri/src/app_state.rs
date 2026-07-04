@@ -145,6 +145,8 @@ pub struct HistoryItem {
     pub completed_at: String,
     pub target_application: String,
     pub raw_transcript: String,
+    pub deterministic_text: Option<String>,
+    pub refined_text: Option<String>,
     pub final_text: String,
     pub cleanup_level: String,
 }
@@ -304,6 +306,8 @@ impl From<crate::workflow::SessionHistoryItem> for HistoryItem {
             completed_at: value.completed_at,
             target_application: value.target_application,
             raw_transcript: value.raw_transcript,
+            deterministic_text: value.deterministic_text,
+            refined_text: value.refined_text,
             final_text: value.final_text,
             cleanup_level: "balanced".to_string(),
         }
