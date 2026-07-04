@@ -21,6 +21,7 @@ Completed:
 - Added local cleanup JSON contract runner with one repair attempt and deterministic fallback that preserves the raw transcript.
 - Added privacy retention helpers for disabled history, transcript-only history, delete-after windows, context retention, and redacted diagnostics.
 - Added diagnostics export generation that excludes dictated content and local model paths by default.
+- Added shared context snapshot policy with protected-field blocking, context limits, cleanup mapping, and application category classification.
 - Added timeout guard for local providers.
 - Added editable dictionary, replacement, snippet, and style-profile controls in the settings UI.
 - Added settings mutation helpers for personalization CRUD and browser fallback persistence.
@@ -37,7 +38,7 @@ Verified:
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 64 passing tests.
+- `npm run test` with 70 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
@@ -126,12 +127,14 @@ Completed:
 - Editable exact snippets.
 - Editable style profiles with conciseness, formality, contractions, emoji, paragraph length, bullet preference, greeting/sign-off behavior, filler removal, and sentence-fragment controls.
 - Shared settings mutation helpers with tests.
+- Shared context snapshot policy for optional active-app, accessibility text, and selected-text collection.
+- Shared application-category classifier for messaging, email, documents, code editors, terminals, search fields, and generic text fields.
 
 Not yet completed:
 
 - Persist dictionary, replacements, snippets, and style profiles through native SQLite across desktop restarts.
 - Inject relevant vocabulary into ASR prompts.
-- Add context-aware formatting categories.
+- Wire native Windows context capture into the shared context policy.
 
 ## Milestone 5: Advanced Workflow
 

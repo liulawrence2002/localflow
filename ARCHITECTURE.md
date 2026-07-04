@@ -27,6 +27,7 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/asrWindows.ts`: rolling-window planning for overlapped ASR hypotheses.
 - `src/domain/whisperSidecar.ts`: shared `whisper.cpp` command planning, vocabulary prompt building, and JSON transcript parsing.
 - `src/domain/refinementPipeline.ts`: strict local-LLM JSON contract runner with repair retry and deterministic fallback.
+- `src/domain/context.ts`: context snapshot privacy policy, application categorization, and cleanup input mapping.
 - `src/domain/privacy.ts`: history retention and redaction helpers.
 - `src/domain/diagnostics.ts`: redacted diagnostics export assembly for support bundles.
 - `src/domain/settings.ts`: typed personalization and style-profile mutations used by the UI and local fallback.

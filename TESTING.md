@@ -18,6 +18,7 @@ Current tests cover:
 - Snippet expansion.
 - Spoken punctuation.
 - Explicit self-correction examples.
+- Context snapshot privacy gates, context length limits, protected-field blocking, application category classification, and cleanup input mapping.
 - LLM JSON validation.
 - LLM JSON repair retry and deterministic fallback.
 - Timeout handling.

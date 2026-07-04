@@ -46,6 +46,8 @@ Context awareness is optional and narrowly scoped. LocalFlow may read:
 
 LocalFlow must never collect context from password or protected fields.
 
+The shared context policy enforces separate gates for active-app metadata, accessibility text around the cursor, and selected text. It also trims before-cursor, after-cursor, and selected-text context to bounded lengths before those values can be sent to cleanup logic.
+
 ## Network Connections
 
 Allowed:
