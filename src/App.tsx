@@ -3,6 +3,7 @@ import {
   BookOpenText,
   Braces,
   ClipboardList,
+  Download,
   FileClock,
   Gauge,
   History,
@@ -24,6 +25,7 @@ import type { ReactNode } from "react";
 import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
 import { defaultStatus } from "./domain/defaults";
+import { serializeDiagnosticsExport } from "./domain/diagnostics";
 import { checkOllamaStatus, hasOllamaModel, type OllamaConnectionStatus } from "./domain/ollama";
 import {
   addDictionaryEntry,
@@ -101,6 +103,7 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [isCheckingOllama, setIsCheckingOllama] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus>();
+  const [diagnosticsExport, setDiagnosticsExport] = useState("");
 
   useEffect(() => {
     void getStatus().then(setStatus);
@@ -193,6 +196,10 @@ export function App() {
     }
 
     setIsCheckingOllama(false);
+  }
+
+  function prepareDiagnosticsExport() {
+    setDiagnosticsExport(serializeDiagnosticsExport(status));
   }
 
   return (
@@ -566,10 +573,25 @@ export function App() {
         )}
 
         {activeScreen === "diagnostics" && (
-          <RowsPanel
-            title="Diagnostics"
-            rows={status.diagnostics.map((metric) => [metric.label, metric.value, metric.status])}
-          />
+          <section className="panel-grid">
+            <RowsPanel
+              title="Diagnostics"
+              rows={status.diagnostics.map((metric) => [metric.label, metric.value, metric.status])}
+            />
+            <SettingsPanel title="Export">
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={prepareDiagnosticsExport}
+                  title="Prepare diagnostics export"
+                >
+                  <Download size={16} aria-hidden="true" />
+                  Prepare
+                </button>
+              </div>
+              <textarea aria-label="Diagnostics export" value={diagnosticsExport} readOnly />
+            </SettingsPanel>
+          </section>
         )}
 
         {activeScreen === "about" && (

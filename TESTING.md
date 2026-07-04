@@ -28,6 +28,7 @@ Current tests cover:
 - Command-mode selected-text requirement, OS-command rejection, preview decisions, and undo text.
 - Undo AI cleanup restore behavior.
 - Privacy and retention rules.
+- Redacted diagnostics export with transcript text and local model paths excluded by default.
 - Localhost-only dictation network policy.
 - Ollama local model discovery, remote URL blocking, unavailable/missing-model errors, non-streaming generate requests, and cleanup pipeline integration.
 - Settings mutations for dictionary entries, replacements, snippets, and style profiles.

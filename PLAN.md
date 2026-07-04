@@ -20,6 +20,7 @@ Completed:
 - Added shared `whisper.cpp` sidecar command planning, vocabulary prompt construction, and JSON transcript parsing.
 - Added local cleanup JSON contract runner with one repair attempt and deterministic fallback that preserves the raw transcript.
 - Added privacy retention helpers for disabled history, transcript-only history, delete-after windows, context retention, and redacted diagnostics.
+- Added diagnostics export generation that excludes dictated content and local model paths by default.
 - Added timeout guard for local providers.
 - Added editable dictionary, replacement, snippet, and style-profile controls in the settings UI.
 - Added settings mutation helpers for personalization CRUD and browser fallback persistence.
@@ -36,7 +37,7 @@ Verified:
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 61 passing tests.
+- `npm run test` with 64 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
@@ -147,7 +148,7 @@ Not yet completed:
 
 - Add optional live insertion.
 - Wire command mode to native selected-text capture, preview UI, local model execution, and insertion.
-- Add history, diagnostics export, privacy controls, and retention enforcement.
+- Add native diagnostics file export if needed, broader privacy controls, and retention enforcement.
 
 ## Milestone 6: Packaging and Hardening
 

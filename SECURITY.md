@@ -21,6 +21,7 @@
 - Duplicate insertion guard prevents repeating the same generated text for one session.
 - Tauri capabilities are limited to default window, opener, and global shortcut permissions.
 - Logs use redaction helpers for dictated content.
+- Diagnostics export excludes dictated content and local model paths by default.
 
 ## Planned Controls
 
