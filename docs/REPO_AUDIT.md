@@ -89,8 +89,8 @@ contains genuinely valuable, well-tested logic that is not on the shipping path:
 
 ## 3. Documentation vs. code discrepancies
 
-The docs are unusually honest about *pending* work (PLAN.md marks Milestones 2–5 "partial";
-handoff.md lists UIA insertion, target verification, native persistence as pending). The
+The docs are unusually honest about *pending* work (development/PLAN.md marks Milestones 2–5 "partial";
+development/handoff.md lists UIA insertion, target verification, native persistence as pending). The
 material discrepancies are about **which layer a described behavior actually lives in**:
 
 | # | Doc claim | Reality | Severity |
@@ -149,7 +149,7 @@ facts that bound latency today: cold-process whisper spawn + disk model load **p
 utterance** (`native_dictation.rs:751`); a 12B refinement model (`gemma4:12b-it-qat`) with
 a 60 s timeout and background warm-up + 30 min keep-alive (`:112,902`); fixed 700 ms
 post-paste sleep (`:995`). A benchmark harness (spec §8) does not yet exist. See
-`docs/PARITY_MATRIX.md` §"ASR benchmark plan".
+`PARITY_MATRIX.md` §"ASR benchmark plan".
 
 ---
 

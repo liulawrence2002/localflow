@@ -6,7 +6,7 @@ LocalFlow is split into a Tauri native layer and a React settings/history interf
 
 - `src-tauri/src/workflow`: explicit dictation state machine. **Note:** this reducer is
   currently exercised only by the mock-session Tauri commands, not by the live hotkey path.
-  See `docs/REPO_AUDIT.md` §2 for the three current session representations and the plan to
+  See `REPO_AUDIT.md` §2 for the three current session representations and the plan to
   unify them.
 - `src-tauri/src/audio`: microphone capture interface, mock capture, and shared audio helpers.
 - `src-tauri/src/asr`: ASR provider trait and initial mock provider; `WhisperCppProviderConfig` defines the sidecar boundary.

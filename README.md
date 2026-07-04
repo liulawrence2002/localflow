@@ -11,6 +11,10 @@ On the native path LocalFlow:
 - **Inserts safely** — each dictation has a session id; it never pastes into a different window than where you started, a superseded dictation never inserts, and **Escape cancels** while you are speaking.
 - **Never loses a transcript** — if insertion is skipped (focus changed) or the LLM is unavailable, the transcript is recoverable with "Copy last transcript" (tray or Home) and the deterministically formatted text is used as a fallback.
 
+## Documentation
+
+Full documentation lives in [docs/](docs/README.md), including [architecture](docs/ARCHITECTURE.md), [model setup](docs/MODEL_SETUP.md), [testing](docs/TESTING.md), [troubleshooting](docs/TROUBLESHOOTING.md), [privacy](docs/PRIVACY.md), and the [roadmap](docs/ROADMAP.md). Security policy is in [SECURITY.md](SECURITY.md).
+
 ## Prerequisites
 
 - Windows 11

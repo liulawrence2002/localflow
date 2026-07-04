@@ -1,7 +1,7 @@
 # Roadmap
 
-Status reflects the spec-driven upgrade. See `PLAN.md` for per-slice detail and
-`docs/PARITY_MATRIX.md` for capability-by-capability status.
+Status reflects the spec-driven upgrade. See `development/PLAN.md` for per-slice detail and
+`PARITY_MATRIX.md` for capability-by-capability status.
 
 ## Done (native production path)
 

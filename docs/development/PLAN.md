@@ -2,8 +2,8 @@
 
 ## Wispr-class upgrade (spec-driven)
 
-Phase 0 (evidence-based audit): completed. See `docs/REPO_AUDIT.md` and
-`docs/PARITY_MATRIX.md` for current-state, discrepancies, risk-ranked debt, target
+Phase 0 (evidence-based audit): completed. See `../REPO_AUDIT.md` and
+`../PARITY_MATRIX.md` for current-state, discrepancies, risk-ranked debt, target
 architecture, and the ASR/refinement benchmark plan. Baseline: 77 frontend tests,
 14 Rust tests, all lint/format/type checks green.
 

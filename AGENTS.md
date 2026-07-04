@@ -37,5 +37,5 @@ Rust, Cargo, WebView2, and MSVC Build Tools are required before native Tauri com
 - Code builds in the available environment, or blockers are documented with exact missing prerequisites.
 - Formatting, linting, type checks, and tests pass where the local toolchain permits.
 - New workflow logic has focused unit tests.
-- `PLAN.md` reflects completed work, known limitations, and next risks.
+- `docs/development/PLAN.md` reflects completed work, known limitations, and next risks.
 - User-facing claims match what was actually run.

@@ -17,8 +17,8 @@ what the app is, everything that was done, the current architecture, how it was 
 
 ## 1. Where it started (Phase 0 audit)
 
-Evidence-based audit produced before any code change (see `docs/REPO_AUDIT.md` and
-`docs/PARITY_MATRIX.md`). Key findings:
+Evidence-based audit produced before any code change (see `../REPO_AUDIT.md` and
+`../PARITY_MATRIX.md`). Key findings:
 
 - **Three disjoint "session" representations** that shared no code:
   1. `src-tauri/src/native_dictation.rs` (1330 LOC) — the only path that touched a real mic,
@@ -43,7 +43,7 @@ Each slice left the repo buildable and green. Rust test count in parentheses is 
 
 | #   | Slice                                               | Summary                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0   | **Audit**                                           | `docs/REPO_AUDIT.md` + `docs/PARITY_MATRIX.md`; baseline captured.                                                                                                                                                                                                                                                                                                                                         |
+| 0   | **Audit**                                           | `../REPO_AUDIT.md` + `../PARITY_MATRIX.md`; baseline captured.                                                                                                                                                                                                                                                                                                                                         |
 | 1   | **Session identity + cancellation** (17)            | `SessionRegistry` (session id + supersede/cancel). The transcribe→refine→insert tail moved to a worker thread that revalidates the session before every side effect, so a **superseded or cancelled session never inserts** (spec §4.4).                                                                                                                                                                   |
 | 2   | **Target-window revalidation** (19)                 | Capture the foreground window (`TargetWindow{hwnd,pid}`) at record start; before pasting, **skip insertion (fail-closed)** unless the same window is still focused (spec §6.1/§6.2). Added `Win32_Foundation` + `Win32_UI_WindowsAndMessaging` crate features.                                                                                                                                             |
 | 3   | **Copy/last-transcript recovery** (+3 TS)           | Last finalized transcript kept in volatile memory; recoverable via a **tray item** and a **Home → Recovery card** (`get_last_transcript`/`copy_last_transcript`). Reveal-preview is opt-in; nothing persisted. Pure helper `src/domain/recovery.ts`.                                                                                                                                                       |
@@ -120,7 +120,7 @@ Key source files:
 - `src-tauri/src/lib.rs` — command registration + tray (incl. "Copy last transcript").
 - `src/services/localflowClient.ts`, `src/domain/recovery.ts`, `src/App.tsx` — recovery UI +
   model settings.
-- `docs/REPO_AUDIT.md`, `docs/PARITY_MATRIX.md` — audit + capability status.
+- `../REPO_AUDIT.md`, `../PARITY_MATRIX.md` — audit + capability status.
 
 The TypeScript `src/domain/*` layer is now the **browser-dev fallback / preview** only; Rust
 is authoritative for native production behavior.
@@ -226,4 +226,4 @@ per-utterance feel should be confirmed by dictating.
 ---
 
 _Detailed per-slice reasoning, file-by-file evidence, and the capability matrix live in
-`docs/REPO_AUDIT.md`, `docs/PARITY_MATRIX.md`, and `PLAN.md`._
+`../REPO_AUDIT.md`, `../PARITY_MATRIX.md`, and `PLAN.md`._
