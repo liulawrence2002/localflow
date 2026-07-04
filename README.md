@@ -2,7 +2,7 @@
 
 LocalFlow is a local-first Windows desktop voice-dictation app built with Tauri 2, Rust, React, TypeScript, SQLite, `whisper.cpp`, and local LLM refinement through Ollama.
 
-The current repository contains Milestone 1 foundation work plus build-tested shared logic for early Milestone 2/3/4 concerns: session-id stale-result rejection, audio ring buffers, VAD/end-of-speech detection, rolling ASR windows, cleanup JSON repair/fallback, timeout guards, privacy retention helpers, and editable personalization/style settings.
+The current repository contains Milestone 1 foundation work plus build-tested shared logic for early Milestone 2/3/4 concerns: session-id stale-result rejection, audio ring buffers, VAD/end-of-speech detection, rolling ASR windows, cleanup JSON repair/fallback, a local-only Ollama provider, timeout guards, privacy retention helpers, and editable personalization/style settings.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ The current repository contains Milestone 1 foundation work plus build-tested sh
 - Rust stable with Cargo
 - Microsoft C++ build tools required by Tauri on Windows
 - WebView2 Runtime
-- Ollama for local refinement in later milestones
+- Ollama for shared local refinement and later production native workflow wiring
 - A `whisper.cpp` build and model file for local ASR in later milestones
 
 Run:
@@ -66,5 +66,6 @@ Check Ollama:
 ## Current Limitations
 
 - The current environment used to create this milestone did not have Rust/Cargo on PATH, so native Tauri compilation must be run after prerequisites are installed.
-- Real `cpal` audio capture, `whisper.cpp` sidecar execution, Windows UI Automation insertion, and Ollama calls are planned for later milestones.
-- The UI currently exercises the mock local pipeline, editable settings model, and local browser fallback persistence.
+- Real `cpal` audio capture, `whisper.cpp` sidecar execution, Windows UI Automation insertion, and production native Ollama workflow wiring are planned for later milestones.
+- The shared Ollama provider and Models screen discovery are implemented, but the production native dictation workflow still uses the mock local pipeline until real ASR and insertion are wired.
+- The UI currently exercises the mock local pipeline, editable settings model, Ollama discovery, and local browser fallback persistence.

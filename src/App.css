@@ -226,6 +226,16 @@ textarea {
   gap: 8px;
 }
 
+.button-row--status {
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.button-row--status .status-pill {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .inline-form {
   align-items: end;
   border-bottom: 1px solid #e4e8e2;

@@ -26,7 +26,9 @@ Run:
 .\scripts\Check-Ollama.ps1
 ```
 
-Milestone 1 uses a mock refinement provider. Later milestones will show a clear local-only error if Ollama is unavailable.
+The Models screen can check the local Ollama API and populate installed local models. Shared provider errors distinguish unavailable Ollama, no selected model, missing local model, and blocked remote URLs.
+
+The desktop-native dictation workflow still uses the mock path until real ASR and insertion are wired.
 
 ## Whisper Model Not Found
 

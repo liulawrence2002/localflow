@@ -27,16 +27,18 @@ Completed:
 - Added insertion planning helpers for target validation, ordered accessibility/keyboard/clipboard fallback, delayed clipboard restoration, and duplicate insertion rejection.
 - Added “Undo AI cleanup” UI action for the mock workflow output.
 - Added localhost-only dictation network policy checks.
+- Added a tested Ollama refinement provider that discovers local models, blocks remote URLs, sends non-streaming JSON generate requests, and reports unavailable or missing-model errors clearly.
+- Added Models screen Ollama discovery and local model selection for the browser/dev UI path.
 
 Verified:
 
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 45 passing tests.
+- `npm run test` with 53 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
-- Live dev-server smoke check: page status 200, root element present, module script present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, and command-mode module task marker.
+- Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
 
 Blocked:
 
@@ -96,13 +98,17 @@ Completed:
 - Timeout guard for provider calls.
 - Undo AI cleanup helper and UI action for restoring deterministic/raw text.
 - Insertion target validation, method ordering, clipboard restoration plan, and duplicate insertion guard.
+- Local Ollama model discovery through `/api/tags`.
+- Local Ollama cleanup requests through `/api/generate` with `stream: false` and strict JSON-format output.
+- Remote Ollama URLs blocked before fetch.
+- Clear shared errors for unavailable Ollama, no selected model, and missing local model.
 
 Not yet completed:
 
 - Add Windows target tracking.
 - Add UI Automation insertion where safe.
 - Add simulated keyboard and clipboard fallback.
-- Add Ollama provider.
+- Wire the Ollama provider into the production native dictation workflow after real ASR and insertion are available.
 
 ## Milestone 4: Personalization
 

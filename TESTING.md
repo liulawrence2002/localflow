@@ -28,6 +28,7 @@ Current tests cover:
 - Undo AI cleanup restore behavior.
 - Privacy and retention rules.
 - Localhost-only dictation network policy.
+- Ollama local model discovery, remote URL blocking, unavailable/missing-model errors, non-streaming generate requests, and cleanup pipeline integration.
 - Settings mutations for dictionary entries, replacements, snippets, and style profiles.
 - Saved-settings normalization for older local fallback data.
 

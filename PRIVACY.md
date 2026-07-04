@@ -61,6 +61,6 @@ Not allowed during ordinary dictation:
 - Analytics.
 - Silent remote fallback.
 
-Automated network-denial checks are planned before real dictation providers are enabled.
+Automated checks cover the shared network policy and the shared Ollama provider. Remote Ollama URLs are rejected before `fetch` is called.
 
-The shared domain layer now includes an allowlist check that permits localhost provider URLs and rejects remote URLs for ordinary dictation. Native providers still need to call this policy before production network-capable model integrations are enabled.
+The shared domain layer includes an allowlist check that permits localhost provider URLs and rejects remote URLs for ordinary dictation. The Ollama provider calls this policy for model discovery and cleanup requests. Native providers and future local server providers must keep using the same policy before any production network-capable path is enabled.

@@ -13,6 +13,8 @@
 
 - State machine prevents overlapping dictation sessions.
 - Mock pipeline never contacts a remote service.
+- Shared network policy blocks remote model-provider URLs during ordinary dictation.
+- Shared Ollama provider blocks remote URLs before fetch and validates JSON output before cleanup is accepted.
 - Command-mode planning rejects operating-system command execution phrases.
 - Insertion planning rejects protected fields and changed targets before insertion.
 - Duplicate insertion guard prevents repeating the same generated text for one session.
@@ -24,6 +26,5 @@
 - Native UI Automation insertion.
 - Native clipboard preservation and delayed restoration.
 - Model sidecar health checks and bounded IPC.
-- Strict JSON validation and repair retry for local LLM output.
 - Diagnostics export with transcript exclusion by default.
 - Retention enforcement jobs.

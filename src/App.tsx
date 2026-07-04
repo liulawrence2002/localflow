@@ -11,6 +11,7 @@ import {
   Mic,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   Shield,
@@ -23,6 +24,7 @@ import type { ReactNode } from "react";
 import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
 import { defaultStatus } from "./domain/defaults";
+import { checkOllamaStatus, hasOllamaModel, type OllamaConnectionStatus } from "./domain/ollama";
 import {
   addDictionaryEntry,
   addReplacementRule,
@@ -97,6 +99,8 @@ export function App() {
     "meet me Tuesday no Wednesday comma then review the pie torch model",
   );
   const [isBusy, setIsBusy] = useState(false);
+  const [isCheckingOllama, setIsCheckingOllama] = useState(false);
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus>();
 
   useEffect(() => {
     void getStatus().then(setStatus);
@@ -105,6 +109,8 @@ export function App() {
   const settings = status.settings;
   const activeStyle = settings.styles[0];
   const statusText = status.workflow.error ?? status.workflow.warning ?? status.workflow.phase;
+  const ollamaModels = ollamaStatus?.ok ? ollamaStatus.models : [];
+  const ollamaMessage = formatOllamaStatus(ollamaStatus);
 
   async function startMockDictation() {
     setIsBusy(true);
@@ -167,6 +173,26 @@ export function App() {
       );
       return { ...current, settings: nextSettings };
     });
+  }
+
+  async function checkLocalOllama() {
+    setIsCheckingOllama(true);
+    const nextStatus = await checkOllamaStatus();
+    setOllamaStatus(nextStatus);
+
+    if (
+      nextStatus.ok &&
+      nextStatus.models.length > 0 &&
+      !hasOllamaModel(nextStatus.models, settings.models.ollamaModel)
+    ) {
+      const firstModel = nextStatus.models[0].model;
+      updateSettings((current) => ({
+        ...current,
+        models: { ...current.models, ollamaModel: firstModel },
+      }));
+    }
+
+    setIsCheckingOllama(false);
   }
 
   return (
@@ -301,17 +327,53 @@ export function App() {
             <SettingsPanel title="Refinement">
               <label className="field">
                 <span>Ollama model</span>
-                <input
-                  value={settings.models.ollamaModel}
-                  onChange={(event) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      models: { ...current.models, ollamaModel: event.currentTarget.value },
-                    }))
-                  }
-                  placeholder="llama3.1:8b-instruct"
-                />
+                {ollamaModels.length > 0 ? (
+                  <select
+                    value={settings.models.ollamaModel}
+                    onChange={(event) =>
+                      updateSettings((current) => ({
+                        ...current,
+                        models: { ...current.models, ollamaModel: event.currentTarget.value },
+                      }))
+                    }
+                  >
+                    {ollamaModels.map((model) => (
+                      <option value={model.model} key={model.model}>
+                        {formatOllamaModelLabel(model.name, model.sizeBytes)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={settings.models.ollamaModel}
+                    onChange={(event) =>
+                      updateSettings((current) => ({
+                        ...current,
+                        models: { ...current.models, ollamaModel: event.currentTarget.value },
+                      }))
+                    }
+                    placeholder="llama3.1:8b-instruct"
+                  />
+                )}
               </label>
+              <div className="button-row button-row--status">
+                <button
+                  type="button"
+                  onClick={checkLocalOllama}
+                  disabled={isCheckingOllama}
+                  title="Check local Ollama"
+                >
+                  <RefreshCw size={16} aria-hidden="true" />
+                  Check
+                </button>
+                {ollamaMessage ? (
+                  <span
+                    className={ollamaStatus?.ok ? "status-pill" : "status-pill status-pill--error"}
+                  >
+                    {ollamaMessage}
+                  </span>
+                ) : null}
+              </div>
               <Toggle
                 label="Low-resource mode"
                 checked={settings.models.lowResourceMode}
@@ -1119,6 +1181,31 @@ function formatOptionLabel(value: string): string {
     .split("_")
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ");
+}
+
+function formatOllamaStatus(status: OllamaConnectionStatus | undefined): string {
+  if (!status) {
+    return "";
+  }
+
+  if (!status.ok) {
+    return status.message;
+  }
+
+  if (status.models.length === 0) {
+    return "No local models found.";
+  }
+
+  return `${status.models.length} local model${status.models.length === 1 ? "" : "s"}`;
+}
+
+function formatOllamaModelLabel(name: string, sizeBytes: number | undefined): string {
+  return sizeBytes ? `${name} (${formatBytes(sizeBytes)})` : name;
+}
+
+function formatBytes(sizeBytes: number): string {
+  const gib = sizeBytes / 1024 ** 3;
+  return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB`;
 }
 
 function Toggle({

@@ -7,7 +7,7 @@ LocalFlow is split into a Tauri native layer and a React settings/history interf
 - `src-tauri/src/workflow`: explicit dictation state machine.
 - `src-tauri/src/audio`: microphone capture interface and mock capture.
 - `src-tauri/src/asr`: ASR provider trait and initial mock provider; `WhisperCppProviderConfig` defines the sidecar boundary.
-- `src-tauri/src/refinement`: refinement provider trait, mock provider, no-op provider, and future Ollama/llama.cpp configs.
+- `src-tauri/src/refinement`: refinement provider trait, mock provider, no-op provider, and future native Ollama/llama.cpp configs.
 - `src-tauri/src/context`: local context snapshot interface.
 - `src-tauri/src/insertion`: text insertion interface and mock insertion.
 - `src-tauri/src/hotkeys`: global hotkey registration through Tauri's global-shortcut plugin.
@@ -32,6 +32,7 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/insertionPlan.ts`: target validation, insertion method ordering, clipboard fallback restoration timing, and duplicate insertion guards.
 - `src/domain/undo.ts`: deterministic/raw restore helpers for undoing cleanup.
 - `src/domain/networkPolicy.ts`: local-only network allowlist for ordinary dictation provider URLs.
+- `src/domain/ollama.ts`: shared local Ollama discovery and cleanup provider with localhost-only enforcement.
 - `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
 - `src/components`: focused UI components.
 - `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.
