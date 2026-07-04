@@ -17,6 +17,7 @@ Completed:
 - Added session-id validation for result-bearing workflow events to reject stale ASR/refinement/insertion results.
 - Added build-tested audio helpers for bounded PCM ring buffers, RMS calculation, mono downmixing, linear resampling, and VAD/end-of-speech detection.
 - Added rolling ASR window planning for overlap-based incremental transcription.
+- Added shared `whisper.cpp` sidecar command planning, vocabulary prompt construction, and JSON transcript parsing.
 - Added local cleanup JSON contract runner with one repair attempt and deterministic fallback that preserves the raw transcript.
 - Added privacy retention helpers for disabled history, transcript-only history, delete-after windows, context retention, and redacted diagnostics.
 - Added timeout guard for local providers.
@@ -35,7 +36,7 @@ Verified:
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 53 passing tests.
+- `npm run test` with 61 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
@@ -77,6 +78,9 @@ Completed:
 - Mono downmixing and sample-rate normalization helper.
 - RMS-based VAD/end-of-speech detector.
 - Rolling-window planner with overlap.
+- Shared `whisper.cpp` sidecar invocation planner using model, audio, thread, language, prompt, JSON-output, and CPU/GPU flags.
+- Shared `whisper.cpp` JSON transcript parser with segment timestamps.
+- Initial prompt builder for dictionary terms and pronunciation hints.
 - Timeout guard for local provider calls.
 
 Not yet completed:

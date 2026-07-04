@@ -38,4 +38,4 @@ Configure a local model path:
 .\scripts\Set-WhisperModelPath.ps1 -ModelPath "C:\models\ggml-base.en.bin"
 ```
 
-Milestone 2 will add validation in the app UI.
+The shared sidecar planner validates that a model path, audio path, output path, valid audio extension, positive timeout, and 1-64 thread count are configured. Native file-existence checks and sidecar process recovery still need to be wired.

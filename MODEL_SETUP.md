@@ -12,7 +12,9 @@ LocalFlow does not download large model files during normal builds or tests.
 .\scripts\Set-WhisperModelPath.ps1 -ModelPath "C:\models\ggml-base.en.bin"
 ```
 
-Milestone 2 will add sidecar health checks, model-not-found errors, CPU thread settings, and hardware acceleration detection.
+Milestone 2 still needs sidecar health checks, process-launch error recovery, native model-not-found checks, and hardware acceleration detection.
+
+The shared sidecar contract now plans `whisper-cli` invocations with a configured model path, local audio path, language, thread count, optional vocabulary prompt, JSON output, and optional CPU-only mode. The native process manager that launches the sidecar is still pending.
 
 ## Ollama
 

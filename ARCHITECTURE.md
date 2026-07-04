@@ -25,6 +25,7 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain`: shared state machine, deterministic cleanup, transcript stabilization, insertion spacing, and response validation.
 - `src/domain/audio.ts`: bounded PCM buffers, RMS/VAD, mono downmixing, and linear resampling helpers.
 - `src/domain/asrWindows.ts`: rolling-window planning for overlapped ASR hypotheses.
+- `src/domain/whisperSidecar.ts`: shared `whisper.cpp` command planning, vocabulary prompt building, and JSON transcript parsing.
 - `src/domain/refinementPipeline.ts`: strict local-LLM JSON contract runner with repair retry and deterministic fallback.
 - `src/domain/privacy.ts`: history retention and redaction helpers.
 - `src/domain/settings.ts`: typed personalization and style-profile mutations used by the UI and local fallback.

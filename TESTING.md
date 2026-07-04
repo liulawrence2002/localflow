@@ -10,6 +10,7 @@ Current tests cover:
 - Transcript stable-prefix commitment.
 - Duplicate-free final transcript commitment.
 - Rolling ASR overlap-window planning.
+- `whisper.cpp` sidecar command planning, config validation, vocabulary prompt building, and JSON transcript parsing.
 - Bounded audio ring buffers.
 - RMS-based VAD and end-of-speech detection.
 - Mono downmixing and sample-rate normalization helpers.

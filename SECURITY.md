@@ -15,6 +15,7 @@
 - Mock pipeline never contacts a remote service.
 - Shared network policy blocks remote model-provider URLs during ordinary dictation.
 - Shared Ollama provider blocks remote URLs before fetch and validates JSON output before cleanup is accepted.
+- Shared `whisper.cpp` sidecar planning keeps model/audio/output paths and CLI arguments explicit for the future native launcher.
 - Command-mode planning rejects operating-system command execution phrases.
 - Insertion planning rejects protected fields and changed targets before insertion.
 - Duplicate insertion guard prevents repeating the same generated text for one session.
