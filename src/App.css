@@ -540,23 +540,23 @@ textarea {
 
 .voice-overlay__surface {
   align-items: center;
-  background:
-    linear-gradient(180deg, rgba(255, 253, 247, 0.98), rgba(235, 239, 230, 0.96)), #f7f5ed;
-  border: 1px solid rgba(52, 58, 54, 0.16);
-  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 252, 0.99), rgba(242, 244, 238, 0.98));
+  border: 1px solid rgba(45, 51, 48, 0.14);
+  border-radius: 24px;
   box-shadow:
-    0 18px 44px rgba(20, 26, 24, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    0 18px 46px rgba(13, 19, 18, 0.22),
+    0 5px 16px rgba(13, 19, 18, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
   display: grid;
-  height: 72px;
+  height: 78px;
   overflow: hidden;
   place-items: center;
   position: relative;
-  width: 244px;
+  width: 300px;
 }
 
 .voice-overlay__surface::before {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.74), transparent);
   content: "";
   height: 100%;
   left: -60%;
@@ -567,78 +567,125 @@ textarea {
   width: 52%;
 }
 
+.voice-overlay__surface::after {
+  background: rgba(66, 124, 151, 0.68);
+  border-radius: 999px;
+  box-shadow: 0 0 14px rgba(66, 124, 151, 0.42);
+  content: "";
+  height: 6px;
+  opacity: 0.74;
+  position: absolute;
+  right: 20px;
+  top: 17px;
+  width: 6px;
+}
+
 .voice-overlay--processing .voice-overlay__surface::before,
 .voice-overlay--refining .voice-overlay__surface::before {
-  animation: overlay-sheen 1.25s ease-in-out infinite;
+  animation: overlay-sheen 1.15s ease-in-out infinite;
   opacity: 1;
 }
 
-.voice-overlay__line {
-  height: 44px;
-  overflow: visible;
-  position: absolute;
-  width: 210px;
+.voice-overlay--inserted .voice-overlay__surface::after {
+  background: rgba(42, 142, 95, 0.74);
+  box-shadow: 0 0 14px rgba(42, 142, 95, 0.4);
 }
 
-.voice-overlay__line path {
+.voice-overlay--error .voice-overlay__surface::after {
+  background: rgba(185, 69, 50, 0.78);
+  box-shadow: 0 0 14px rgba(185, 69, 50, 0.38);
+}
+
+.voice-overlay__glow {
+  background: radial-gradient(circle at center, rgba(74, 139, 166, 0.14), transparent 62%);
+  height: 88px;
+  opacity: calc(0.32 + var(--overlay-level) * 0.4);
+  position: absolute;
+  transform: scaleX(1.22);
+  width: 260px;
+}
+
+.voice-overlay__wave {
+  height: 56px;
+  overflow: visible;
+  position: absolute;
+  width: 244px;
+}
+
+.voice-overlay__wave path {
   fill: none;
-  filter: drop-shadow(0 2px 5px rgba(43, 49, 46, 0.18));
-  stroke: rgba(37, 42, 39, 0.58);
   stroke-linecap: round;
-  stroke-width: 3.5;
+  stroke-linejoin: round;
   transform-origin: center;
 }
 
-.voice-overlay--listening .voice-overlay__line path {
-  animation: voice-line 680ms ease-in-out infinite alternate;
+.voice-overlay__wave-shadow {
+  opacity: 0.22;
+  stroke: rgba(59, 65, 62, 0.44);
+  stroke-width: 6.2;
 }
 
-.voice-overlay--inserted .voice-overlay__line path {
-  stroke: rgba(49, 119, 83, 0.72);
+.voice-overlay__wave-live {
+  filter: drop-shadow(0 2px 5px rgba(27, 35, 32, 0.16));
+  stroke: rgba(73, 79, 75, 0.76);
+  stroke-width: 4.2;
 }
 
-.voice-overlay--error .voice-overlay__line path {
-  stroke: rgba(164, 65, 48, 0.74);
+.voice-overlay--listening .voice-overlay__wave-live {
+  animation: voice-line 620ms ease-in-out infinite alternate;
+}
+
+.voice-overlay--processing .voice-overlay__wave-live,
+.voice-overlay--refining .voice-overlay__wave-live {
+  stroke: rgba(49, 112, 145, 0.78);
+}
+
+.voice-overlay--inserted .voice-overlay__wave-live {
+  stroke: rgba(42, 142, 95, 0.82);
+}
+
+.voice-overlay--error .voice-overlay__wave-live {
+  stroke: rgba(185, 69, 50, 0.84);
 }
 
 .voice-overlay__bars {
   align-items: center;
   display: flex;
-  gap: 7px;
-  height: 38px;
+  gap: 6px;
+  height: 50px;
   justify-content: center;
-  opacity: 0.86;
-  position: relative;
+  opacity: 0.74;
+  position: absolute;
 }
 
 .voice-overlay__bars span {
-  animation: voice-bar 520ms ease-in-out infinite alternate;
+  animation: voice-bar 460ms ease-in-out infinite alternate;
   animation-delay: var(--bar-delay);
-  background: linear-gradient(180deg, rgba(37, 42, 39, 0.72), rgba(77, 86, 80, 0.38));
+  background: linear-gradient(180deg, rgba(57, 137, 173, 0.74), rgba(76, 151, 178, 0.28));
   border-radius: 999px;
   display: block;
-  height: 32px;
+  height: 46px;
   transform: scaleY(var(--bar-scale));
   transform-origin: center;
-  width: 3px;
+  width: 4px;
 }
 
 .voice-overlay--processing .voice-overlay__bars span,
 .voice-overlay--refining .voice-overlay__bars span {
-  animation-duration: 860ms;
-  background: linear-gradient(180deg, rgba(48, 111, 145, 0.68), rgba(67, 94, 112, 0.32));
+  animation-duration: 780ms;
+  background: linear-gradient(180deg, rgba(47, 119, 153, 0.78), rgba(64, 111, 136, 0.3));
 }
 
 .voice-overlay--inserted .voice-overlay__bars span {
   animation: none;
-  background: rgba(49, 119, 83, 0.58);
-  transform: scaleY(0.38);
+  background: rgba(42, 142, 95, 0.5);
+  transform: scaleY(0.34);
 }
 
 .voice-overlay--error .voice-overlay__bars span {
   animation: none;
-  background: rgba(164, 65, 48, 0.58);
-  transform: scaleY(0.42);
+  background: rgba(185, 69, 50, 0.52);
+  transform: scaleY(0.38);
 }
 
 @keyframes voice-bar {
@@ -653,11 +700,11 @@ textarea {
 
 @keyframes voice-line {
   from {
-    transform: translateY(1px) scaleY(0.86);
+    transform: translateY(1px) scaleY(0.92);
   }
 
   to {
-    transform: translateY(-1px) scaleY(1.08);
+    transform: translateY(-1px) scaleY(1.06);
   }
 }
 

@@ -49,7 +49,7 @@ Current verification on this workstation:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test` with 8 passing tests.
+- `cargo test` with 11 passing tests.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
 - `.\scripts\Check-Ollama.ps1`, confirming local model `gemma4:12b-it-qat`.
@@ -92,8 +92,8 @@ Manual acceptance tests must record exact app version, model, hardware, and obse
 3. Click in the target field.
 4. Hold `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
 5. Speak a short sentence.
-6. Release the hotkey.
-7. Confirm the small waveform overlay appears while listening/processing.
+6. Pause briefly after speaking, or release the hotkey.
+7. Confirm the small waveform overlay appears while listening, its bars react to speech, and it switches to processing/refining after the pause or release.
 8. Confirm cleaned text appears in the target field.
 
-This validates microphone capture, live overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
+This validates microphone capture, end-of-speech auto-stop, live overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.

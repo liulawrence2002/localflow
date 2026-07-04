@@ -88,6 +88,15 @@ const OLLAMA_MODEL: &str = "gemma4:12b-it-qat";
 const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const SILENCE_PEAK_THRESHOLD: f32 = 0.003;
 const SILENCE_RMS_THRESHOLD: f32 = 0.0005;
+const VAD_POLL_MS: u64 = 55;
+const VAD_START_RMS_THRESHOLD: f32 = 0.008;
+const VAD_CONTINUE_RMS_THRESHOLD: f32 = 0.0045;
+const VAD_CONFIRM_SPEECH_MS: u64 = 120;
+const END_OF_SPEECH_TIMEOUT_MS: u64 = 760;
+const MIN_AUTO_STOP_RECORDING_MS: u64 = 420;
+const MAX_RECORDING_SECS: u64 = 120;
+const OLLAMA_KEEP_ALIVE: &str = "30m";
+const OVERLAY_WIDTH: i32 = 320;
 
 impl Default for NativeDictationRuntime {
     fn default() -> Self {
@@ -123,7 +132,7 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
     for command in command_rx {
         let result = match command.state.as_str() {
             "pressed" => start_recording(&command.app, &mut session),
-            "released" => {
+            "released" | "auto_stop" => {
                 if let Some(session) = session.take() {
                     finish_recording(command.app.clone(), session)
                 } else {
@@ -165,7 +174,13 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     stream
         .play()
         .map_err(|error| format!("Could not start microphone capture: {error}"))?;
-    let level_stop_tx = start_level_meter(app.clone(), samples.clone());
+    let command_tx = app
+        .state::<NativeDictationRuntime>()
+        .command_tx
+        .lock()
+        .map_err(|_| "Native dictation command lock was poisoned.".to_string())?
+        .clone();
+    let level_stop_tx = start_level_meter(app.clone(), samples.clone(), command_tx);
 
     *session = Some(RecordingSession {
         stream,
@@ -179,6 +194,7 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     });
 
     emit_status(app, "listening", "Listening");
+    warm_pinned_ollama_in_background();
     tracing::info!(
         device = %device_name,
         sample_rate,
@@ -279,13 +295,18 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
     Ok(())
 }
 
-fn start_level_meter(app: AppHandle, samples: Arc<Mutex<Vec<f32>>>) -> mpsc::Sender<()> {
+fn start_level_meter(
+    app: AppHandle,
+    samples: Arc<Mutex<Vec<f32>>>,
+    command_tx: mpsc::Sender<RecorderCommand>,
+) -> mpsc::Sender<()> {
     let (stop_tx, stop_rx) = mpsc::channel();
     thread::spawn(move || {
         let mut cursor = 0usize;
+        let mut detector = EndOfSpeechDetector::new(Instant::now());
 
         loop {
-            thread::sleep(Duration::from_millis(70));
+            thread::sleep(Duration::from_millis(VAD_POLL_MS));
             if stop_rx.try_recv().is_ok() {
                 break;
             }
@@ -304,15 +325,85 @@ fn start_level_meter(app: AppHandle, samples: Arc<Mutex<Vec<f32>>>) -> mpsc::Sen
                 continue;
             }
 
-            let rms = (chunk.iter().map(|sample| sample * sample).sum::<f32>()
-                / chunk.len() as f32)
-                .sqrt();
-            let level = (rms * 9.0).clamp(0.04, 1.0);
+            let rms = rms_level(&chunk);
+            let level = display_level_from_rms(rms);
             emit_level(&app, level);
+
+            if detector.observe(Instant::now(), rms) {
+                let _ = command_tx.send(RecorderCommand {
+                    app: app.clone(),
+                    state: "auto_stop".to_string(),
+                });
+                break;
+            }
         }
     });
 
     stop_tx
+}
+
+#[derive(Debug)]
+struct EndOfSpeechDetector {
+    started_at: Instant,
+    speech_started_at: Option<Instant>,
+    last_voice_at: Option<Instant>,
+    speech_seen: bool,
+}
+
+impl EndOfSpeechDetector {
+    fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            speech_started_at: None,
+            last_voice_at: None,
+            speech_seen: false,
+        }
+    }
+
+    fn observe(&mut self, now: Instant, rms: f32) -> bool {
+        if now.duration_since(self.started_at) >= Duration::from_secs(MAX_RECORDING_SECS) {
+            return true;
+        }
+
+        let voice_threshold = if self.speech_seen {
+            VAD_CONTINUE_RMS_THRESHOLD
+        } else {
+            VAD_START_RMS_THRESHOLD
+        };
+
+        if rms >= voice_threshold {
+            let speech_started_at = self.speech_started_at.get_or_insert(now);
+            self.last_voice_at = Some(now);
+
+            if now.duration_since(*speech_started_at)
+                >= Duration::from_millis(VAD_CONFIRM_SPEECH_MS)
+                || rms >= VAD_START_RMS_THRESHOLD * 1.6
+            {
+                self.speech_seen = true;
+            }
+        } else if !self.speech_seen {
+            self.speech_started_at = None;
+        }
+
+        self.speech_seen
+            && now.duration_since(self.started_at)
+                >= Duration::from_millis(MIN_AUTO_STOP_RECORDING_MS)
+            && self.last_voice_at.is_some_and(|last_voice_at| {
+                now.duration_since(last_voice_at) >= Duration::from_millis(END_OF_SPEECH_TIMEOUT_MS)
+            })
+    }
+}
+
+fn rms_level(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+
+    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+fn display_level_from_rms(rms: f32) -> f32 {
+    (rms * 15.0).clamp(0.05, 1.0)
 }
 
 fn build_stream(
@@ -509,6 +600,7 @@ fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
 fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<String, String> {
     let cli = whisper_cli_path(app)?;
     let model = whisper_model_path(app)?;
+    let thread_count = whisper_thread_count().to_string();
     let whisper_dir = cli
         .parent()
         .ok_or_else(|| "Could not resolve whisper.cpp runtime directory.".to_string())?;
@@ -523,10 +615,11 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
         .arg("-of")
         .arg(output_base)
         .arg("-np")
+        .arg("-nt")
         .arg("-l")
         .arg("en")
         .arg("-t")
-        .arg("4")
+        .arg(thread_count)
         .output()
         .map_err(|error| format!("Could not start whisper.cpp: {error}"))?;
 
@@ -538,6 +631,13 @@ fn run_whisper(app: &AppHandle, wav_path: &Path, output_base: &Path) -> Result<S
     }
 
     parse_whisper_json(&output_base.with_extension("json"))
+}
+
+fn whisper_thread_count() -> usize {
+    thread::available_parallelism()
+        .map(|available| available.get().saturating_sub(1).max(2))
+        .unwrap_or(4)
+        .clamp(2, 8)
 }
 
 fn parse_whisper_json(path: &Path) -> Result<String, String> {
@@ -600,8 +700,16 @@ fn refine_with_pinned_ollama(raw_transcript: &str) -> Result<String, String> {
 }
 
 fn request_ollama_cleanup(prompt: &str) -> Result<String, String> {
+    request_ollama_generate(prompt, Duration::from_secs(60), 0.1)
+}
+
+fn request_ollama_generate(
+    prompt: &str,
+    timeout: Duration,
+    temperature: f32,
+) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(timeout)
         .build()
         .map_err(|error| format!("Could not create local Ollama client: {error}"))?;
 
@@ -612,8 +720,8 @@ fn request_ollama_cleanup(prompt: &str) -> Result<String, String> {
             prompt,
             stream: false,
             format: "json",
-            keep_alive: "10m",
-            options: OllamaOptions { temperature: 0.1 },
+            keep_alive: OLLAMA_KEEP_ALIVE,
+            options: OllamaOptions { temperature },
         })
         .send()
         .map_err(|error| {
@@ -636,6 +744,26 @@ fn request_ollama_cleanup(prompt: &str) -> Result<String, String> {
         .map_err(|error| format!("Ollama returned invalid JSON: {error}"))?;
 
     Ok(payload.response)
+}
+
+fn warm_pinned_ollama_in_background() {
+    thread::spawn(|| {
+        let prompt = serde_json::json!({
+            "task": "localflow.warm_dictation_cleanup",
+            "instruction": "Return only JSON.",
+            "requiredShape": {
+                "text": "ready",
+                "confidence": 1.0,
+                "resolved_corrections": [],
+                "warnings": []
+            }
+        })
+        .to_string();
+
+        if let Err(error) = request_ollama_generate(&prompt, Duration::from_secs(12), 0.0) {
+            tracing::debug!(error = %error, "gemma4:12b-it-qat warmup skipped");
+        }
+    });
 }
 
 fn parse_cleanup_text(payload: &str) -> Result<String, String> {
@@ -902,8 +1030,8 @@ fn position_overlay(window: &WebviewWindow) -> tauri::Result<()> {
     if let Some(monitor) = monitor {
         let size = monitor.size();
         let position = monitor.position();
-        let x = position.x + ((size.width as i32 - 280) / 2).max(16);
-        let y = position.y + (size.height as i32 - 172).max(16);
+        let x = position.x + ((size.width as i32 - OVERLAY_WIDTH) / 2).max(16);
+        let y = position.y + (size.height as i32 - 178).max(16);
         window.set_position(PhysicalPosition::new(x, y))?;
     }
 
@@ -939,6 +1067,46 @@ mod tests {
 
         assert!(is_near_silent(analyze_audio(&silent, 16_000)));
         assert!(!is_near_silent(analyze_audio(&speech, 16_000)));
+    }
+
+    #[test]
+    fn end_of_speech_detector_waits_for_actual_voice() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(started_at + Duration::from_millis(900), 0.0));
+        assert!(!detector.observe(started_at + Duration::from_millis(1_800), 0.001));
+    }
+
+    #[test]
+    fn end_of_speech_detector_stops_after_post_speech_silence() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(started_at + Duration::from_millis(80), 0.02));
+        assert!(!detector.observe(started_at + Duration::from_millis(220), 0.012));
+        assert!(!detector.observe(
+            started_at + Duration::from_millis(MIN_AUTO_STOP_RECORDING_MS + 120),
+            0.0,
+        ));
+        assert!(detector.observe(
+            started_at
+                + Duration::from_millis(
+                    MIN_AUTO_STOP_RECORDING_MS + END_OF_SPEECH_TIMEOUT_MS + 120,
+                ),
+            0.0,
+        ));
+    }
+
+    #[test]
+    fn end_of_speech_detector_caps_long_recordings() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(detector.observe(
+            started_at + Duration::from_secs(MAX_RECORDING_SECS + 1),
+            0.0
+        ));
     }
 
     #[test]

@@ -40,6 +40,9 @@ Completed:
 - Added native local Ollama cleanup pinned to model `gemma4:12b-it-qat`, with strict JSON parsing, one repair request, and raw-transcript fallback if cleanup fails.
 - Added a hidden-on-start settings window and a compact always-on-top waveform overlay for active dictation.
 - Added native microphone level events so the overlay reacts to speech volume while listening.
+- Added native end-of-speech auto-stop so dictation starts processing after a short post-speech pause, while still allowing hotkey release to finish immediately.
+- Added native `gemma4:12b-it-qat` warmup on recording start and longer Ollama keep-alive to reduce cleanup wait on repeated dictations.
+- Refined the floating overlay into a wider polished waveform with live bars, generated wave paths, processing sheen, and success/error state colors.
 
 Verified:
 
@@ -49,7 +52,7 @@ Verified:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cd src-tauri; cargo fmt --check`
-- `cd src-tauri; cargo test` with 8 passing tests.
+- `cd src-tauri; cargo test` with 11 passing tests.
 - `cd src-tauri; cargo check`
 - `npm run tauri:build`, producing:
   - `src-tauri\target\release\localflow.exe`
@@ -107,12 +110,15 @@ Completed:
 - Shared performance recorder for hotkey-to-recording, ASR partial, release-to-final, LLM, insertion, model-load, and peak-memory metrics.
 - Native `cpal` default-microphone capture on a dedicated recorder thread.
 - Multi-channel input downmixing selects the loudest active channel to avoid phase-cancellation silence.
+- Native end-of-speech detection stops recording after speech is heard and a short silence follows.
+- Native recording has a maximum-duration cap for the current hotkey path.
 - Capture diagnostics compute duration, peak, RMS, and nonzero sample ratio before Whisper runs.
 - Temporary mono 16 kHz WAV writing for the current sidecar path, with cleanup after transcription.
-- Local `whisper-cli.exe` launch against `ggml-tiny.en-q5_1.bin` with JSON output parsing.
+- Local `whisper-cli.exe` launch against `ggml-tiny.en-q5_1.bin` with JSON output parsing, no timestamps, and adaptive CPU thread count.
 - Near-silence captures and blank Whisper markers are rejected with clearer errors.
 - Clear missing-runtime and missing-model errors for the native path.
 - Live microphone level sampling for the floating waveform overlay.
+- Polished floating overlay shows live speech bars and distinct processing, inserted, and error states without opening the full settings UI.
 
 Not yet completed:
 
@@ -136,6 +142,7 @@ Completed:
 - Local Ollama model discovery through `/api/tags`.
 - Local Ollama cleanup requests through `/api/generate` with `stream: false` and strict JSON-format output.
 - Native Ollama cleanup requests pinned to `gemma4:12b-it-qat`.
+- Native recording start warms pinned `gemma4:12b-it-qat` in the background and keeps it loaded longer for repeated dictation.
 - Remote Ollama URLs blocked before fetch.
 - Clear shared errors for unavailable Ollama, no selected model, and missing local model.
 - Native clipboard paste fallback using Win32 `SendInput` for `Ctrl+V`.
