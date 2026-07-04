@@ -2,13 +2,27 @@ import { invoke } from "@tauri-apps/api/core";
 import { defaultStatus } from "../domain/defaults";
 import { runMockDictation } from "../domain/mockPipeline";
 import { applyHistoryRetention } from "../domain/privacy";
+import { normalizeSettings } from "../domain/settings";
 import { transition } from "../domain/stateMachine";
-import type { AppStatus, WorkflowState } from "../domain/types";
+import type { AppStatus, LocalFlowSettings, WorkflowState } from "../domain/types";
 
-let fallbackStatus: AppStatus = structuredClone(defaultStatus);
+const settingsStorageKey = "localflow.settings.v1";
+
+let fallbackStatus: AppStatus = createFallbackStatus();
 
 export async function getStatus(): Promise<AppStatus> {
-  return invokeOrFallback("get_status", {}, () => fallbackStatus);
+  return invokeOrFallback("get_status", {}, () => {
+    fallbackStatus = createFallbackStatus(fallbackStatus);
+    return fallbackStatus;
+  });
+}
+
+export async function saveSettings(settings: LocalFlowSettings): Promise<AppStatus> {
+  return invokeOrFallback("save_settings", { settings }, () => {
+    fallbackStatus = { ...fallbackStatus, settings };
+    writeFallbackSettings(settings);
+    return fallbackStatus;
+  });
 }
 
 export async function beginMockSession(): Promise<WorkflowState> {
@@ -68,5 +82,41 @@ async function invokeOrFallback<T>(
     return await invoke<T>(command, args);
   } catch {
     return fallback();
+  }
+}
+
+function createFallbackStatus(current?: AppStatus): AppStatus {
+  const settings = normalizeSettings(
+    readFallbackSettings() ?? current?.settings ?? defaultStatus.settings,
+  );
+
+  return {
+    ...(current ?? structuredClone(defaultStatus)),
+    settings,
+  };
+}
+
+function readFallbackSettings(): LocalFlowSettings | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(settingsStorageKey);
+    return stored ? (JSON.parse(stored) as LocalFlowSettings) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeFallbackSettings(settings: LocalFlowSettings): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(settingsStorageKey, JSON.stringify(settings));
+  } catch {
+    // Settings remain in memory if browser storage is unavailable.
   }
 }

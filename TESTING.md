@@ -22,6 +22,8 @@ Current tests cover:
 - Timeout handling.
 - Cursor-aware insertion spacing.
 - Privacy and retention rules.
+- Settings mutations for dictionary entries, replacements, snippets, and style profiles.
+- Saved-settings normalization for older local fallback data.
 
 Run:
 

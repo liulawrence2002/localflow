@@ -20,16 +20,19 @@ Completed:
 - Added local cleanup JSON contract runner with one repair attempt and deterministic fallback that preserves the raw transcript.
 - Added privacy retention helpers for disabled history, transcript-only history, delete-after windows, context retention, and redacted diagnostics.
 - Added timeout guard for local providers.
+- Added editable dictionary, replacement, snippet, and style-profile controls in the settings UI.
+- Added settings mutation helpers for personalization CRUD and browser fallback persistence.
+- Extended style profiles with greeting, sign-off, filler-removal, and sentence-fragment behavior fields.
 
 Verified:
 
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 28 passing tests.
+- `npm run test` with 33 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
-- Live dev-server smoke check: page status 200, root element present, module script present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, and mock transcript UI markers.
+- Live dev-server smoke check: page status 200, root element present, module script present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, and editable personalization UI markers.
 
 Blocked:
 
@@ -97,7 +100,19 @@ Not yet completed:
 
 ## Milestone 4: Personalization
 
-- Persist dictionary, replacements, snippets, and style profiles.
+Status: partial, editable UI and shared mutations verified.
+
+Completed:
+
+- Editable dictionary entries.
+- Editable replacements.
+- Editable exact snippets.
+- Editable style profiles with conciseness, formality, contractions, emoji, paragraph length, bullet preference, greeting/sign-off behavior, filler removal, and sentence-fragment controls.
+- Shared settings mutation helpers with tests.
+
+Not yet completed:
+
+- Persist dictionary, replacements, snippets, and style profiles through native SQLite across desktop restarts.
 - Inject relevant vocabulary into ASR prompts.
 - Add context-aware formatting categories.
 

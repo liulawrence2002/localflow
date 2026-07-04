@@ -10,7 +10,10 @@ mod refinement;
 mod storage;
 mod workflow;
 
-use app_state::{begin_mock_session, cancel_session, finish_mock_session, get_status, LocalFlowRuntime};
+use app_state::{
+    begin_mock_session, cancel_session, finish_mock_session, get_status, save_settings,
+    LocalFlowRuntime,
+};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -39,6 +42,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
+            save_settings,
             begin_mock_session,
             finish_mock_session,
             cancel_session

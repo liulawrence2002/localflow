@@ -84,6 +84,10 @@ export const defaultSettings: LocalFlowSettings = {
       emoji: "preserve",
       paragraphLength: "short",
       bulletPreference: "preserve",
+      greetingBehavior: "preserve",
+      signOffBehavior: "preserve",
+      aggressiveFillerRemoval: false,
+      allowSentenceFragments: true,
     },
     {
       id: "style-code",
@@ -96,6 +100,10 @@ export const defaultSettings: LocalFlowSettings = {
       emoji: "never",
       paragraphLength: "medium",
       bulletPreference: "preserve",
+      greetingBehavior: "avoid",
+      signOffBehavior: "avoid",
+      aggressiveFillerRemoval: false,
+      allowSentenceFragments: true,
     },
   ],
 };

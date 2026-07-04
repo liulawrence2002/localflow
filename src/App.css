@@ -168,6 +168,10 @@ button:disabled {
   padding: 16px;
 }
 
+.panel--wide {
+  grid-column: 1 / -1;
+}
+
 .panel-heading {
   align-items: center;
   display: flex;
@@ -220,6 +224,89 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.inline-form {
+  align-items: end;
+  border-bottom: 1px solid #e4e8e2;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+}
+
+.inline-form--dictionary {
+  grid-template-columns: minmax(150px, 1.1fr) minmax(130px, 0.9fr) 128px 74px 82px;
+}
+
+.inline-form--replacement {
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) 64px 82px;
+}
+
+.inline-form--snippet {
+  grid-template-columns: minmax(140px, 0.8fr) minmax(220px, 1.4fr) 64px 94px 82px;
+}
+
+.setting-list {
+  display: grid;
+  gap: 8px;
+}
+
+.setting-row {
+  align-items: center;
+  background: #f8faf7;
+  border: 1px solid #dfe4de;
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.setting-row--dictionary {
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) 126px 74px 38px;
+}
+
+.setting-row--replacement {
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) 64px 38px;
+}
+
+.setting-row--snippet {
+  grid-template-columns: minmax(130px, 0.8fr) minmax(220px, 1.4fr) 64px 94px 38px;
+}
+
+.setting-row textarea,
+.inline-form textarea {
+  min-height: 76px;
+}
+
+.icon-button {
+  min-height: 36px;
+  padding: 0;
+  width: 38px;
+}
+
+.toggle-grid,
+.two-column-fields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.toggle-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.range-field {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+}
+
+.range-field output {
+  color: #4b5751;
+  text-align: right;
 }
 
 .status-pill {
@@ -386,5 +473,22 @@ textarea {
 
   .panel-grid--home {
     grid-template-columns: 1fr;
+  }
+
+  .inline-form,
+  .inline-form--dictionary,
+  .inline-form--replacement,
+  .inline-form--snippet,
+  .setting-row,
+  .setting-row--dictionary,
+  .setting-row--replacement,
+  .setting-row--snippet,
+  .toggle-grid,
+  .two-column-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .icon-button {
+    width: 100%;
   }
 }

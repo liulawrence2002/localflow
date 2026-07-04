@@ -10,23 +10,52 @@ import {
   Keyboard,
   Mic,
   Play,
+  Plus,
   RotateCcw,
   Save,
   Shield,
   SlidersHorizontal,
   Square,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
 import { defaultStatus } from "./domain/defaults";
-import type { AppStatus, CleanupLevel, LocalFlowSettings } from "./domain/types";
+import {
+  addDictionaryEntry,
+  addReplacementRule,
+  addSnippet,
+  addStyleProfile,
+  appCategories,
+  cleanupLevels,
+  createCustomStyleDraft,
+  removeDictionaryEntry,
+  removeReplacementRule,
+  removeSnippet,
+  removeStyleProfile,
+  updateDictionaryEntry,
+  updateReplacementRule,
+  updateSnippet,
+  updateStyleProfile,
+} from "./domain/settings";
+import type {
+  AppStatus,
+  AppCategory,
+  CleanupLevel,
+  DictionaryEntry,
+  LocalFlowSettings,
+  ReplacementRule,
+  Snippet,
+  StyleProfile,
+} from "./domain/types";
 import {
   beginMockSession,
   cancelSession,
   finishMockSession,
   getStatus,
+  saveSettings,
 } from "./services/localflowClient";
 
 type ScreenId =
@@ -58,7 +87,7 @@ const screens = [
   { id: "about", label: "About", icon: Info },
 ] satisfies Array<{ id: ScreenId; label: string; icon: typeof Activity }>;
 
-const cleanupLevels: CleanupLevel[] = ["verbatim", "light", "balanced", "strong"];
+type UpdateSettings = (updater: (settings: LocalFlowSettings) => LocalFlowSettings) => void;
 
 export function App() {
   const [activeScreen, setActiveScreen] = useState<ScreenId>("home");
@@ -98,7 +127,17 @@ export function App() {
   }
 
   function updateSettings(updater: (settings: LocalFlowSettings) => LocalFlowSettings) {
-    setStatus((current) => ({ ...current, settings: updater(current.settings) }));
+    setStatus((current) => {
+      const nextSettings = updater(current.settings);
+      void saveSettings(nextSettings).then((nextStatus) =>
+        setStatus((latest) => ({
+          ...latest,
+          settings: nextStatus.settings,
+          diagnostics: nextStatus.diagnostics,
+        })),
+      );
+      return { ...current, settings: nextSettings };
+    });
   }
 
   return (
@@ -344,75 +383,19 @@ export function App() {
         )}
 
         {activeScreen === "dictionary" && (
-          <RowsPanel
-            title="Dictionary"
-            rows={settings.dictionary.map((entry) => [
-              entry.phrase,
-              entry.category,
-              entry.pronunciationHint ?? "",
-            ])}
-          />
+          <DictionaryEditor settings={settings} updateSettings={updateSettings} />
         )}
 
         {activeScreen === "replacements" && (
-          <RowsPanel
-            title="Replacements"
-            rows={settings.replacements.map((rule) => [
-              rule.incorrect,
-              rule.correct,
-              rule.enabled ? "On" : "Off",
-            ])}
-          />
+          <ReplacementEditor settings={settings} updateSettings={updateSettings} />
         )}
 
         {activeScreen === "snippets" && (
-          <RowsPanel
-            title="Snippets"
-            rows={settings.snippets.map((snippet) => [
-              snippet.trigger,
-              snippet.expansion,
-              snippet.allowCleanup ? "Cleanup" : "Exact",
-            ])}
-          />
+          <SnippetEditor settings={settings} updateSettings={updateSettings} />
         )}
 
         {activeScreen === "styles" && (
-          <section className="panel-grid">
-            {settings.styles.map((style) => (
-              <SettingsPanel key={style.id} title={style.name}>
-                <label className="field">
-                  <span>Cleanup</span>
-                  <select
-                    value={style.cleanupLevel}
-                    onChange={(event) =>
-                      updateSettings((current) => ({
-                        ...current,
-                        styles: current.styles.map((item) =>
-                          item.id === style.id
-                            ? { ...item, cleanupLevel: event.currentTarget.value as CleanupLevel }
-                            : item,
-                        ),
-                      }))
-                    }
-                  >
-                    {cleanupLevels.map((level) => (
-                      <option key={level} value={level}>
-                        {level}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Conciseness</span>
-                  <input type="range" min="1" max="10" value={style.conciseness} readOnly />
-                </label>
-                <label className="field">
-                  <span>Formality</span>
-                  <input type="range" min="1" max="10" value={style.formality} readOnly />
-                </label>
-              </SettingsPanel>
-            ))}
-          </section>
+          <StyleEditor settings={settings} updateSettings={updateSettings} />
         )}
 
         {activeScreen === "privacy" && (
@@ -525,6 +508,581 @@ function SettingsPanel({ title, children }: { title: string; children: ReactNode
       {children}
     </section>
   );
+}
+
+function DictionaryEditor({
+  settings,
+  updateSettings,
+}: {
+  settings: LocalFlowSettings;
+  updateSettings: UpdateSettings;
+}) {
+  const [draft, setDraft] = useState<Omit<DictionaryEntry, "id">>({
+    phrase: "",
+    pronunciationHint: "",
+    category: "custom",
+    caseSensitive: false,
+  });
+
+  function addEntry() {
+    updateSettings((current) => addDictionaryEntry(current, draft));
+    setDraft({ phrase: "", pronunciationHint: "", category: "custom", caseSensitive: false });
+  }
+
+  return (
+    <SettingsPanel title="Dictionary">
+      <div className="inline-form inline-form--dictionary">
+        <label className="field">
+          <span>Phrase</span>
+          <input
+            value={draft.phrase}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, phrase: event.currentTarget.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Hint</span>
+          <input
+            value={draft.pronunciationHint}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, pronunciationHint: event.currentTarget.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Category</span>
+          <select
+            value={draft.category}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                category: event.currentTarget.value as DictionaryEntry["category"],
+              }))
+            }
+          >
+            <option value="custom">Custom</option>
+            <option value="name">Name</option>
+            <option value="acronym">Acronym</option>
+            <option value="technical">Technical</option>
+          </select>
+        </label>
+        <Toggle
+          label="Case-sensitive"
+          checked={draft.caseSensitive}
+          onChange={(checked) => setDraft((current) => ({ ...current, caseSensitive: checked }))}
+        />
+        <button type="button" onClick={addEntry} title="Add dictionary entry">
+          <Plus size={16} aria-hidden="true" />
+          Add
+        </button>
+      </div>
+
+      <div className="setting-list">
+        {settings.dictionary.map((entry) => (
+          <div className="setting-row setting-row--dictionary" key={entry.id}>
+            <input
+              aria-label="Dictionary phrase"
+              value={entry.phrase}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateDictionaryEntry(current, entry.id, { phrase: event.currentTarget.value }),
+                )
+              }
+            />
+            <input
+              aria-label="Pronunciation hint"
+              value={entry.pronunciationHint ?? ""}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateDictionaryEntry(current, entry.id, {
+                    pronunciationHint: event.currentTarget.value,
+                  }),
+                )
+              }
+            />
+            <select
+              aria-label="Dictionary category"
+              value={entry.category}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateDictionaryEntry(current, entry.id, {
+                    category: event.currentTarget.value as DictionaryEntry["category"],
+                  }),
+                )
+              }
+            >
+              <option value="custom">Custom</option>
+              <option value="name">Name</option>
+              <option value="acronym">Acronym</option>
+              <option value="technical">Technical</option>
+            </select>
+            <Toggle
+              label="Case-sensitive"
+              checked={entry.caseSensitive}
+              onChange={(checked) =>
+                updateSettings((current) =>
+                  updateDictionaryEntry(current, entry.id, { caseSensitive: checked }),
+                )
+              }
+            />
+            <IconButton
+              label="Remove dictionary entry"
+              onClick={() => updateSettings((current) => removeDictionaryEntry(current, entry.id))}
+            />
+          </div>
+        ))}
+      </div>
+    </SettingsPanel>
+  );
+}
+
+function ReplacementEditor({
+  settings,
+  updateSettings,
+}: {
+  settings: LocalFlowSettings;
+  updateSettings: UpdateSettings;
+}) {
+  const [draft, setDraft] = useState<Omit<ReplacementRule, "id">>({
+    incorrect: "",
+    correct: "",
+    enabled: true,
+  });
+
+  function addRule() {
+    updateSettings((current) => addReplacementRule(current, draft));
+    setDraft({ incorrect: "", correct: "", enabled: true });
+  }
+
+  return (
+    <SettingsPanel title="Replacements">
+      <div className="inline-form inline-form--replacement">
+        <label className="field">
+          <span>Heard</span>
+          <input
+            value={draft.incorrect}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, incorrect: event.currentTarget.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Write</span>
+          <input
+            value={draft.correct}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, correct: event.currentTarget.value }))
+            }
+          />
+        </label>
+        <Toggle
+          label="Enabled"
+          checked={draft.enabled}
+          onChange={(checked) => setDraft((current) => ({ ...current, enabled: checked }))}
+        />
+        <button type="button" onClick={addRule} title="Add replacement">
+          <Plus size={16} aria-hidden="true" />
+          Add
+        </button>
+      </div>
+
+      <div className="setting-list">
+        {settings.replacements.map((rule) => (
+          <div className="setting-row setting-row--replacement" key={rule.id}>
+            <input
+              aria-label="Incorrect phrase"
+              value={rule.incorrect}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateReplacementRule(current, rule.id, { incorrect: event.currentTarget.value }),
+                )
+              }
+            />
+            <input
+              aria-label="Correct phrase"
+              value={rule.correct}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateReplacementRule(current, rule.id, { correct: event.currentTarget.value }),
+                )
+              }
+            />
+            <Toggle
+              label="Enabled"
+              checked={rule.enabled}
+              onChange={(checked) =>
+                updateSettings((current) =>
+                  updateReplacementRule(current, rule.id, { enabled: checked }),
+                )
+              }
+            />
+            <IconButton
+              label="Remove replacement"
+              onClick={() => updateSettings((current) => removeReplacementRule(current, rule.id))}
+            />
+          </div>
+        ))}
+      </div>
+    </SettingsPanel>
+  );
+}
+
+function SnippetEditor({
+  settings,
+  updateSettings,
+}: {
+  settings: LocalFlowSettings;
+  updateSettings: UpdateSettings;
+}) {
+  const [draft, setDraft] = useState<Omit<Snippet, "id">>({
+    trigger: "",
+    expansion: "",
+    enabled: true,
+    allowCleanup: false,
+  });
+
+  function addExactSnippet() {
+    updateSettings((current) => addSnippet(current, draft));
+    setDraft({ trigger: "", expansion: "", enabled: true, allowCleanup: false });
+  }
+
+  return (
+    <SettingsPanel title="Snippets">
+      <div className="inline-form inline-form--snippet">
+        <label className="field">
+          <span>Trigger</span>
+          <input
+            value={draft.trigger}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, trigger: event.currentTarget.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Expansion</span>
+          <textarea
+            value={draft.expansion}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, expansion: event.currentTarget.value }))
+            }
+            rows={3}
+          />
+        </label>
+        <Toggle
+          label="Enabled"
+          checked={draft.enabled}
+          onChange={(checked) => setDraft((current) => ({ ...current, enabled: checked }))}
+        />
+        <Toggle
+          label="Cleanup"
+          checked={draft.allowCleanup}
+          onChange={(checked) => setDraft((current) => ({ ...current, allowCleanup: checked }))}
+        />
+        <button type="button" onClick={addExactSnippet} title="Add snippet">
+          <Plus size={16} aria-hidden="true" />
+          Add
+        </button>
+      </div>
+
+      <div className="setting-list">
+        {settings.snippets.map((snippet) => (
+          <div className="setting-row setting-row--snippet" key={snippet.id}>
+            <input
+              aria-label="Snippet trigger"
+              value={snippet.trigger}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateSnippet(current, snippet.id, { trigger: event.currentTarget.value }),
+                )
+              }
+            />
+            <textarea
+              aria-label="Snippet expansion"
+              value={snippet.expansion}
+              onChange={(event) =>
+                updateSettings((current) =>
+                  updateSnippet(current, snippet.id, { expansion: event.currentTarget.value }),
+                )
+              }
+              rows={3}
+            />
+            <Toggle
+              label="Enabled"
+              checked={snippet.enabled}
+              onChange={(checked) =>
+                updateSettings((current) =>
+                  updateSnippet(current, snippet.id, { enabled: checked }),
+                )
+              }
+            />
+            <Toggle
+              label="Cleanup"
+              checked={snippet.allowCleanup}
+              onChange={(checked) =>
+                updateSettings((current) =>
+                  updateSnippet(current, snippet.id, { allowCleanup: checked }),
+                )
+              }
+            />
+            <IconButton
+              label="Remove snippet"
+              onClick={() => updateSettings((current) => removeSnippet(current, snippet.id))}
+            />
+          </div>
+        ))}
+      </div>
+    </SettingsPanel>
+  );
+}
+
+function StyleEditor({
+  settings,
+  updateSettings,
+}: {
+  settings: LocalFlowSettings;
+  updateSettings: UpdateSettings;
+}) {
+  return (
+    <section className="panel-grid">
+      <section className="panel panel--wide">
+        <div className="panel-heading">
+          <h2>Profiles</h2>
+          <button
+            type="button"
+            onClick={() =>
+              updateSettings((current) => addStyleProfile(current, createCustomStyleDraft()))
+            }
+            title="Add style profile"
+          >
+            <Plus size={16} aria-hidden="true" />
+            Add
+          </button>
+        </div>
+      </section>
+
+      {settings.styles.map((style) => (
+        <StyleProfilePanel
+          key={style.id}
+          style={style}
+          canRemove={settings.styles.length > 1}
+          updateSettings={updateSettings}
+        />
+      ))}
+    </section>
+  );
+}
+
+function StyleProfilePanel({
+  style,
+  canRemove,
+  updateSettings,
+}: {
+  style: StyleProfile;
+  canRemove: boolean;
+  updateSettings: UpdateSettings;
+}) {
+  function patchStyle(patch: Partial<Omit<StyleProfile, "id">>) {
+    updateSettings((current) => updateStyleProfile(current, style.id, patch));
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <h2>{style.name}</h2>
+        {canRemove && (
+          <IconButton
+            label="Remove style profile"
+            onClick={() => updateSettings((current) => removeStyleProfile(current, style.id))}
+          />
+        )}
+      </div>
+      <label className="field">
+        <span>Name</span>
+        <input
+          value={style.name}
+          onChange={(event) => patchStyle({ name: event.currentTarget.value })}
+        />
+      </label>
+      <label className="field">
+        <span>Category</span>
+        <select
+          value={style.category}
+          onChange={(event) => patchStyle({ category: event.currentTarget.value as AppCategory })}
+        >
+          {appCategories.map((category) => (
+            <option key={category} value={category}>
+              {formatOptionLabel(category)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>Cleanup</span>
+        <select
+          value={style.cleanupLevel}
+          onChange={(event) =>
+            patchStyle({ cleanupLevel: event.currentTarget.value as CleanupLevel })
+          }
+        >
+          {cleanupLevels.map((level) => (
+            <option key={level} value={level}>
+              {formatOptionLabel(level)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <RangeField
+        label="Conciseness"
+        value={style.conciseness}
+        onChange={(value) => patchStyle({ conciseness: value })}
+      />
+      <RangeField
+        label="Formality"
+        value={style.formality}
+        onChange={(value) => patchStyle({ formality: value })}
+      />
+      <label className="field">
+        <span>Emoji</span>
+        <select
+          value={style.emoji}
+          onChange={(event) =>
+            patchStyle({ emoji: event.currentTarget.value as StyleProfile["emoji"] })
+          }
+        >
+          <option value="never">Never</option>
+          <option value="preserve">Preserve</option>
+          <option value="sparingly">Sparingly</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>Paragraphs</span>
+        <select
+          value={style.paragraphLength}
+          onChange={(event) =>
+            patchStyle({
+              paragraphLength: event.currentTarget.value as StyleProfile["paragraphLength"],
+            })
+          }
+        >
+          <option value="short">Short</option>
+          <option value="medium">Medium</option>
+          <option value="long">Long</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>Bullets</span>
+        <select
+          value={style.bulletPreference}
+          onChange={(event) =>
+            patchStyle({
+              bulletPreference: event.currentTarget.value as StyleProfile["bulletPreference"],
+            })
+          }
+        >
+          <option value="preserve">Preserve</option>
+          <option value="prefer">Prefer</option>
+          <option value="avoid">Avoid</option>
+        </select>
+      </label>
+      <div className="toggle-grid">
+        <Toggle
+          label="Contractions"
+          checked={style.contractions}
+          onChange={(checked) => patchStyle({ contractions: checked })}
+        />
+        <Toggle
+          label="Remove fillers"
+          checked={style.aggressiveFillerRemoval}
+          onChange={(checked) => patchStyle({ aggressiveFillerRemoval: checked })}
+        />
+        <Toggle
+          label="Fragments"
+          checked={style.allowSentenceFragments}
+          onChange={(checked) => patchStyle({ allowSentenceFragments: checked })}
+        />
+      </div>
+      <div className="two-column-fields">
+        <label className="field">
+          <span>Greeting</span>
+          <select
+            value={style.greetingBehavior}
+            onChange={(event) =>
+              patchStyle({
+                greetingBehavior: event.currentTarget.value as StyleProfile["greetingBehavior"],
+              })
+            }
+          >
+            <option value="preserve">Preserve</option>
+            <option value="add_when_missing">Add</option>
+            <option value="avoid">Avoid</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Sign-off</span>
+          <select
+            value={style.signOffBehavior}
+            onChange={(event) =>
+              patchStyle({
+                signOffBehavior: event.currentTarget.value as StyleProfile["signOffBehavior"],
+              })
+            }
+          >
+            <option value="preserve">Preserve</option>
+            <option value="add_when_missing">Add</option>
+            <option value="avoid">Avoid</option>
+          </select>
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function RangeField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <div className="range-field">
+        <input
+          type="range"
+          min="1"
+          max="10"
+          value={value}
+          onChange={(event) => onChange(Number(event.currentTarget.value))}
+        />
+        <output>{value}</output>
+      </div>
+    </label>
+  );
+}
+
+function IconButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      className="icon-button"
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+    >
+      <Trash2 size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
+function formatOptionLabel(value: string): string {
+  return value
+    .split("_")
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
 }
 
 function Toggle({

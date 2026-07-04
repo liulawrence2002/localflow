@@ -93,6 +93,10 @@ export interface StyleProfile {
   emoji: "never" | "preserve" | "sparingly";
   paragraphLength: "short" | "medium" | "long";
   bulletPreference: "preserve" | "prefer" | "avoid";
+  greetingBehavior: "preserve" | "add_when_missing" | "avoid";
+  signOffBehavior: "preserve" | "add_when_missing" | "avoid";
+  aggressiveFillerRemoval: boolean;
+  allowSentenceFragments: boolean;
 }
 
 export interface PrivacySettings {

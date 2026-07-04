@@ -27,6 +27,7 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/asrWindows.ts`: rolling-window planning for overlapped ASR hypotheses.
 - `src/domain/refinementPipeline.ts`: strict local-LLM JSON contract runner with repair retry and deterministic fallback.
 - `src/domain/privacy.ts`: history retention and redaction helpers.
+- `src/domain/settings.ts`: typed personalization and style-profile mutations used by the UI and local fallback.
 - `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
 - `src/components`: focused UI components.
 - `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.

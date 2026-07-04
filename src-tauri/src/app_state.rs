@@ -12,10 +12,20 @@ use crate::{
     workflow::{transition, ActivationMode, TargetSnapshot, WorkflowEvent, WorkflowState},
 };
 
-#[derive(Default)]
 pub struct LocalFlowRuntime {
     workflow: Mutex<WorkflowState>,
+    settings: Mutex<SettingsSnapshot>,
     history: Mutex<Vec<HistoryItem>>,
+}
+
+impl Default for LocalFlowRuntime {
+    fn default() -> Self {
+        Self {
+            workflow: Mutex::new(WorkflowState::default()),
+            settings: Mutex::new(default_settings()),
+            history: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +132,10 @@ pub struct StyleProfile {
     pub emoji: String,
     pub paragraph_length: String,
     pub bullet_preference: String,
+    pub greeting_behavior: String,
+    pub sign_off_behavior: String,
+    pub aggressive_filler_removal: bool,
+    pub allow_sentence_fragments: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,10 +161,19 @@ pub struct DiagnosticMetric {
 pub fn get_status(runtime: State<'_, LocalFlowRuntime>) -> Result<AppStatus, String> {
     Ok(AppStatus {
         workflow: runtime.workflow.lock().map_err(lock_error)?.clone(),
-        settings: default_settings(),
+        settings: runtime.settings.lock().map_err(lock_error)?.clone(),
         history: runtime.history.lock().map_err(lock_error)?.clone(),
         diagnostics: default_diagnostics(),
     })
+}
+
+#[tauri::command]
+pub fn save_settings(
+    runtime: State<'_, LocalFlowRuntime>,
+    settings: SettingsSnapshot,
+) -> Result<AppStatus, String> {
+    *runtime.settings.lock().map_err(lock_error)? = settings;
+    get_status(runtime)
 }
 
 #[tauri::command]
@@ -348,6 +371,10 @@ fn default_settings() -> SettingsSnapshot {
             emoji: "preserve".to_string(),
             paragraph_length: "short".to_string(),
             bullet_preference: "preserve".to_string(),
+            greeting_behavior: "preserve".to_string(),
+            sign_off_behavior: "preserve".to_string(),
+            aggressive_filler_removal: false,
+            allow_sentence_fragments: true,
         }],
     }
 }
