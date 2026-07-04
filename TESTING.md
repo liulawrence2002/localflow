@@ -46,12 +46,14 @@ Current verification on this workstation:
 
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 76 passing tests.
+- `npm run test` with 77 passing tests.
 - `npm run build`
 - `cargo fmt --check`
 - `cargo test` with 4 passing tests.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
+- `.\scripts\Check-Ollama.ps1`, confirming local model `gemma4:12b-it-qat`.
+- Direct local Ollama generate smoke test with `gemma4:12b-it-qat`, returning strict cleanup JSON.
 
 ## Manual Dictation Checklist
 
@@ -91,6 +93,7 @@ Manual acceptance tests must record exact app version, model, hardware, and obse
 4. Hold `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
 5. Speak a short sentence.
 6. Release the hotkey.
-7. Confirm raw local Whisper text appears in the target field.
+7. Confirm the small waveform overlay appears while listening/processing.
+8. Confirm cleaned text appears in the target field.
 
-This validates microphone capture, local `whisper.cpp` execution, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
+This validates microphone capture, live overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.

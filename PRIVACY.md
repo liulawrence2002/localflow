@@ -14,6 +14,8 @@ Default behavior:
 
 The current native hotkey path writes a temporary WAV file under the OS temp directory for `whisper.cpp` CLI processing, then deletes the WAV and JSON output after transcription.
 
+The floating overlay receives listening/processing/refining/inserted/error state and microphone level values. It does not receive or display transcript text.
+
 ## Stored Fields
 
 Milestone 1 initializes SQLite tables for:
@@ -68,6 +70,8 @@ Not allowed during ordinary dictation:
 Automated checks cover the shared network policy and the shared Ollama provider. Remote Ollama URLs are rejected before `fetch` is called.
 
 The shared domain layer includes an allowlist check that permits localhost provider URLs and rejects remote URLs for ordinary dictation. The Ollama provider calls this policy for model discovery and cleanup requests. Native providers and future local server providers must keep using the same policy before any production network-capable path is enabled.
+
+Native dictation cleanup is pinned to local Ollama model `gemma4:12b-it-qat` at `http://127.0.0.1:11434/api/generate`.
 
 ## Diagnostics
 

@@ -325,7 +325,7 @@ fn default_settings() -> SettingsSnapshot {
             whisper_model_path: String::new(),
             language: "auto".to_string(),
             asr_threads: 4,
-            ollama_model: String::new(),
+            ollama_model: "gemma4:12b-it-qat".to_string(),
             low_resource_mode: false,
         },
         microphone: MicrophoneSettings {
@@ -396,8 +396,13 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
             status: "ok".to_string(),
         },
         DiagnosticMetric {
+            label: "Refinement model".to_string(),
+            value: "gemma4:12b-it-qat through local Ollama for native dictation".to_string(),
+            status: "ok".to_string(),
+        },
+        DiagnosticMetric {
             label: "ASR provider".to_string(),
-            value: "Mock provider active".to_string(),
+            value: "Native whisper.cpp path plus mock UI controls".to_string(),
             status: "warning".to_string(),
         },
     ]

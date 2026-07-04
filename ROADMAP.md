@@ -12,7 +12,7 @@
 - Replace one-shot temporary WAV transcription with a managed `whisper.cpp` sidecar boundary.
 - Add microphone selection, device-disconnect handling, cancellation, and timeout enforcement.
 - Add target-window tracking and safer Windows UI Automation insertion before clipboard fallback.
-- Wire local Ollama cleanup into the native dictation path with raw-transcript undo.
+- Add raw-transcript undo for native `gemma4:12b-it-qat` cleanup.
 
 ## Later
 

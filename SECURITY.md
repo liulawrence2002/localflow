@@ -15,6 +15,7 @@
 - Mock pipeline never contacts a remote service.
 - Shared network policy blocks remote model-provider URLs during ordinary dictation.
 - Shared Ollama provider blocks remote URLs before fetch and validates JSON output before cleanup is accepted.
+- Native cleanup calls only local Ollama at `127.0.0.1` with pinned model `gemma4:12b-it-qat`.
 - Native `whisper.cpp` launch keeps model/audio/output paths and CLI arguments explicit and local.
 - Shared context policy blocks active-app, selected-text, and cursor-context collection for password or protected fields.
 - Command-mode planning rejects operating-system command execution phrases.
@@ -24,6 +25,7 @@
 - Logs use redaction helpers for dictated content.
 - Diagnostics export excludes dictated content and local model paths by default.
 - Native clipboard paste fallback restores prior text clipboard content after a short delay.
+- The waveform overlay receives phase and audio-level metadata, not transcript text.
 
 ## Planned Controls
 

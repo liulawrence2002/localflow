@@ -24,7 +24,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
-import { defaultStatus } from "./domain/defaults";
+import { defaultStatus, pinnedOllamaModel } from "./domain/defaults";
 import { serializeDiagnosticsExport } from "./domain/diagnostics";
 import { checkOllamaStatus, hasOllamaModel, type OllamaConnectionStatus } from "./domain/ollama";
 import {
@@ -113,6 +113,10 @@ export function App() {
   const activeStyle = settings.styles[0];
   const statusText = status.workflow.error ?? status.workflow.warning ?? status.workflow.phase;
   const ollamaModels = ollamaStatus?.ok ? ollamaStatus.models : [];
+  const selectedModelMissingFromList =
+    settings.models.ollamaModel.trim().length > 0 &&
+    ollamaModels.length > 0 &&
+    !hasOllamaModel(ollamaModels, settings.models.ollamaModel);
   const ollamaMessage = formatOllamaStatus(ollamaStatus);
 
   async function startMockDictation() {
@@ -182,19 +186,6 @@ export function App() {
     setIsCheckingOllama(true);
     const nextStatus = await checkOllamaStatus();
     setOllamaStatus(nextStatus);
-
-    if (
-      nextStatus.ok &&
-      nextStatus.models.length > 0 &&
-      !hasOllamaModel(nextStatus.models, settings.models.ollamaModel)
-    ) {
-      const firstModel = nextStatus.models[0].model;
-      updateSettings((current) => ({
-        ...current,
-        models: { ...current.models, ollamaModel: firstModel },
-      }));
-    }
-
     setIsCheckingOllama(false);
   }
 
@@ -344,6 +335,11 @@ export function App() {
                       }))
                     }
                   >
+                    {selectedModelMissingFromList ? (
+                      <option value={settings.models.ollamaModel}>
+                        {settings.models.ollamaModel}
+                      </option>
+                    ) : null}
                     {ollamaModels.map((model) => (
                       <option value={model.model} key={model.model}>
                         {formatOllamaModelLabel(model.name, model.sizeBytes)}
@@ -359,9 +355,12 @@ export function App() {
                         models: { ...current.models, ollamaModel: event.currentTarget.value },
                       }))
                     }
-                    placeholder="llama3.1:8b-instruct"
+                    placeholder={pinnedOllamaModel}
                   />
                 )}
+                <span className="field-hint">
+                  Native dictation is pinned to {pinnedOllamaModel}.
+                </span>
               </label>
               <div className="button-row button-row--status">
                 <button

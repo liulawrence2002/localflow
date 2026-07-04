@@ -1,5 +1,7 @@
 import type { AppStatus, LocalFlowSettings, WorkflowState } from "./types";
 
+export const pinnedOllamaModel = "gemma4:12b-it-qat";
+
 export const defaultTarget = {
   applicationName: "Mock target",
   windowTitle: "LocalFlow verification field",
@@ -21,7 +23,7 @@ export const defaultSettings: LocalFlowSettings = {
     whisperModelPath: "",
     language: "auto",
     asrThreads: 4,
-    ollamaModel: "",
+    ollamaModel: pinnedOllamaModel,
     lowResourceMode: false,
   },
   microphone: {

@@ -11,7 +11,7 @@ LocalFlow is split into a Tauri native layer and a React settings/history interf
 - `src-tauri/src/context`: local context snapshot interface.
 - `src-tauri/src/insertion`: text insertion interface and mock insertion.
 - `src-tauri/src/hotkeys`: global hotkey registration through Tauri's global-shortcut plugin.
-- `src-tauri/src/native_dictation`: first Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, and clipboard paste fallback.
+- `src-tauri/src/native_dictation`: first Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, pinned local Ollama `gemma4:12b-it-qat` cleanup, a waveform overlay event stream, and clipboard paste fallback.
 - `src-tauri/src/storage`: SQLite schema initialization.
 - `src-tauri/src/privacy`: redaction helpers for logs and diagnostics.
 
@@ -40,6 +40,7 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/ollama.ts`: shared local Ollama discovery and cleanup provider with localhost-only enforcement.
 - `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
 - `src/components`: focused UI components.
+- `src/components/VoiceOverlay.tsx`: compact waveform-only overlay rendered in the Tauri `overlay` window.
 - `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.
 
 ## Provider Boundary

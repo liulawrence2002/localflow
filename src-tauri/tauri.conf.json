@@ -12,11 +12,32 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "LocalFlow",
         "width": 1120,
         "height": 760,
         "minWidth": 860,
-        "minHeight": 620
+        "minHeight": 620,
+        "visible": false
+      },
+      {
+        "label": "overlay",
+        "title": "LocalFlow Voice",
+        "url": "index.html?view=overlay",
+        "width": 280,
+        "height": 96,
+        "minWidth": 280,
+        "minHeight": 96,
+        "maxWidth": 280,
+        "maxHeight": 96,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "focusable": false,
+        "visible": false
       }
     ],
     "security": {

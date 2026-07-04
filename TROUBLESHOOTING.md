@@ -38,6 +38,10 @@ $env:LOCALFLOW_WHISPER_MODEL = "C:\path\to\ggml-base.en.bin"
 
 Click into the target text field before holding the hotkey. The current native path uses clipboard paste fallback, so the focused app must accept `Ctrl+V`.
 
+## Waveform Does Not Appear
+
+LocalFlow launches the settings window hidden and shows a small overlay only during active dictation states. If no overlay appears, check that the `localflow.exe` process is running and that the global hotkey is registered.
+
 ## Ollama Is Unavailable
 
 Run:
@@ -46,4 +50,4 @@ Run:
 .\scripts\Check-Ollama.ps1
 ```
 
-The Models screen can check the local Ollama API and populate installed local models. Native hotkey dictation does not yet use Ollama cleanup; it currently inserts raw local Whisper output.
+Native hotkey dictation is pinned to local Ollama model `gemma4:12b-it-qat`. If `gemma4:12b-it-qat` is missing or Ollama is not running, LocalFlow logs the cleanup failure and preserves the raw Whisper transcript rather than dropping the dictation.

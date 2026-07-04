@@ -2,7 +2,7 @@
 
 LocalFlow is a local-first Windows desktop voice-dictation app built with Tauri 2, Rust, React, TypeScript, SQLite, `whisper.cpp`, and local LLM refinement through Ollama.
 
-The current build is a lightweight Tauri tray app with a first native dictation path: hold the global hotkey, speak into the default microphone, release the hotkey, and LocalFlow transcribes with local `whisper.cpp` before pasting the transcript into the focused field.
+The current build is a lightweight Tauri tray app. It launches quietly, keeps the settings window hidden until opened from the tray, and shows a small floating waveform while dictation is active. Hold the global hotkey, speak into the default microphone, release the hotkey, and LocalFlow transcribes with local `whisper.cpp`, cleans with your local Ollama `gemma4:12b-it-qat` model, then pastes the result into the focused field.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ The current build is a lightweight Tauri tray app with a first native dictation 
 - Rust stable with Cargo
 - Microsoft C++ Build Tools with the VCTools workload
 - WebView2 Runtime
-- Ollama for the shared local cleanup provider and later native workflow wiring
+- Ollama with local model `gemma4:12b-it-qat` for native cleanup
 
 Install/check common prerequisites:
 
@@ -58,9 +58,9 @@ If `Ctrl+Alt+Space` is already registered by another app, LocalFlow automaticall
 3. Click into the target field.
 4. Hold `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable; otherwise hold `Ctrl+Alt+Space`.
 5. Speak for 2-5 seconds.
-6. Release the hotkey and wait for local Whisper transcription.
+6. Release the hotkey and wait for local Whisper transcription plus local `gemma4:12b-it-qat` cleanup.
 
-The current native path inserts the raw local Whisper transcript through clipboard paste and restores the previous text clipboard afterward.
+The floating waveform appears while listening and processing. The current native path inserts the cleaned transcript through clipboard paste and restores the previous text clipboard afterward. If local Ollama or `gemma4:12b-it-qat` is unavailable, LocalFlow preserves the raw Whisper transcript instead of losing the dictation.
 
 ## Checks
 
@@ -84,8 +84,8 @@ The Tauri bundle config includes the local Whisper CLI, required DLLs, and the t
 
 ## Current Limitations
 
-- Native hotkey dictation currently uses the default input device and raw local Whisper output.
-- The native hotkey path does not yet run deterministic personalization or Ollama cleanup.
+- Native hotkey dictation currently uses the default input device.
+- The native hotkey path always requests cleanup from local Ollama model `gemma4:12b-it-qat`; deterministic personalization is still pending.
 - Clipboard fallback restores only prior text clipboard content, not full rich clipboard formats.
-- UI Automation insertion, target-window verification, startup-at-login, and production overlay behavior are still pending.
+- UI Automation insertion, target-window verification, and startup-at-login are still pending.
 - Manual speech insertion has to be checked by the user in real target apps; automated checks cannot speak into the microphone.

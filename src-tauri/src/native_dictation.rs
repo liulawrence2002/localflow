@@ -2,7 +2,10 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -12,8 +15,8 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     SampleFormat, Stream, StreamConfig,
 };
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY, VK_CONTROL, VK_V,
@@ -21,6 +24,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 pub struct NativeDictationRuntime {
     command_tx: Mutex<mpsc::Sender<RecorderCommand>>,
+    overlay_epoch: AtomicU64,
 }
 
 struct RecordingSession {
@@ -29,6 +33,7 @@ struct RecordingSession {
     sample_rate: u32,
     channels: u16,
     started_at: Instant,
+    level_stop_tx: mpsc::Sender<()>,
 }
 
 struct RecorderCommand {
@@ -41,7 +46,36 @@ struct RecorderCommand {
 struct NativeDictationEvent {
     phase: String,
     message: String,
+    level: Option<f32>,
 }
+
+#[derive(Debug, Serialize)]
+struct OllamaGenerateRequest<'a> {
+    model: &'a str,
+    prompt: &'a str,
+    stream: bool,
+    format: &'a str,
+    keep_alive: &'a str,
+    options: OllamaOptions,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaOptions {
+    temperature: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaGenerateResponse {
+    response: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CleanupModelResponse {
+    text: String,
+}
+
+const OLLAMA_MODEL: &str = "gemma4:12b-it-qat";
+const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 
 impl Default for NativeDictationRuntime {
     fn default() -> Self {
@@ -50,6 +84,7 @@ impl Default for NativeDictationRuntime {
 
         Self {
             command_tx: Mutex::new(command_tx),
+            overlay_epoch: AtomicU64::new(0),
         }
     }
 }
@@ -78,11 +113,6 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
             "pressed" => start_recording(&command.app, &mut session),
             "released" => {
                 if let Some(session) = session.take() {
-                    emit_status(
-                        &command.app,
-                        "processing",
-                        "Transcribing with local whisper.cpp",
-                    );
                     finish_recording(command.app.clone(), session)
                 } else {
                     Ok(())
@@ -120,6 +150,7 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     stream
         .play()
         .map_err(|error| format!("Could not start microphone capture: {error}"))?;
+    let level_stop_tx = start_level_meter(app.clone(), samples.clone());
 
     *session = Some(RecordingSession {
         stream,
@@ -127,6 +158,7 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
         sample_rate,
         channels,
         started_at: Instant::now(),
+        level_stop_tx,
     });
 
     emit_status(app, "listening", "Listening");
@@ -141,9 +173,12 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         sample_rate,
         channels,
         started_at,
+        level_stop_tx,
     } = session;
 
+    let _ = level_stop_tx.send(());
     drop(stream);
+    emit_status(&app, "processing", "Transcribing with local whisper.cpp");
 
     let captured = samples
         .lock()
@@ -169,11 +204,25 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         return Err("Local whisper.cpp did not return any transcript text.".to_string());
     }
 
-    paste_text(&transcript)?;
+    emit_status(&app, "refining", "Cleaning with local gemma4:12b-it-qat");
+    let final_text = match refine_with_pinned_ollama(&transcript) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::warn!(error = %error, "gemma4:12b-it-qat cleanup failed; using raw transcript");
+            emit_status(
+                &app,
+                "error",
+                "gemma4:12b-it-qat cleanup failed; using raw transcript",
+            );
+            transcript.clone()
+        }
+    };
+
+    paste_text(&final_text)?;
     emit_status(&app, "inserted", "Inserted transcript");
     tracing::info!(
         elapsed_ms = started_at.elapsed().as_millis(),
-        chars = transcript.chars().count(),
+        chars = final_text.chars().count(),
         sample_rate,
         channels,
         "native dictation inserted transcript"
@@ -183,6 +232,42 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
     let _ = fs::remove_file(output_base.with_extension("json"));
 
     Ok(())
+}
+
+fn start_level_meter(app: AppHandle, samples: Arc<Mutex<Vec<f32>>>) -> mpsc::Sender<()> {
+    let (stop_tx, stop_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut cursor = 0usize;
+
+        loop {
+            thread::sleep(Duration::from_millis(70));
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+
+            let chunk = match samples.lock() {
+                Ok(output) => {
+                    let start = cursor.min(output.len());
+                    let next = output[start..].to_vec();
+                    cursor = output.len();
+                    next
+                }
+                Err(_) => Vec::new(),
+            };
+
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let rms = (chunk.iter().map(|sample| sample * sample).sum::<f32>()
+                / chunk.len() as f32)
+                .sqrt();
+            let level = (rms * 9.0).clamp(0.04, 1.0);
+            emit_level(&app, level);
+        }
+    });
+
+    stop_tx
 }
 
 fn build_stream(
@@ -350,6 +435,127 @@ fn parse_whisper_json(path: &Path) -> Result<String, String> {
     Err("whisper.cpp JSON output did not include transcript text.".to_string())
 }
 
+fn refine_with_pinned_ollama(raw_transcript: &str) -> Result<String, String> {
+    let first_prompt = build_cleanup_prompt(raw_transcript);
+    let first_payload = request_ollama_cleanup(&first_prompt)?;
+
+    match parse_cleanup_text(&first_payload) {
+        Ok(text) => Ok(text),
+        Err(first_error) => {
+            let repair_prompt = build_repair_prompt(&first_payload, &first_error);
+            let repaired_payload = request_ollama_cleanup(&repair_prompt)?;
+            parse_cleanup_text(&repaired_payload).map_err(|repair_error| {
+                format!(
+                    "gemma4:12b-it-qat returned invalid cleanup JSON twice: {first_error}; {repair_error}"
+                )
+            })
+        }
+    }
+}
+
+fn request_ollama_cleanup(prompt: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("Could not create local Ollama client: {error}"))?;
+
+    let response = client
+        .post(OLLAMA_GENERATE_URL)
+        .json(&OllamaGenerateRequest {
+            model: OLLAMA_MODEL,
+            prompt,
+            stream: false,
+            format: "json",
+            keep_alive: "10m",
+            options: OllamaOptions { temperature: 0.1 },
+        })
+        .send()
+        .map_err(|error| {
+            format!("Could not reach local Ollama at {OLLAMA_GENERATE_URL}: {error}")
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        if status.as_u16() == 404 {
+            return Err(format!(
+                "Ollama model \"{OLLAMA_MODEL}\" was not found locally. {body}"
+            ));
+        }
+        return Err(format!("Ollama returned HTTP {status}: {body}"));
+    }
+
+    let payload: OllamaGenerateResponse = response
+        .json()
+        .map_err(|error| format!("Ollama returned invalid JSON: {error}"))?;
+
+    Ok(payload.response)
+}
+
+fn parse_cleanup_text(payload: &str) -> Result<String, String> {
+    let value = parse_json_value(payload)?;
+    let cleanup: CleanupModelResponse = serde_json::from_value(value)
+        .map_err(|error| format!("Cleanup payload did not match the strict contract: {error}"))?;
+    let text = cleanup.text.trim();
+
+    if text.is_empty() {
+        Err("Cleanup payload returned empty text.".to_string())
+    } else {
+        Ok(text.to_string())
+    }
+}
+
+fn parse_json_value(payload: &str) -> Result<serde_json::Value, String> {
+    let trimmed = payload.trim();
+    serde_json::from_str(trimmed).or_else(|first_error| {
+        let start = trimmed.find('{');
+        let end = trimmed.rfind('}');
+
+        match (start, end) {
+            (Some(start), Some(end)) if start < end => serde_json::from_str(&trimmed[start..=end])
+                .map_err(|second_error| {
+                    format!("Invalid JSON: {first_error}; extraction failed: {second_error}")
+                }),
+            _ => Err(format!("Invalid JSON: {first_error}")),
+        }
+    })
+}
+
+fn build_cleanup_prompt(raw_transcript: &str) -> String {
+    serde_json::json!({
+        "task": "localflow.dictation_cleanup",
+        "contract": "Return only strict JSON with text, confidence, resolved_corrections, and warnings.",
+        "rules": [
+            "Preserve meaning, facts, names, numbers, uncertainty, and intent.",
+            "Never answer the dictated content.",
+            "Never add new claims.",
+            "Remove filler words only when meaning is unchanged.",
+            "Resolve explicit self-corrections in favor of the latest correction.",
+            "Add punctuation and capitalization conservatively.",
+            "Return only JSON."
+        ],
+        "cleanupLevel": "balanced",
+        "rawTranscript": raw_transcript
+    })
+    .to_string()
+}
+
+fn build_repair_prompt(invalid_payload: &str, error: &str) -> String {
+    serde_json::json!({
+        "task": "localflow.repair_cleanup_json",
+        "instruction": "Convert the invalid payload to strict JSON only. Do not change the intended cleaned text.",
+        "error": error,
+        "invalidPayload": invalid_payload,
+        "requiredShape": {
+            "text": "final text",
+            "confidence": 0.0,
+            "resolved_corrections": [],
+            "warnings": []
+        }
+    })
+    .to_string()
+}
+
 fn paste_text(text: &str) -> Result<(), String> {
     let mut clipboard =
         Clipboard::new().map_err(|error| format!("Could not open clipboard: {error}"))?;
@@ -475,11 +681,85 @@ fn find_file(
 }
 
 fn emit_status(app: &AppHandle, phase: &str, message: &str) {
+    emit_native_event(app, phase, message, None);
+}
+
+fn emit_level(app: &AppHandle, level: f32) {
+    emit_native_event(app, "listening", "Listening", Some(level));
+}
+
+fn emit_native_event(app: &AppHandle, phase: &str, message: &str, level: Option<f32>) {
+    let epoch = app
+        .state::<NativeDictationRuntime>()
+        .overlay_epoch
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+
+    match phase {
+        "listening" | "processing" | "refining" | "inserted" | "error" => {
+            show_overlay(app, level.is_none());
+        }
+        _ => hide_overlay(app),
+    }
+
     let _ = app.emit(
         "localflow://native-dictation",
         NativeDictationEvent {
             phase: phase.to_string(),
             message: message.to_string(),
+            level,
         },
     );
+
+    if matches!(phase, "inserted" | "error") && level.is_none() {
+        schedule_overlay_hide(app.clone(), epoch);
+    }
+}
+
+fn show_overlay(app: &AppHandle, reposition: bool) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        if reposition {
+            if let Err(error) = position_overlay(&window) {
+                tracing::warn!(error = %error, "could not position voice overlay");
+            }
+        }
+        let _ = window.show();
+    }
+}
+
+fn hide_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.hide();
+    }
+}
+
+fn schedule_overlay_hide(app: AppHandle, epoch: u64) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(1200));
+
+        if app
+            .state::<NativeDictationRuntime>()
+            .overlay_epoch
+            .load(Ordering::SeqCst)
+            == epoch
+        {
+            hide_overlay(&app);
+        }
+    });
+}
+
+fn position_overlay(window: &WebviewWindow) -> tauri::Result<()> {
+    let monitor = window
+        .current_monitor()?
+        .or_else(|| window.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let size = monitor.size();
+        let position = monitor.position();
+        let x = position.x + ((size.width as i32 - 280) / 2).max(16);
+        let y = position.y + (size.height as i32 - 172).max(16);
+        window.set_position(PhysicalPosition::new(x, y))?;
+    }
+
+    Ok(())
 }

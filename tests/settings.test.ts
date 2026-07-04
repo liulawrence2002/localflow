@@ -18,6 +18,10 @@ import {
 } from "../src/domain/settings";
 
 describe("settings mutations", () => {
+  it("pins the default Ollama model to the local gemma4:12b-it-qat model", () => {
+    expect(defaultSettings.models.ollamaModel).toBe("gemma4:12b-it-qat");
+  });
+
   it("adds, updates, and removes dictionary entries", () => {
     const added = addDictionaryEntry(
       defaultSettings,

@@ -37,13 +37,16 @@ Completed:
 - Added a first native push-to-talk path behind the Tauri global hotkey: default microphone capture, local `whisper.cpp` transcription, and clipboard paste insertion.
 - Added a fallback global hotkey, `Ctrl+Alt+Shift+Space`, when `Ctrl+Alt+Space` is already registered.
 - Added bundled-resource lookup for the local Whisper CLI, DLLs, and tiny English model, with `.localflow-runtime/` as the dev fallback.
+- Added native local Ollama cleanup pinned to model `gemma4:12b-it-qat`, with strict JSON parsing, one repair request, and raw-transcript fallback if cleanup fails.
+- Added a hidden-on-start settings window and a compact always-on-top waveform overlay for active dictation.
+- Added native microphone level events so the overlay reacts to speech volume while listening.
 
 Verified:
 
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 76 passing tests.
+- `npm run test` with 77 passing tests.
 - `npm run build`
 - `cd src-tauri; cargo fmt --check`
 - `cd src-tauri; cargo test` with 4 passing tests.
@@ -55,13 +58,15 @@ Verified:
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
 - `npm run tauri -- info` after prerequisite installation.
+- `.\scripts\Check-Ollama.ps1`, confirming local model `gemma4:12b-it-qat`.
+- Direct local Ollama generate smoke test with `gemma4:12b-it-qat`, returning strict cleanup JSON.
 
 Known native limitations:
 
 - Manual microphone dictation and text insertion must still be exercised by a human in Notepad, a browser field, and VS Code.
-- Native dictation currently inserts raw local Whisper output; deterministic personalization and Ollama cleanup are implemented in shared code but not wired into the native hotkey path.
+- Native dictation now runs local Ollama `gemma4:12b-it-qat` cleanup before insertion; deterministic personalization is still not wired into the native hotkey path.
 - Clipboard fallback restores prior text clipboard content, but not rich clipboard formats.
-- UI Automation insertion, target-window verification, startup-at-login, and the production overlay are still pending.
+- UI Automation insertion, target-window verification, and startup-at-login are still pending.
 
 Re-run:
 
@@ -104,6 +109,7 @@ Completed:
 - Temporary mono 16 kHz WAV writing for the current sidecar path, with cleanup after transcription.
 - Local `whisper-cli.exe` launch against `ggml-tiny.en-q5_1.bin` with JSON output parsing.
 - Clear missing-runtime and missing-model errors for the native path.
+- Live microphone level sampling for the floating waveform overlay.
 
 Not yet completed:
 
@@ -126,6 +132,7 @@ Completed:
 - Insertion target validation, method ordering, clipboard restoration plan, and duplicate insertion guard.
 - Local Ollama model discovery through `/api/tags`.
 - Local Ollama cleanup requests through `/api/generate` with `stream: false` and strict JSON-format output.
+- Native Ollama cleanup requests pinned to `gemma4:12b-it-qat`.
 - Remote Ollama URLs blocked before fetch.
 - Clear shared errors for unavailable Ollama, no selected model, and missing local model.
 - Native clipboard paste fallback using Win32 `SendInput` for `Ctrl+V`.
@@ -136,7 +143,7 @@ Not yet completed:
 - Add Windows target tracking.
 - Add UI Automation insertion where safe.
 - Preserve rich clipboard formats during native fallback.
-- Wire deterministic personalization and the Ollama provider into the production native dictation workflow.
+- Wire deterministic personalization into the production native dictation workflow.
 
 ## Milestone 4: Personalization
 
