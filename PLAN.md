@@ -2,7 +2,7 @@
 
 ## Milestone 1: Foundation
 
-Status: completed as far as the current environment permits.
+Status: completed.
 
 Completed:
 
@@ -33,6 +33,10 @@ Completed:
 - Added localhost-only dictation network policy checks.
 - Added a tested Ollama refinement provider that discovers local models, blocks remote URLs, sends non-streaming JSON generate requests, and reports unavailable or missing-model errors clearly.
 - Added Models screen Ollama discovery and local model selection for the browser/dev UI path.
+- Installed Rust stable through rustup and Microsoft Visual Studio C++ Build Tools for native Windows builds on this workstation.
+- Added a first native push-to-talk path behind the Tauri global hotkey: default microphone capture, local `whisper.cpp` transcription, and clipboard paste insertion.
+- Added a fallback global hotkey, `Ctrl+Alt+Shift+Space`, when `Ctrl+Alt+Space` is already registered.
+- Added bundled-resource lookup for the local Whisper CLI, DLLs, and tiny English model, with `.localflow-runtime/` as the dev fallback.
 
 Verified:
 
@@ -41,15 +45,25 @@ Verified:
 - `npm run lint`
 - `npm run test` with 76 passing tests.
 - `npm run build`
+- `cd src-tauri; cargo fmt --check`
+- `cd src-tauri; cargo test` with 4 passing tests.
+- `cd src-tauri; cargo check`
+- `npm run tauri:build`, producing:
+  - `src-tauri\target\release\localflow.exe`
+  - `src-tauri\target\release\bundle\msi\LocalFlow_0.1.0_x64_en-US.msi`
+  - `src-tauri\target\release\bundle\nsis\LocalFlow_0.1.0_x64-setup.exe`
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
+- `npm run tauri -- info` after prerequisite installation.
 
-Blocked:
+Known native limitations:
 
-- Native `npm run tauri:dev` and Rust checks, because `cargo`, `rustc`, `rustup`, and MSVC Build Tools are not installed in the current environment.
-- `npm run tauri -- info` verified WebView2 is present and Tauri CLI is available, but native prerequisites are missing.
+- Manual microphone dictation and text insertion must still be exercised by a human in Notepad, a browser field, and VS Code.
+- Native dictation currently inserts raw local Whisper output; deterministic personalization and Ollama cleanup are implemented in shared code but not wired into the native hotkey path.
+- Clipboard fallback restores prior text clipboard content, but not rich clipboard formats.
+- UI Automation insertion, target-window verification, startup-at-login, and the production overlay are still pending.
 
-Re-run after prerequisites:
+Re-run:
 
 - `npm install`
 - `npm run format`
@@ -61,9 +75,9 @@ Re-run after prerequisites:
 
 Risks:
 
-- Rust toolchain and Windows C++ build tools may be missing on developer machines.
-- Tauri plugin API drift can break native compilation; verify after installing Rust.
-- Mock providers prove orchestration but not real latency, audio device, sidecar, or insertion behavior.
+- Rust toolchain and Windows C++ build tools may be missing on other developer machines; `scripts/Install-Prereqs.ps1 -Install` now covers rustup and MSVC Build Tools.
+- Tauri plugin API drift can break native compilation; keep `npm run tauri -- info` and Rust checks in the verification loop.
+- The first native path proves local recording/transcription/paste plumbing, but not final latency, cleanup quality, target-window safety, or broad app compatibility.
 
 Acceptance criteria for this milestone:
 
@@ -73,7 +87,7 @@ Acceptance criteria for this milestone:
 
 ## Milestone 2: Audio and Local ASR
 
-Status: partial, shared logic verified.
+Status: partial, shared logic verified and first native local-ASR path runnable.
 
 Completed:
 
@@ -86,17 +100,21 @@ Completed:
 - Initial prompt builder for dictionary terms and pronunciation hints.
 - Timeout guard for local provider calls.
 - Shared performance recorder for hotkey-to-recording, ASR partial, release-to-final, LLM, insertion, model-load, and peak-memory metrics.
+- Native `cpal` default-microphone capture on a dedicated recorder thread.
+- Temporary mono 16 kHz WAV writing for the current sidecar path, with cleanup after transcription.
+- Local `whisper-cli.exe` launch against `ggml-tiny.en-q5_1.bin` with JSON output parsing.
+- Clear missing-runtime and missing-model errors for the native path.
 
 Not yet completed:
 
-- Add `cpal` microphone capture.
-- Add `whisper.cpp` sidecar process manager.
-- Add final transcription with cancellation, timeout, model-not-found errors, and native latency metric feeds.
+- Replace the temporary WAV path with a longer-term sidecar process manager and narrower IPC boundary.
+- Add cancellation, timeout enforcement, sidecar crash recovery, and native latency metric feeds.
 - Wire rolling partial transcription into real ASR events.
+- Add microphone selection and device-disconnect recovery.
 
 ## Milestone 3: Insertion and Cleanup
 
-Status: partial, shared cleanup contract verified.
+Status: partial, shared cleanup contract verified and native clipboard insertion started.
 
 Completed:
 
@@ -110,13 +128,15 @@ Completed:
 - Local Ollama cleanup requests through `/api/generate` with `stream: false` and strict JSON-format output.
 - Remote Ollama URLs blocked before fetch.
 - Clear shared errors for unavailable Ollama, no selected model, and missing local model.
+- Native clipboard paste fallback using Win32 `SendInput` for `Ctrl+V`.
+- Delayed restoration of the previous text clipboard after paste.
 
 Not yet completed:
 
 - Add Windows target tracking.
 - Add UI Automation insertion where safe.
-- Add simulated keyboard and clipboard fallback.
-- Wire the Ollama provider into the production native dictation workflow after real ASR and insertion are available.
+- Preserve rich clipboard formats during native fallback.
+- Wire deterministic personalization and the Ollama provider into the production native dictation workflow.
 
 ## Milestone 4: Personalization
 
@@ -157,6 +177,7 @@ Not yet completed:
 
 ## Milestone 6: Packaging and Hardening
 
+- Tauri bundle config now includes the Whisper CLI, required DLLs, and tiny English model as app resources.
 - Build installer.
 - Add startup-at-login.
 - Add crash recovery, benchmarks, security review, and full manual acceptance testing.

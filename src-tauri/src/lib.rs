@@ -1,9 +1,10 @@
 mod app_state;
-mod audio;
 mod asr;
+mod audio;
 mod context;
 mod hotkeys;
 mod insertion;
+mod native_dictation;
 mod platform;
 mod privacy;
 mod refinement;
@@ -30,6 +31,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LocalFlowRuntime::default())
+        .manage(native_dictation::NativeDictationRuntime::default())
         .setup(|app| {
             let database_path = storage::initialize(app.handle())?;
             tracing::info!(path = %database_path.display(), "initialized local settings database");

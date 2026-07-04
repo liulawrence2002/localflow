@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 .localflow-vite.*
+.localflow-tauri.*
+.localflow-release.*
+.localflow-runtime/
 
 # Editor directories and files
 .vscode/*

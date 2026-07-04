@@ -39,15 +39,19 @@ Current tests cover:
 Run:
 
 ```powershell
-npm run test
+.\scripts\Run-Checks.ps1
 ```
 
-Rust tests should be run after installing Rust:
+Current verification on this workstation:
 
-```powershell
-cd src-tauri
-cargo test
-```
+- `npm run format`
+- `npm run lint`
+- `npm run test` with 76 passing tests.
+- `npm run build`
+- `cargo fmt --check`
+- `cargo test` with 4 passing tests.
+- `cargo check`
+- `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
 
 ## Manual Dictation Checklist
 
@@ -78,3 +82,15 @@ cargo test
 25. Multiline text area.
 
 Manual acceptance tests must record exact app version, model, hardware, and observed latency. Do not invent performance claims.
+
+## Current Native Smoke Test
+
+1. Start the Tauri app with `.\scripts\Start-Dev.ps1`.
+2. Open a local text target such as Notepad.
+3. Click in the target field.
+4. Hold `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
+5. Speak a short sentence.
+6. Release the hotkey.
+7. Confirm raw local Whisper text appears in the target field.
+
+This validates microphone capture, local `whisper.cpp` execution, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.

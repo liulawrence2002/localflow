@@ -12,7 +12,7 @@
 - Run all available checks: `npm run check`
 - Build installer: `npm run tauri:build`
 
-Rust and Cargo must be installed before native Tauri commands can run.
+Rust, Cargo, WebView2, and MSVC Build Tools are required before native Tauri commands can run. On Windows, `.\scripts\Install-Prereqs.ps1 -Install` checks and installs the common prerequisites.
 
 ## Coding Conventions
 
@@ -21,6 +21,7 @@ Rust and Cargo must be installed before native Tauri commands can run.
 - Use explicit state transitions for dictation workflow changes.
 - Prefer typed provider traits and mock providers over direct dependencies in workflow code.
 - Keep dictated content out of logs unless a user explicitly exports it.
+- Keep native runtime assets in `.localflow-runtime/` or packaged Tauri resources; do not commit downloaded models or sidecar binaries.
 
 ## Privacy Requirements
 
@@ -29,6 +30,7 @@ Rust and Cargo must be installed before native Tauri commands can run.
 - Logs redact transcript content by default.
 - Do not collect protected-field or password context.
 - Store only the retention level selected by the user.
+- Do not silently fall back from local Whisper/Ollama to a remote service.
 
 ## Definition of Done
 

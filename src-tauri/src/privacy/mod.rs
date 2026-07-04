@@ -12,6 +12,9 @@ mod tests {
 
     #[test]
     fn does_not_log_dictated_content() {
-        assert_eq!(redact_for_log("secret dictated content"), "[redacted:23 chars]");
+        assert_eq!(
+            redact_for_log("secret dictated content"),
+            "[redacted:23 chars]"
+        );
     }
 }

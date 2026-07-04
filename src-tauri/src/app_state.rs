@@ -392,7 +392,7 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
         },
         DiagnosticMetric {
             label: "Global hotkey".to_string(),
-            value: "Ctrl+Alt+Space registered by Tauri plugin".to_string(),
+            value: "Ctrl+Alt+Space preferred; Ctrl+Alt+Shift+Space fallback".to_string(),
             status: "ok".to_string(),
         },
         DiagnosticMetric {

@@ -240,16 +240,16 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
                 next
             })
         }
-        WorkflowEvent::RefinementReady { text, confidence, .. } => {
-            guard_phase(state, &[DictationPhase::Refining], |mut next| {
-                next.phase = DictationPhase::Inserting;
-                if let Some(session) = next.active_session.as_mut() {
-                    session.refined_text = Some(text);
-                    session.confidence = Some(confidence);
-                }
-                next
-            })
-        }
+        WorkflowEvent::RefinementReady {
+            text, confidence, ..
+        } => guard_phase(state, &[DictationPhase::Refining], |mut next| {
+            next.phase = DictationPhase::Inserting;
+            if let Some(session) = next.active_session.as_mut() {
+                session.refined_text = Some(text);
+                session.confidence = Some(confidence);
+            }
+            next
+        }),
         WorkflowEvent::Inserted { timestamp, .. } => {
             guard_phase(state, &[DictationPhase::Inserting], |mut next| {
                 if let Some(session) = next.active_session.take() {

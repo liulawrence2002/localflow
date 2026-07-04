@@ -5,12 +5,13 @@ LocalFlow is split into a Tauri native layer and a React settings/history interf
 ## Native Layer
 
 - `src-tauri/src/workflow`: explicit dictation state machine.
-- `src-tauri/src/audio`: microphone capture interface and mock capture.
+- `src-tauri/src/audio`: microphone capture interface, mock capture, and shared audio helpers.
 - `src-tauri/src/asr`: ASR provider trait and initial mock provider; `WhisperCppProviderConfig` defines the sidecar boundary.
 - `src-tauri/src/refinement`: refinement provider trait, mock provider, no-op provider, and future native Ollama/llama.cpp configs.
 - `src-tauri/src/context`: local context snapshot interface.
 - `src-tauri/src/insertion`: text insertion interface and mock insertion.
 - `src-tauri/src/hotkeys`: global hotkey registration through Tauri's global-shortcut plugin.
+- `src-tauri/src/native_dictation`: first Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, and clipboard paste fallback.
 - `src-tauri/src/storage`: SQLite schema initialization.
 - `src-tauri/src/privacy`: redaction helpers for logs and diagnostics.
 

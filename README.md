@@ -2,7 +2,7 @@
 
 LocalFlow is a local-first Windows desktop voice-dictation app built with Tauri 2, Rust, React, TypeScript, SQLite, `whisper.cpp`, and local LLM refinement through Ollama.
 
-The current repository contains Milestone 1 foundation work plus build-tested shared logic for early Milestone 2/3/4 concerns: session-id stale-result rejection, audio ring buffers, VAD/end-of-speech detection, rolling ASR windows, `whisper.cpp` sidecar planning/parsing, cleanup JSON repair/fallback, a local-only Ollama provider, timeout guards, performance instrumentation, privacy retention, context policy, diagnostics export helpers, and editable personalization/style settings.
+The current build is a lightweight Tauri tray app with a first native dictation path: hold the global hotkey, speak into the default microphone, release the hotkey, and LocalFlow transcribes with local `whisper.cpp` before pasting the transcript into the focused field.
 
 ## Prerequisites
 
@@ -10,65 +10,82 @@ The current repository contains Milestone 1 foundation work plus build-tested sh
 - Node.js 22 or newer
 - npm 10 or newer
 - Rust stable with Cargo
-- Microsoft C++ build tools required by Tauri on Windows
+- Microsoft C++ Build Tools with the VCTools workload
 - WebView2 Runtime
-- Ollama for shared local refinement and later production native workflow wiring
-- A `whisper.cpp` build and model file for local ASR in later milestones
+- Ollama for the shared local cleanup provider and later native workflow wiring
 
-Run:
+Install/check common prerequisites:
 
 ```powershell
-.\scripts\Install-Prereqs.ps1
+.\scripts\Install-Prereqs.ps1 -Install
 npm install
+```
+
+## Local Whisper Runtime
+
+For this workstation, the local runtime assets are in `.localflow-runtime/`:
+
+- `.localflow-runtime\whisper\Release\whisper-cli.exe`
+- `.localflow-runtime\models\ggml-tiny.en-q5_1.bin`
+
+The folder is ignored by Git. Tauri dev mode uses it directly, and Tauri bundles copy the Whisper CLI, DLLs, and tiny English model into app resources. You can override paths with:
+
+```powershell
+$env:LOCALFLOW_WHISPER_CLI = "C:\path\to\whisper-cli.exe"
+$env:LOCALFLOW_WHISPER_MODEL = "C:\path\to\ggml-base.en.bin"
 ```
 
 ## Development
 
+Start the desktop app:
+
 ```powershell
-npm run dev
+.\scripts\Start-Dev.ps1
 ```
 
-For the desktop shell:
+Or directly:
 
 ```powershell
 npm run tauri:dev
 ```
 
+If `Ctrl+Alt+Space` is already registered by another app, LocalFlow automatically tries `Ctrl+Alt+Shift+Space`.
+
+## Native Dictation Test
+
+1. Start LocalFlow.
+2. Open Notepad, VS Code, or any text box.
+3. Click into the target field.
+4. Hold `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable; otherwise hold `Ctrl+Alt+Space`.
+5. Speak for 2-5 seconds.
+6. Release the hotkey and wait for local Whisper transcription.
+
+The current native path inserts the raw local Whisper transcript through clipboard paste and restores the previous text clipboard afterward.
+
 ## Checks
-
-```powershell
-npm run format
-npm run lint
-npm run test
-npm run build
-```
-
-Or:
 
 ```powershell
 .\scripts\Run-Checks.ps1
 ```
 
-## Model Setup
+This runs frontend formatting, linting, tests, build, and Rust format/test/check when Cargo is available.
 
-LocalFlow does not download large models during builds or tests. Configure a `whisper.cpp` model path manually:
-
-```powershell
-.\scripts\Set-WhisperModelPath.ps1 -ModelPath "C:\models\ggml-base.en.bin"
-```
-
-Check Ollama:
+## Packaging
 
 ```powershell
-.\scripts\Check-Ollama.ps1
+.\scripts\Build-Installer.ps1
 ```
+
+The Tauri bundle config includes the local Whisper CLI, required DLLs, and the tiny English model as resources. A successful Windows build creates:
+
+- `src-tauri\target\release\localflow.exe`
+- `src-tauri\target\release\bundle\msi\LocalFlow_0.1.0_x64_en-US.msi`
+- `src-tauri\target\release\bundle\nsis\LocalFlow_0.1.0_x64-setup.exe`
 
 ## Current Limitations
 
-- The current environment used to create this milestone did not have Rust/Cargo on PATH, so native Tauri compilation must be run after prerequisites are installed.
-- Real `cpal` audio capture, `whisper.cpp` sidecar execution, Windows UI Automation insertion, and production native Ollama workflow wiring are planned for later milestones.
-- The shared `whisper.cpp` command/JSON contract is implemented, but the native sidecar process manager is not yet wired.
-- The shared Ollama provider and Models screen discovery are implemented, but the production native dictation workflow still uses the mock local pipeline until real ASR and insertion are wired.
-- Shared context privacy/categorization is implemented, but native Windows context capture is not yet wired.
-- Shared performance metric helpers are implemented, but native services do not yet feed real measurements.
-- The UI currently exercises the mock local pipeline, editable settings model, Ollama discovery, redacted diagnostics export preparation, and local browser fallback persistence.
+- Native hotkey dictation currently uses the default input device and raw local Whisper output.
+- The native hotkey path does not yet run deterministic personalization or Ollama cleanup.
+- Clipboard fallback restores only prior text clipboard content, not full rich clipboard formats.
+- UI Automation insertion, target-window verification, startup-at-login, and production overlay behavior are still pending.
+- Manual speech insertion has to be checked by the user in real target apps; automated checks cannot speak into the microphone.

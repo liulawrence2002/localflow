@@ -12,6 +12,8 @@ Default behavior:
 - No screenshot capture.
 - No permanent audio storage.
 
+The current native hotkey path writes a temporary WAV file under the OS temp directory for `whisper.cpp` CLI processing, then deletes the WAV and JSON output after transcription.
+
 ## Stored Fields
 
 Milestone 1 initializes SQLite tables for:

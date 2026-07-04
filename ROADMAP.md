@@ -2,22 +2,22 @@
 
 ## Now
 
-- Finish Milestone 1 verification.
-- Confirm native build after Rust and Windows build prerequisites are installed.
+- Keep the Tauri tray app running reliably in dev mode.
+- Manually verify native dictation in Notepad, a browser field, and VS Code.
+- Wire deterministic personalization into the native hotkey path.
+- Feed native ASR/insertion timings into diagnostics.
 
 ## Next
 
-- Add microphone capture through `cpal`.
-- Add local VAD and bounded audio ring buffers.
-- Add `whisper.cpp` sidecar process and ASR provider.
-- Add model settings validation.
-- Add latency instrumentation.
+- Replace one-shot temporary WAV transcription with a managed `whisper.cpp` sidecar boundary.
+- Add microphone selection, device-disconnect handling, cancellation, and timeout enforcement.
+- Add target-window tracking and safer Windows UI Automation insertion before clipboard fallback.
+- Wire local Ollama cleanup into the native dictation path with raw-transcript undo.
 
 ## Later
 
-- Add Windows UI Automation insertion and clipboard fallback.
-- Add Ollama refinement provider.
-- Persist personalization settings.
+- Persist personalization settings fully through native SQLite.
 - Add live stable partial dictation.
-- Add command mode and selected-text transforms.
-- Package signed Windows installer.
+- Add command mode and selected-text transforms to the native workflow.
+- Add startup-at-login, crash recovery, benchmarks, and full manual acceptance testing.
+- Package and sign the Windows installer.

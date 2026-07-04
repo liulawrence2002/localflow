@@ -9,9 +9,8 @@ pub fn initialize(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>
     let database_path = data_dir.join("localflow.sqlite3");
     let connection = Connection::open(&database_path)?;
 
-    connection
-        .execute_batch(
-            "
+    connection.execute_batch(
+        "
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY NOT NULL,
                 value_json TEXT NOT NULL,
@@ -35,7 +34,7 @@ pub fn initialize(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>
                 case_sensitive INTEGER NOT NULL DEFAULT 0
             );
             ",
-        )?;
+    )?;
 
     Ok(database_path)
 }

@@ -4,17 +4,21 @@ LocalFlow does not download large model files during normal builds or tests.
 
 ## Whisper.cpp
 
-1. Build or install `whisper.cpp`.
-2. Download a compatible local model through the source you trust.
-3. Configure the model path:
+This workstation has a local dev runtime in `.localflow-runtime/`:
+
+- `whisper\Release\whisper-cli.exe`
+- `models\ggml-tiny.en-q5_1.bin`
+
+The native app first checks explicit environment overrides, then bundled Tauri resources, then the dev `.localflow-runtime/` folder.
 
 ```powershell
-.\scripts\Set-WhisperModelPath.ps1 -ModelPath "C:\models\ggml-base.en.bin"
+$env:LOCALFLOW_WHISPER_CLI = "C:\path\to\whisper-cli.exe"
+$env:LOCALFLOW_WHISPER_MODEL = "C:\path\to\ggml-base.en.bin"
 ```
 
-Milestone 2 still needs sidecar health checks, process-launch error recovery, native model-not-found checks, and hardware acceleration detection.
+The current native hotkey path records audio to a temporary mono 16 kHz WAV, runs `whisper-cli.exe` locally, parses JSON output, inserts the transcript, and deletes the temporary files.
 
-The shared sidecar contract now plans `whisper-cli` invocations with a configured model path, local audio path, language, thread count, optional vocabulary prompt, JSON output, and optional CPU-only mode. The native process manager that launches the sidecar is still pending.
+Still pending: sidecar health checks, process recovery, cancellation, timeout enforcement, model warm-up, hardware acceleration detection, and rolling partial transcription.
 
 ## Ollama
 
@@ -28,4 +32,4 @@ Check availability:
 
 The shared provider calls `http://127.0.0.1:11434/api/tags` for discovery and `http://127.0.0.1:11434/api/generate` for cleanup. Cleanup requests use `stream: false` and request JSON-format output.
 
-Localhost communication with Ollama is allowed. Remote model fallback is not allowed. The production native dictation workflow still needs to be wired to this provider after real ASR and insertion are enabled.
+Localhost communication with Ollama is allowed. Remote model fallback is not allowed. The native hotkey path still needs deterministic cleanup and Ollama refinement wiring; it currently inserts raw local Whisper output.

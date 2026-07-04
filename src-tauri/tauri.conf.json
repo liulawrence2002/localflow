@@ -26,6 +26,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../.localflow-runtime/whisper/Release/whisper-cli.exe": "localflow-runtime/whisper/Release/whisper-cli.exe",
+      "../.localflow-runtime/whisper/Release/*.dll": "localflow-runtime/whisper/Release/",
+      "../.localflow-runtime/models/ggml-tiny.en-q5_1.bin": "localflow-runtime/models/ggml-tiny.en-q5_1.bin"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
