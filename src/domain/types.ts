@@ -154,5 +154,5 @@ export interface AppStatus {
 export interface DiagnosticMetric {
   label: string;
   value: string;
-  status: "ok" | "warning" | "blocked";
+  status: "ok" | "warning" | "blocked" | "error";
 }

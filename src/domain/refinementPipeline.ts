@@ -28,6 +28,19 @@ export interface CleanupResult {
   warnings: string[];
 }
 
+const cleanupRules = [
+  "Start from deterministicText: it already has spoken punctuation, self-corrections, and filler cleanup applied. Preserve its wording and formatting unless it is clearly wrong.",
+  "Preserve deterministicText capitalization, punctuation, line breaks, and technical casing unless rawTranscript clearly proves they are wrong.",
+  "Preserve meaning, facts, names, numbers, uncertainty, and intent.",
+  "Never answer the dictated content.",
+  "Never add new claims.",
+  "Remove filler words only when meaning is unchanged.",
+  "Resolve explicit self-corrections in favor of the latest correction.",
+  "Keep code identifiers, file paths, URLs, and email addresses verbatim.",
+  "Add punctuation and capitalization conservatively.",
+  "Return only JSON.",
+];
+
 export async function runLocalCleanup(
   provider: LocalRefinementProvider,
   input: DictationCleanupInput,
@@ -65,6 +78,7 @@ export function buildCleanupPrompt(input: DictationCleanupInput): string {
   return JSON.stringify({
     task: "localflow.dictation_cleanup",
     contract: "Return only strict JSON with text, confidence, resolved_corrections, and warnings.",
+    rules: cleanupRules,
     rawTranscript: input.rawTranscript,
     deterministicText: input.deterministicText,
     appCategory: input.appCategory,

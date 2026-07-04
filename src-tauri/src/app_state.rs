@@ -2,11 +2,12 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::{
     asr::{AsrProvider, MockAsrProvider},
     insertion::{MockTextInserter, TextInserter},
+    native_dictation::NativeDictationRuntime,
     privacy::redact_for_log,
     refinement::{MockRefinementProvider, RefinementProvider},
     workflow::{transition, ActivationMode, TargetSnapshot, WorkflowEvent, WorkflowState},
@@ -36,6 +37,14 @@ impl LocalFlowRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    pub fn replace_settings(&self, settings: SettingsSnapshot) {
+        let mut guard = self
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = settings;
     }
 }
 
@@ -171,22 +180,41 @@ pub struct DiagnosticMetric {
 }
 
 #[tauri::command]
-pub fn get_status(runtime: State<'_, LocalFlowRuntime>) -> Result<AppStatus, String> {
+pub fn get_status(
+    runtime: State<'_, LocalFlowRuntime>,
+    native: State<'_, NativeDictationRuntime>,
+) -> Result<AppStatus, String> {
+    build_status(&runtime, Some(&native))
+}
+
+fn build_status(
+    runtime: &LocalFlowRuntime,
+    native: Option<&NativeDictationRuntime>,
+) -> Result<AppStatus, String> {
+    let mut diagnostics = default_diagnostics();
+    if let Some(native) = native {
+        diagnostics.extend(native.latency_diagnostics());
+    }
+
     Ok(AppStatus {
         workflow: runtime.workflow.lock().map_err(lock_error)?.clone(),
         settings: runtime.settings.lock().map_err(lock_error)?.clone(),
         history: runtime.history.lock().map_err(lock_error)?.clone(),
-        diagnostics: default_diagnostics(),
+        diagnostics,
     })
 }
 
 #[tauri::command]
 pub fn save_settings(
+    app: AppHandle,
     runtime: State<'_, LocalFlowRuntime>,
+    native: State<'_, NativeDictationRuntime>,
     settings: SettingsSnapshot,
 ) -> Result<AppStatus, String> {
+    crate::storage::save_settings(&app, &settings)
+        .map_err(|error| format!("Could not persist settings: {error}"))?;
     *runtime.settings.lock().map_err(lock_error)? = settings;
-    get_status(runtime)
+    build_status(&runtime, Some(&native))
 }
 
 #[tauri::command]
@@ -214,6 +242,7 @@ pub fn begin_mock_session(runtime: State<'_, LocalFlowRuntime>) -> Result<Workfl
 #[tauri::command]
 pub fn finish_mock_session(
     runtime: State<'_, LocalFlowRuntime>,
+    native: State<'_, NativeDictationRuntime>,
     raw_transcript: String,
 ) -> Result<AppStatus, String> {
     let asr = MockAsrProvider::new(raw_transcript);
@@ -295,7 +324,7 @@ pub fn finish_mock_session(
     }
 
     drop(workflow);
-    get_status(runtime)
+    build_status(&runtime, Some(&native))
 }
 
 #[tauri::command]
@@ -325,7 +354,7 @@ impl From<crate::workflow::SessionHistoryItem> for HistoryItem {
     }
 }
 
-fn default_settings() -> SettingsSnapshot {
+pub fn default_settings() -> SettingsSnapshot {
     SettingsSnapshot {
         hotkeys: HotkeySettings {
             default_hotkey: "Ctrl+Alt+Space".to_string(),
@@ -398,7 +427,7 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
     vec![
         DiagnosticMetric {
             label: "Dictation pipeline".to_string(),
-            value: "Native cpal capture -> whisper.cpp -> deterministic formatting -> local Ollama cleanup".to_string(),
+            value: "Native cpal capture -> whisper.cpp -> deterministic quick insert -> background local Ollama cleanup".to_string(),
             status: "ok".to_string(),
         },
         DiagnosticMetric {

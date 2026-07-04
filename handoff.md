@@ -1,449 +1,229 @@
-# LocalFlow Handoff
-
-## Goal
-
-LocalFlow is a local-first Windows desktop dictation app. The intended user flow is:
-
-1. The app runs quietly in the system tray.
-2. The user focuses any text field in another app.
-3. The user taps the global hotkey.
-4. A small bottom waveform overlay appears.
-5. LocalFlow records microphone audio.
-6. Local `whisper.cpp` transcribes the audio.
-7. A configurable local Ollama model (default `llama3.2:3b`) cleans the transcript — or, in low-resource mode, the deterministically formatted text is inserted directly with no LLM.
-8. The final text is pasted into the focused field.
-
-The app is designed to avoid cloud services, telemetry, accounts, and silent remote fallback. Ordinary dictation is expected to work offline after the local Whisper runtime and Ollama model are installed.
-
-## Current User Experience
-
-- Main settings window starts hidden.
-- The system tray icon can show or quit LocalFlow.
-- Global hotkey is `Ctrl+Alt+Space` by default.
-- If that shortcut is unavailable, LocalFlow falls back to `Ctrl+Alt+Shift+Space`.
-- Quick hotkey taps start dictation and keep the overlay open.
-- A second hotkey press or a longer hold-and-release can stop dictation manually.
-- End-of-speech detection starts processing after the user pauses.
-- If no voice arrives after a tap, LocalFlow times out instead of staying open forever.
-- During dictation, only the small waveform overlay should appear.
-- The `whisper-cli.exe` sidecar is launched with the Windows no-console flag to avoid terminal flashes.
-
-## Architecture Overview
-
-LocalFlow has two main layers:
-
-- Native desktop layer: `src-tauri/`
-- React/TypeScript UI and shared domain logic: `src/`
-
-The native layer owns Windows desktop integration:
-
-- Tray app lifecycle.
-- Global hotkey registration.
-- Microphone capture through `cpal`.
-- Local Whisper sidecar execution.
-- Local Ollama cleanup request.
-- Clipboard paste insertion through Win32 keyboard simulation.
-- Floating overlay window events.
-- SQLite initialization.
-
-The frontend layer owns:
-
-- Settings and diagnostics UI.
-- Mock workflow controls for development.
-- Shared typed domain helpers.
-- The waveform-only overlay view.
-- Local provider planning and validation logic.
-
-## Native Runtime Flow
-
-The main native path is implemented in `src-tauri/src/native_dictation.rs`.
-
-### Hotkey Handling
-
-`src-tauri/src/hotkeys/mod.rs` registers global shortcuts through `tauri-plugin-global-shortcut`.
-
-When a shortcut event arrives:
-
-1. The hotkey module emits a `localflow://hotkey` event for the UI.
-2. It calls `native_dictation::handle_hotkey`.
-3. The native dictation runtime sends a command to a dedicated recorder thread.
-
-The recorder thread prevents overlapping sessions and handles:
-
-- `pressed`
-- `released`
-- internal `auto_stop`
-
-Quick releases are treated as tap-to-start. Longer releases stop the active recording.
-
-### Audio Capture
-
-The native recorder:
-
-- Opens the Windows default input device through `cpal`.
-- Captures mono samples.
-- Chooses the loudest input channel for multi-channel devices to avoid phase-cancellation silence.
-- Tracks RMS, peak, duration, and nonzero sample ratio.
-- Rejects near-silent recordings before Whisper runs.
-
-The level meter thread also performs lightweight VAD:
-
-- It watches speech RMS.
-- It detects when real speech has started.
-- It sends `auto_stop` after a short post-speech pause.
-- It enforces a maximum recording duration.
-- It enforces a no-speech timeout for abandoned tap-to-start sessions.
-
-### Overlay Audio Features
-
-Each microphone chunk produces overlay features:
-
-- `level`: visible speech energy.
-- `pitch`: normalized voice pitch estimate.
-- `brightness`: zero-crossing based high-frequency estimate.
-
-These features are emitted through the Tauri event:
-
-```text
-localflow://native-dictation
-```
-
-The overlay does not receive transcript text. It only receives state and audio features.
-
-### Whisper Transcription
-
-Current Whisper flow:
-
-1. Captured audio is resampled to mono 16 kHz.
-2. A temporary WAV is written under the OS temp directory.
-3. `whisper-cli.exe` is launched locally.
-4. JSON output is parsed.
-5. Temporary WAV and JSON files are deleted after processing.
-
-The app resolves the Whisper executable/model in this order:
-
-1. `LOCALFLOW_WHISPER_CLI` and `LOCALFLOW_WHISPER_MODEL`.
-2. Bundled Tauri resources.
-3. `.localflow-runtime/` in the repository.
-
-The sidecar is launched with:
-
-- JSON output.
-- English language.
-- No timestamps.
-- Adaptive CPU thread count.
-- Hidden Windows child process flags.
-
-### Ollama Cleanup
-
-Native dictation is pinned to:
-
-```text
-gemma4:12b-it-qat
-```
-
-The native path calls:
-
-```text
-http://127.0.0.1:11434/api/generate
-```
-
-The cleanup prompt asks for strict JSON:
-
-```json
-{ "text": "final text", "confidence": 0.0, "resolved_corrections": [], "warnings": [] }
-```
-
-If the first response is invalid JSON, LocalFlow retries once with a repair prompt. If the repair fails or Ollama is unavailable, LocalFlow falls back to the raw Whisper transcript so dictation is not lost.
-
-The app warms `gemma4:12b-it-qat` in the background when recording starts and keeps it alive longer for repeated dictations.
-
-### Text Insertion
-
-The current native insertion path:
-
-1. Saves previous text clipboard content when possible.
-2. Writes the final transcript to the clipboard.
-3. Sends `Ctrl+V` through Win32 `SendInput`.
-4. Waits briefly.
-5. Restores previous text clipboard content.
-
-UI Automation insertion, rich clipboard preservation, and target-window verification are still pending.
-
-## Overlay Architecture
-
-The floating overlay is a separate Tauri window:
-
-```text
-label: overlay
-url: index.html?view=overlay
-transparent: true
-decorations: false
-alwaysOnTop: true
-skipTaskbar: true
-focusable: false
-```
-
-The frontend entry point in `src/main.tsx` detects `?view=overlay` and renders only `VoiceOverlay`.
-
-The overlay implementation lives in:
-
-```text
-src/components/VoiceOverlay.tsx
-src/App.css
-```
-
-The current visual is a dark audio-ribbon canvas:
-
-- The black surface is fixed-size and centered in the transparent overlay window.
-- The canvas is absolutely positioned to fill the surface.
-- The ribbon is drawn around an explicit vertical midpoint.
-- Soft vertical clamping keeps the waves centered inside the GUI.
-- Warmer upper strands react more to higher pitch.
-- Cooler lower strands react more to lower pitch.
-- Processing/refining/inserted/error states change the visual tone without showing a full app window.
-
-Important limitation: the ribbon currently reacts to live acoustic features, not live partial transcript words. Word-synchronous animation requires the future rolling partial-ASR pipeline to emit stabilized partial transcript timing.
-
-## React UI And Shared Domain Logic
-
-Important frontend files:
-
-- `src/App.tsx`: settings, status, diagnostics, personalization, mock workflow.
-- `src/components/VoiceOverlay.tsx`: waveform-only overlay.
-- `src/services/localflowClient.ts`: Tauri command adapter with browser fallback.
-- `src/domain/workflow.ts`: TypeScript state machine.
-- `src/domain/audio.ts`: bounded audio buffers, RMS, VAD, resampling helpers.
-- `src/domain/asrWindows.ts`: rolling ASR window planner.
-- `src/domain/whisperSidecar.ts`: Whisper command planning and JSON parsing.
-- `src/domain/refinementPipeline.ts`: cleanup JSON contract, repair retry, fallback.
-- `src/domain/ollama.ts`: local Ollama discovery and cleanup provider.
-- `src/domain/networkPolicy.ts`: localhost-only provider enforcement.
-- `src/domain/context.ts`: context privacy gates and app categorization.
-- `src/domain/insertionPlan.ts`: insertion method ordering and duplicate guards.
-- `src/domain/settings.ts`: personalization and style profile mutation helpers.
-- `src/domain/commandMode.ts`: selected-text command planning.
-
-## Tauri And Rust Modules
-
-Important native files:
-
-- `src-tauri/src/lib.rs`: Tauri builder, tracing setup, tray setup, command registration.
-- `src-tauri/src/main.rs`: GUI subsystem entry point for Windows release builds.
-- `src-tauri/src/hotkeys/mod.rs`: global shortcut registration and fallback.
-- `src-tauri/src/native_dictation.rs`: production native dictation path.
-- `src-tauri/src/workflow/mod.rs`: Rust workflow state machine.
-- `src-tauri/src/storage/mod.rs`: SQLite initialization.
-- `src-tauri/src/privacy/mod.rs`: log redaction helper.
-- `src-tauri/src/asr/mod.rs`: ASR provider trait and config shapes.
-- `src-tauri/src/refinement/mod.rs`: refinement provider trait and config shapes.
-- `src-tauri/src/insertion/mod.rs`: text inserter trait.
-- `src-tauri/src/context/mod.rs`: context provider trait.
-
-## Runtime Assets
-
-Development runtime assets live in `.localflow-runtime/` and are ignored by Git:
-
-```text
-.localflow-runtime/whisper/Release/whisper-cli.exe
-.localflow-runtime/models/ggml-tiny.en-q5_1.bin
-```
-
-Tauri bundle config copies these assets into release resources:
-
-```text
-localflow-runtime/whisper/Release/whisper-cli.exe
-localflow-runtime/whisper/Release/*.dll
-localflow-runtime/models/ggml-tiny.en-q5_1.bin
-```
-
-## Build And Test Commands
-
-Install/check prerequisites:
-
-```powershell
-.\scripts\Install-Prereqs.ps1 -Install
-npm install
-```
-
-Run all checks:
-
-```powershell
-.\scripts\Run-Checks.ps1
-```
-
-Start dev mode:
-
-```powershell
-.\scripts\Start-Dev.ps1
-```
-
-Build release and installers:
-
-```powershell
-npm run tauri:build
-```
-
-Check Ollama:
-
-```powershell
-.\scripts\Check-Ollama.ps1
-```
-
-## Current Verification
-
-Recent verification on this workstation:
-
-- `npm run format`
-- `npm run lint`
-- `npm run test` with 80 frontend tests (77 baseline + 3 recovery tests, Slice 3).
-- `npm run build`
-- `cargo fmt --check`
-- `cargo test` with 48 Rust tests (14 baseline; +3 session-guard Slice 1; +2 target-window Slice 2; +10 deterministic-formatting Slice 4; +3 personalization Slice 5; +15 streaming-ASR foundation Slice 8; +1 no-speech-branch Slice 9).
-- `cargo check`
-- `npm run tauri:build`
-
-Known Rust warnings (14) are from scaffolded provider traits and future-facing structs that are defined but not yet fully wired.
-
-### Phase 0 audit + Slice 1 (session identity & cancellation)
-
-- `docs/REPO_AUDIT.md` and `docs/PARITY_MATRIX.md` capture the evidence-based current
-  state, doc-vs-code discrepancies, risk-ranked debt, target architecture, and the ASR
-  benchmark plan.
-- Slice 1 adds a native `SessionRegistry` in `native_dictation.rs`. Each recording gets a
-  session id; the transcribe -> refine -> insert tail now runs on a worker thread. The
-  worker revalidates its session id before whisper, before refinement, and immediately
-  before pasting, so a **superseded (new recording started) or cancelled session never
-  inserts text** (spec §4.4). A `"cancel"` recorder command invalidates the active session
-  (mechanism for Escape-to-cancel; the Escape hotkey itself is a later slice).
-- Not yet runtime-verifiable here (no mic/whisper/Ollama in this environment). Manual
-  validation: (1) start dictation, immediately start a second dictation before the first
-  finishes → only the second inserts; (2) once a `cancel` hotkey is wired, cancel mid-
-  processing → nothing inserts.
-
-### Slice 2 (target-window revalidation before insertion)
-
-- `start_recording` captures the foreground window (`TargetWindow { hwnd, pid }`) via
-  `GetForegroundWindow` + `GetWindowThreadProcessId`. Before the `Ctrl+V` paste,
-  `process_session` calls `target_matches(captured, foreground_target())` and **skips the
-  paste** (with a clear "focus changed" error) unless the same window is still focused.
-  Fails closed if either target is unknown (spec §6.2 — never insert into a target that
-  cannot be revalidated). Added `Win32_Foundation` + `Win32_UI_WindowsAndMessaging`
-  features to the `windows` crate. +2 Rust tests.
-- Manual validation: start dictation in Notepad, alt-tab to another app before it finishes
-  → transcript is NOT pasted and the overlay shows the focus-changed error; staying in
-  Notepad → normal paste.
-
-### Slice 3 (copy/last-transcript recovery)
-
-- `NativeDictationRuntime` now keeps the last finalized transcript in volatile memory
-  (`last_transcript`), stored just before the insertion attempt so it survives a skipped
-  paste. Nothing is written to disk (retention-safe).
-- New Tauri commands `get_last_transcript` and `copy_last_transcript`, a tray item
-  "Copy last transcript" (needs no focus, always safe), and a Home > Recovery card that
-  shows availability + char count, a Copy button, and an opt-in Reveal preview (the
-  transcript is not shown by default). Pure helper `src/domain/recovery.ts` + 3 tests.
-- Manual validation: after a dictation whose paste was skipped (focus changed), click the
-  tray "Copy last transcript" (or the Recovery card's Copy) → transcript is on the
-  clipboard for manual Ctrl+V.
-
-### Slices 4-7 (smart formatting, personalization, escape-to-cancel, honesty)
-
-- **Slice 4 — `src-tauri/src/transcript/mod.rs`.** Authoritative deterministic formatting:
-  spoken punctuation ("comma"/"new line"/"bullet point"...), explicit self-corrections
-  ("actually", "no", "sorry", "let me restart"), filler/stutter removal, sentence
-  capitalization, and URL/email/decimal protection. Runs before the LLM and is the fallback
-  when Ollama is down. The TS `personalization.ts` is now the browser-dev-only copy.
-- **Slice 5 — personalization + model config.** `process_session` reads
-  `LocalFlowRuntime::current_settings()`: enabled replacements + snippets are applied by
-  `apply_deterministic_formatting_with`; dictionary phrases seed whisper's `--prompt`
-  (bounded to 800 chars); the Ollama model comes from settings (falls back to the default
-  constant). Warm-up uses the configured model too.
-- **Slice 6 — Escape-to-cancel.** `set_escape_cancel` registers bare Escape only while
-  recording; the hotkey handler routes it to the `cancel` command. It is unregistered when
-  recording ends or is cancelled, so Escape is not suppressed system-wide otherwise. Manual
-  validation: start dictation, press Escape while speaking → nothing inserts, overlay hides.
-- **Slice 7 — honesty.** Diagnostics describe the real pipeline and flag the one-shot ASR as
-  a known limitation; the Home panel is labeled "Simulated test" with a note that real
-  dictation uses the hotkey.
-
-### Slice 8 (streaming ASR foundation — `src-tauri/src/asr/`)
-
-- `stabilizer.rs` — `TranscriptStabilizer`: commits the longest stable token prefix across
-  overlapping-window hypotheses so committed words are never duplicated or rewritten
-  (spec §3.2). Authoritative Rust port of `transcriptStabilizer.ts`.
-- `windows.rs` — `plan_rolling_windows`: rolling/overlapping window boundaries for a
-  persistent runtime. Port of `asrWindows.ts`.
-- `streaming.rs` — typed `AsrEvent` contract, `AsrCapabilities`, `StreamingAsrProvider`
-  trait, and a `StreamingSession` coordinator turning rolling-window decodes into
-  SessionStarted/SpeechStarted/Committed/Partial/SpeechEnded/Final events. A scripted
-  `MockStreamingProvider` proves the trait end to end in tests.
-- `metrics.rs` — `word_error_rate` (token Levenshtein), the accuracy measure for the
-  benchmark harness.
-- **Status:** these are the Phase 3 foundation, exercised by unit tests but not yet on the
-  default one-shot path (marked `#![allow(dead_code)]`). Next: implement a persistent
-  whisper provider behind `StreamingAsrProvider`, feed rolling windows through
-  `StreamingSession`, emit partials to the overlay, and build the benchmark harness. That
-  step needs local models + a mic to verify, which this environment lacks.
-
-### Slice 9 (snappier, more Wispr Flow-like feel)
-
-- Timing constants tightened in `native_dictation.rs`: `END_OF_SPEECH_TIMEOUT_MS`
-  760→550, `NO_SPEECH_TIMEOUT_MS` 6000→2500, `MIN_AUTO_STOP_RECORDING_MS` 420→350;
-  `schedule_overlay_hide` 1200→700 ms; `paste_text` clipboard-restore sleep 700→400 ms.
+# LocalFlow — Unified Handoff
+
+This document is the single source of truth for the Wispr Flow–class upgrade of LocalFlow:
+what the app is, everything that was done, the current architecture, how it was verified
+(including live on this machine), what is known-incomplete, and what to do next.
+
+- **App:** LocalFlow — a local-first Windows voice-dictation app (Tauri 2, Rust backend,
+  React/TypeScript UI, SQLite, local `whisper.cpp`, local LLM refinement via Ollama).
+- **Goal of this work:** move from a one-shot recorder with a monolithic "god path" and a
+  mock UI toward a safe, personalized, recoverable, snappy dictation system with a
+  streaming-ASR-shaped architecture — without cloud, telemetry, or unverifiable claims.
+- **Status:** all changes are on the real native production path, each shipped with tests.
+  Full suite green (**49 Rust tests, 81 TS tests**); models installed and the pipeline
+  verified live; the dev app launches and runs.
+
+---
+
+## 1. Where it started (Phase 0 audit)
+
+Evidence-based audit produced before any code change (see `docs/REPO_AUDIT.md` and
+`docs/PARITY_MATRIX.md`). Key findings:
+
+- **Three disjoint "session" representations** that shared no code:
+  1. `src-tauri/src/native_dictation.rs` (1330 LOC) — the only path that touched a real mic,
+     whisper, Ollama, or the keyboard; a monolithic "god module" (hotkey → capture → VAD →
+     WAV → cold whisper spawn → Ollama → clipboard paste → overlay).
+  2. A trait + state-machine "spec skeleton" (`workflow`, `app_state`, and thin `asr`/`audio`/
+     `insertion`/… modules) reachable **only** through mock Tauri commands.
+  3. A large, well-tested TypeScript `src/domain/*` layer that was **off** the production path.
+- **Mock commands shipped in the production invoke handler**; the real dictation was
+  hotkey-only.
+- **No session identity, cancellation, or target verification** in the real path; insertion
+  was clipboard+Ctrl+V into whatever had focus at paste time.
+- Whisper spawned **cold per utterance**; models **hardcoded** (`gemma4:12b-it-qat`,
+  `ggml-tiny.en-q5_1.bin`); personalization/formatting existed only in the unused TS layer.
+- Baseline (all green): 77 TS tests, 14 Rust tests, lint/format/type checks clean.
+
+---
+
+## 2. Everything that was done (by slice)
+
+Each slice left the repo buildable and green. Rust test count in parentheses is cumulative.
+
+| #   | Slice                                               | Summary                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | **Audit**                                           | `docs/REPO_AUDIT.md` + `docs/PARITY_MATRIX.md`; baseline captured.                                                                                                                                                                                                                                                                                                                                         |
+| 1   | **Session identity + cancellation** (17)            | `SessionRegistry` (session id + supersede/cancel). The transcribe→refine→insert tail moved to a worker thread that revalidates the session before every side effect, so a **superseded or cancelled session never inserts** (spec §4.4).                                                                                                                                                                   |
+| 2   | **Target-window revalidation** (19)                 | Capture the foreground window (`TargetWindow{hwnd,pid}`) at record start; before pasting, **skip insertion (fail-closed)** unless the same window is still focused (spec §6.1/§6.2). Added `Win32_Foundation` + `Win32_UI_WindowsAndMessaging` crate features.                                                                                                                                             |
+| 3   | **Copy/last-transcript recovery** (+3 TS)           | Last finalized transcript kept in volatile memory; recoverable via a **tray item** and a **Home → Recovery card** (`get_last_transcript`/`copy_last_transcript`). Reveal-preview is opt-in; nothing persisted. Pure helper `src/domain/recovery.ts`.                                                                                                                                                       |
+| 4   | **Deterministic smart formatting** (29)             | New authoritative Rust `transcript` module: spoken punctuation ("comma", "new line", "bullet point"), explicit self-corrections ("Tuesday, actually Wednesday" / "no" / "sorry" / "let me restart"), filler/stutter cleanup, sentence capitalization, **URL/email/decimal protection**. Runs before the LLM (seeds the prompt) and is the fallback when the LLM is unavailable.                            |
+| 5   | **Personalization + model config** (32)             | Native path reads user settings: exact **replacements + snippets** applied deterministically; **dictionary** terms bias whisper via `--prompt` (bounded 800 chars); the **Ollama model is configurable** (no longer hardcoded).                                                                                                                                                                            |
+| 6   | **Escape-to-cancel** (32)                           | Escape is registered **only while recording** and routed to the `cancel` command; not suppressed system-wide otherwise.                                                                                                                                                                                                                                                                                    |
+| 7   | **Honest diagnostics + labeled test controls** (32) | Diagnostics describe the real pipeline (and flag one-shot ASR as a known limit); the Home panel is clearly labeled "Simulated test" so mock controls don't masquerade as production (spec §4.2).                                                                                                                                                                                                           |
+| 8   | **Streaming ASR foundation** (47)                   | New `src-tauri/src/asr/` submodules: typed `AsrEvent` contract + `AsrCapabilities` + `StreamingAsrProvider` trait; overlap-dedup `TranscriptStabilizer` + `StreamingSession` coordinator (**committed words never duplicated**, spec §3.2); rolling-window planner; `word_error_rate` metric for the benchmark harness. Unit-tested but **not yet on the default one-shot path** (`#![allow(dead_code)]`). |
+| 9   | **Snappier, Wispr-like feel** (48)                  | Timings tightened; silent idle close; faster default model + bounded timeout; instant no-LLM mode. Detail below.                                                                                                                                                                                                                                                                                           |
+| 10  | **Cleanup prompt hardening** (49; +1 TS = 81)       | Cleanup prompt now requires the model to preserve the deterministic text's capitalization/punctuation/line-breaks/technical casing unless the raw transcript proves them wrong. Shared by the native and TS preview prompts, with regression tests on both.                                                                                                                                                |
+
+### Slice 9 detail (the "make it feel like Wispr Flow" pass)
+
+- **Timing constants** (`native_dictation.rs`): `END_OF_SPEECH_TIMEOUT_MS` 760→**550**,
+  `NO_SPEECH_TIMEOUT_MS` 6000→**2500**, `MIN_AUTO_STOP_RECORDING_MS` 420→**350**;
+  `schedule_overlay_hide` 1200→**700 ms**; `paste_text` clipboard-restore sleep 700→**400 ms**.
 - **Silent idle close:** when speech was never detected, the level meter now sends `cancel`
-  (overlay just hides) instead of `auto_stop` (which flashed a "too short" error). New test
-  `no_speech_timeout_is_distinguishable_from_end_of_speech`.
-- **Faster default model:** default cleanup model changed from `gemma4:12b-it-qat` (12B) to
-  `llama3.2:3b` (fast, small, same Llama family Wispr Flow fine-tunes for its cleanup; our
-  deterministic layer already does the heavy formatting). Still configurable; `qwen2.5:3b`
-  and the original 12B are documented alternatives. Cleanup HTTP timeout 60→20 s so a slow
-  model falls back to deterministic text quickly.
-- **Instant mode:** the previously-unused `low_resource_mode` setting now skips the LLM and
-  inserts the deterministically formatted text for the lowest latency.
-- Insertion safety (session guard, target revalidation, Escape, recovery) is unchanged.
-- Manual validation needs a mic + `ollama pull llama3.2:3b`; steps in the plan file.
+  (overlay just hides) instead of `auto_stop` (which flashed a "too short" error).
+- **Faster default model:** default cleanup model changed from the 12B `gemma4:12b-it-qat` to
+  **`llama3.2:3b`**. Researched basis: **Wispr Flow's cleanup is itself a fine-tuned Llama
+  model**; ElevenLabs Scribe is an ASR model (our local whisper equivalent), not a cleanup
+  LLM. Our deterministic layer already does the heavy formatting, so a small Llama-family
+  model is the right fit. Still configurable in Settings (`qwen2.5:3b` and the original 12B
+  documented as alternatives). Cleanup HTTP timeout **60→20 s** so a slow model falls back to
+  deterministic text quickly.
+- **Instant mode:** the previously-unused `low_resource_mode` setting now **skips the LLM**
+  and inserts the deterministically formatted text for the lowest latency.
 
-## Known Limitations
+### Slice 10 — cleanup prompt hardening (49 Rust, 81 TS)
 
-- Native hotkey dictation currently uses the default Windows input device.
-- Native dictation cleanup model is configurable via settings (default `llama3.2:3b`, a fast
-  small model; low-resource mode skips the LLM entirely). ASR language is still fixed to
-  English and the whisper model path/threads are not yet settings-driven.
-- Deterministic formatting + user replacements/snippets/dictionary now run on the native
-  hotkey path (Slices 4-5). Style profiles are not yet applied to the cleanup prompt.
-- UI Automation text insertion is pending (insertion is still clipboard + Ctrl+V).
-- Target-window verification before insertion is implemented (HWND + PID, fail-closed);
-  hardening (process start time, UIA element identity, protected-field detection) is pending.
-- When the target changes, the transcript is preserved for recovery: "Copy last transcript"
-  is available from the tray and the Home > Recovery card. Paste-last-into-focus via a
-  dedicated global hotkey is still pending.
-- Rich clipboard preservation is pending.
-- Startup-at-login is pending.
-- Rolling partial transcription and live word-synchronous overlay animation are pending.
-- Native SQLite persistence for all personalization/settings mutations is still incomplete.
-- Manual insertion tests in Notepad, browser fields, and VS Code still need human confirmation.
+- Added an explicit cleanup rule requiring the local model to **preserve the
+  `deterministicText`'s capitalization, punctuation, line breaks, and technical casing**
+  unless the raw transcript clearly proves them wrong. This fixes the observed case where a
+  small model would undo capitalization the deterministic layer had already applied. The
+  native prompt (`native_dictation.rs`) and the TypeScript preview prompt
+  (`refinementPipeline.ts`) share the contract, with regression tests on both sides.
 
-## Recommended Next Work
+---
 
-1. Wire deterministic personalization into the native dictation pipeline before Ollama cleanup.
-2. Add microphone selection and device-disconnect recovery.
-3. Add target-window tracking before insertion.
-4. Replace clipboard-only insertion with UI Automation where safe.
-5. Add rolling partial Whisper windows and transcript stabilization to emit partial transcript events.
-6. Use partial transcript events to animate the overlay by committed word timing.
-7. Persist dictionary, replacements, snippets, and styles through native SQLite.
-8. Add startup-at-login and an onboarding/diagnostics screen for microphone/model checks.
+## 3. Current architecture & pipeline
 
-## Manual Test Checklist For The Current Build
+Native dictation (the live hotkey path):
 
-1. Launch `src-tauri/target/release/localflow.exe`.
-2. Open Notepad or another text field.
-3. Tap `Ctrl+Alt+Space` or `Ctrl+Alt+Shift+Space`.
-4. Confirm only the bottom waveform overlay appears.
-5. Speak a low phrase and then a higher phrase.
-6. Confirm the colored ribbon stays centered in the black panel and shifts shape with the voice.
-7. Pause briefly.
-8. Confirm the overlay switches to processing/refining.
-9. Confirm final text is pasted into the focused field.
-10. Confirm no terminal window flashes during transcription.
+```
+hotkey ─▶ cpal capture ─▶ VAD / end-of-speech ─▶ 16 kHz WAV
+        ─▶ whisper-cli.exe  (dictionary-biased --prompt)
+        ─▶ deterministic formatting  (transcript module + replacements/snippets)
+        ─▶ configurable Ollama cleanup  (or skipped in low-resource mode)
+        ─▶ session + target-window revalidation
+        ─▶ clipboard paste (Ctrl+V, prior clipboard restored)
+        ─▶ overlay status
+```
+
+Guarantees on this path:
+
+- Every recording has a **session id**; a superseded/cancelled/Escape'd session **never
+  inserts**.
+- Insertion is **revalidated** against the originating window (fail-closed) — no wrong-window
+  pastes.
+- The finalized transcript is **recoverable** (tray / Home "Copy last transcript") if the
+  paste is skipped or the LLM is unavailable.
+- If the LLM fails or times out, the **deterministically formatted** text is inserted.
+
+Key source files:
+
+- `src-tauri/src/native_dictation.rs` — the whole live pipeline (session guard, VAD, whisper,
+  refine, target check, paste, overlay, recovery commands).
+- `src-tauri/src/transcript/mod.rs` — authoritative deterministic formatting + personalization.
+- `src-tauri/src/asr/{stabilizer,windows,streaming,metrics}.rs` — streaming ASR foundation
+  (Phase 3; not yet wired to the default path).
+- `src-tauri/src/hotkeys/mod.rs` — global hotkey + Escape routing.
+- `src-tauri/src/app_state.rs` — settings snapshot, mock/verification commands, diagnostics,
+  `current_settings()` accessor used by the native path.
+- `src-tauri/src/lib.rs` — command registration + tray (incl. "Copy last transcript").
+- `src/services/localflowClient.ts`, `src/domain/recovery.ts`, `src/App.tsx` — recovery UI +
+  model settings.
+- `docs/REPO_AUDIT.md`, `docs/PARITY_MATRIX.md` — audit + capability status.
+
+The TypeScript `src/domain/*` layer is now the **browser-dev fallback / preview** only; Rust
+is authoritative for native production behavior.
+
+---
+
+## 4. Models & runtime (verified live on this machine)
+
+- **Whisper (ASR):** `.localflow-runtime/whisper/Release/whisper-cli.exe` +
+  `.localflow-runtime/models/ggml-tiny.en-q5_1.bin` present and wired (the native path
+  resolves them from env override → bundled resources → `.localflow-runtime/`). The runtime
+  also contains `whisper-server.exe`, `whisper-stream.exe`, and `parakeet-cli.exe` — real
+  engines available for a future persistent/streaming provider.
+- **Cleanup LLM:** Ollama running; **`llama3.2:3b` was pulled (2.0 GB) and verified live** —
+  a real cleanup-contract call returned valid strict JSON and cleaned correctly. Measured
+  **warm latency ~1.5–1.9 s**; a one-time **cold model load** (first call after launch / 30 min
+  idle) can take several seconds up to ~45 s (mitigated by background warm-up at record start
+  - 30 min keep-alive). `gemma4:12b-it-qat` (7.2 GB) remains installed as the slower option.
+- **Default hotkey:** `Ctrl+Alt+Space`, with automatic fallback to **`Ctrl+Alt+Shift+Space`**
+  when the primary is already registered by another app (as observed on this machine).
+
+### Run it
+
+```powershell
+.\scripts\Start-Dev.ps1        # or: npm run tauri:dev
+# ensure the cleanup model is present:
+ollama pull llama3.2:3b
+```
+
+Main window starts hidden — open it from the **tray icon**. Dictate: focus a text field, tap
+the active hotkey, speak, stop. Tray/Settings expose the model, `low_resource_mode` (instant,
+no-LLM), dictionary/replacements/snippets, and "Copy last transcript".
+
+---
+
+## 5. Verification status
+
+- `npm run test` → **81 frontend tests** pass.
+- `npx tsc --noEmit`, `npx eslint .`, `npx prettier --check …` → clean.
+- `npm run build` → succeeds.
+- `cargo fmt --check` → clean.
+- `cargo test` → **49 Rust tests** pass (14 baseline; +3 Slice 1; +2 Slice 2; +10 Slice 4;
+  +3 Slice 5; +15 Slice 8; +1 Slice 9; +1 Slice 10). Build emits dead-code warnings only, all in the unused
+  mock/scaffold layer.
+- **Live:** Ollama cleanup call verified end-to-end; whisper runtime present; dev app compiles,
+  initializes its SQLite DB, and runs.
+
+Not verifiable in the build/CI environment (no mic/whisper/Ollama there): the live GUI +
+microphone loop. That was validated separately on this workstation (models + app launch);
+per-utterance feel should be confirmed by dictating.
+
+---
+
+## 6. Known limitations (honest)
+
+- **ASR is still one-shot** whisper-cli per utterance. The streaming foundation (events,
+  trait, stabilizer, windows, WER) is built and tested but **not wired** to the default path.
+- **First dictation** after launch (or 30 min idle) can cold-load the model; with the 20 s
+  cleanup timeout it may fall back to deterministic text once, then run warm (~1.5 s).
+- **Settings are not persisted** across restarts (SQLite schema exists but is unused; settings
+  live in an in-memory mutex). So the **default model governs each fresh launch** — if you
+  select a model in Settings it applies for that session only.
+- ASR language is fixed to English; whisper model path/threads are not settings-driven yet.
+- **Style profiles** are not yet applied to the cleanup prompt.
+- No **native context capture** or **UI Automation insertion** (clipboard paste only).
+- `native_dictation.rs` has **not been split** into modules yet (still large).
+- Mock `begin/finish_mock_session` commands remain in the invoke handler (now clearly labeled
+  "Simulated test" in the UI).
+- (Fixed in Slice 10) A small model could undo capitalization the deterministic layer applied;
+  the cleanup prompt now explicitly requires preserving `deterministicText` casing/punctuation.
+
+---
+
+## 7. Remaining roadmap (recommended order)
+
+1. **Persistent/streaming whisper provider** on the existing `StreamingAsrProvider` trait
+   (your runtime already ships `whisper-server.exe` / `whisper-stream.exe` / `parakeet-cli.exe`),
+   feed rolling windows through `StreamingSession`, emit partials to the overlay; then build
+   the **benchmark harness** using `asr::metrics::word_error_rate` and the documented corpus.
+2. **Native SQLite persistence + retention** for settings/dictionary/replacements/snippets/
+   history (closes the "settings don't survive restart" gap; enforce retention in the
+   persistence layer).
+3. Optional **style-profile** application in the cleanup prompt (formality/concision/
+   greetings/sign-offs). _(Capitalization-preservation hardening — done in Slice 10.)_
+4. **UI Automation insertion** + **native context capture** (app-aware formatting,
+   protected-field avoidance).
+5. **Paste-last-into-focus** global hotkey; **module split** of `native_dictation.rs` behind
+   the provider traits; cold-start warm-up tuning.
+
+---
+
+## 8. Security & privacy posture
+
+- Local-only by default: cleanup hits `127.0.0.1:11434` (configured local model only); whisper
+  runs locally. No telemetry, no cloud ASR/LLM, no silent remote fallback.
+- Transcripts are **not logged** (only character counts / timings); temp WAV + JSON are deleted
+  after transcription.
+- The recovery transcript is held in **volatile memory only** (never written to disk); the UI
+  shows it only on explicit reveal; the overlay shows audio features, never transcript text.
+- Insertion safety: session guard + fail-closed target-window revalidation + Escape-to-cancel
+  ensure text never lands in an unintended or unverifiable target.
+
+---
+
+_Detailed per-slice reasoning, file-by-file evidence, and the capability matrix live in
+`docs/REPO_AUDIT.md`, `docs/PARITY_MATRIX.md`, and `PLAN.md`._

@@ -12,7 +12,7 @@ The script checks Node, npm, Git, Rust/Cargo, and Microsoft Visual Studio C++ Bu
 
 ## Port 1420 Is Busy
 
-The Tauri dev server expects port 1420. Stop the process using that port or adjust `src-tauri/tauri.conf.json` and `vite.config.ts` together.
+Port 1420 is only used by the developer Vite/Tauri loop. Normal packaged-app usage through `.\scripts\Start-LocalFlow.ps1` should not start anything on that port. If port 1420 is busy while developing, stop the process using that port or adjust `src-tauri/tauri.conf.json` and `vite.config.ts` together.
 
 ## Hotkey Does Not Trigger
 
@@ -68,4 +68,4 @@ Run:
 .\scripts\Check-Ollama.ps1
 ```
 
-Native hotkey dictation uses a configurable local Ollama model (default `llama3.2:3b`; run `ollama pull llama3.2:3b`). If the selected model is missing or Ollama is not running, LocalFlow logs the cleanup failure and inserts the deterministically formatted transcript rather than dropping the dictation. For the fastest possible insertion, enable low-resource mode in Settings > Models to skip the LLM entirely.
+Native hotkey dictation uses a configurable local Ollama model (default `llama3.2:3b`; run `ollama pull llama3.2:3b`) for background cleanup after the deterministic transcript is inserted. If the selected model is missing or Ollama is not running, LocalFlow logs the cleanup failure and keeps the quick inserted transcript. For the lowest resource usage, enable low-resource mode in Settings > Models to skip the LLM entirely.

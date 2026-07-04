@@ -48,9 +48,33 @@ Phase 1 (unify the production pipeline): in progress.
   `llama3.2:3b` (configurable; researched — the same Llama family Wispr Flow uses for cleanup)
   with the cleanup timeout bounded to 20 s; wired `low_resource_mode` as an instant-text mode
   that skips the LLM. +1 Rust test (48 total).
+- **Slice 10 -- cleanup prompt hardening (done).** Added an explicit cleanup rule requiring
+  the local model to preserve deterministicText capitalization, punctuation, line breaks, and
+  technical casing unless the raw transcript clearly proves they are wrong. The native prompt
+  and TypeScript preview prompt now share this contract, with focused regression coverage.
+  +1 Rust test (49 total), +1 frontend test (81 total).
+- **Slice 11 -- self-contained desktop launch + settings persistence (done).** Normal usage now
+  points at the packaged release app through `Start-LocalFlow.ps1` / `npm start`, which stops
+  the known Vite dev server and starts only the hidden tray app plus local Ollama when available.
+  Settings are loaded from and saved to the SQLite `settings.v1` JSON row, and production builds
+  hide simulated pipeline controls. +1 Rust test (50 total).
+- **Slice 12 -- Wispr-like waveform pill polish (done).** Replaced the dark neon ribbon overlay
+  with a compact frosted pill, centered professional waveform, pitch-reactive warm/cool harmonics,
+  and a tiny phase dot for listening/processing/inserted/error feedback. Native overlay behavior
+  and audio event contracts are unchanged.
+- **Slice 13 -- taskbar-safe overlay placement (done).** Shrunk the overlay window and pill, then
+  positioned the native overlay against the Windows monitor work area instead of full monitor
+  bounds so it sits centered above the taskbar with a consistent bottom gap. +3 Rust tests.
+- **Slice 14 -- flush overlay window cleanup (done).** Matched the native overlay window to the
+  visible pill footprint, disabled the undecorated Tauri window shadow, and moved remaining visual
+  depth inside the pill so no outer transparent rectangle or outline should show.
+- **Slice 15 -- latency diagnostics + fast insert (done).** Added native per-stage timing snapshots
+  to Diagnostics and changed the native path to paste deterministic text immediately after Whisper,
+  then run configured local Ollama cleanup in the background for recovery/diagnostics. +5 Rust tests
+  (58 total).
 - Follow-ups (roadmap): persistent/streaming whisper provider + benchmark harness; native
-  SQLite persistence + retention jobs; UI Automation insertion; native context capture;
-  paste-last-into-focus hotkey; module split of `native_dictation.rs`.
+  SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
+  hotkey; module split of `native_dictation.rs`.
 
 ## Milestone 1: Foundation
 
@@ -123,7 +147,7 @@ Verified:
 Known native limitations:
 
 - Manual microphone dictation and text insertion must still be exercised by a human in Notepad, a browser field, and VS Code.
-- Native dictation now runs local Ollama `gemma4:12b-it-qat` cleanup before insertion; deterministic personalization is still not wired into the native hotkey path.
+- Native dictation now inserts deterministic personalized text first, then runs the configured local Ollama cleanup model in the background for recovery/diagnostics.
 - Clipboard fallback restores prior text clipboard content, but not rich clipboard formats.
 - UI Automation insertion, target-window verification, and startup-at-login are still pending.
 
@@ -201,7 +225,7 @@ Completed:
 - Insertion target validation, method ordering, clipboard restoration plan, and duplicate insertion guard.
 - Local Ollama model discovery through `/api/tags`.
 - Local Ollama cleanup requests through `/api/generate` with `stream: false` and strict JSON-format output.
-- Native Ollama cleanup requests pinned to `gemma4:12b-it-qat`.
+- Native Ollama cleanup requests use the configured local model, defaulting to `llama3.2:3b`.
 - Native recording start warms pinned `gemma4:12b-it-qat` in the background and keeps it loaded longer for repeated dictation.
 - Remote Ollama URLs blocked before fetch.
 - Clear shared errors for unavailable Ollama, no selected model, and missing local model.

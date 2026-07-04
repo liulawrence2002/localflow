@@ -36,6 +36,23 @@ pub fn run() {
         .setup(|app| {
             let database_path = storage::initialize(app.handle())?;
             tracing::info!(path = %database_path.display(), "initialized local settings database");
+            match storage::load_settings(app.handle()) {
+                Ok(Some(settings)) => {
+                    app.state::<LocalFlowRuntime>().replace_settings(settings);
+                    tracing::info!("loaded persisted settings");
+                }
+                Ok(None) => {
+                    tracing::info!("no persisted settings found; using defaults");
+                    let defaults = app.state::<LocalFlowRuntime>().current_settings();
+                    if let Err(error) = storage::save_settings(app.handle(), &defaults) {
+                        tracing::warn!(error = %error, "could not seed default persisted settings");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "could not load persisted settings; using defaults");
+                }
+            }
+
             build_tray(app)?;
 
             #[cfg(desktop)]

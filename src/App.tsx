@@ -95,6 +95,8 @@ const screens = [
   { id: "about", label: "About", icon: Info },
 ] satisfies Array<{ id: ScreenId; label: string; icon: typeof Activity }>;
 
+const showDeveloperControls = import.meta.env.DEV;
+
 type UpdateSettings = (updater: (settings: LocalFlowSettings) => LocalFlowSettings) => void;
 
 export function App() {
@@ -205,6 +207,10 @@ export function App() {
     setIsCheckingOllama(false);
   }
 
+  async function refreshStatus() {
+    setStatus(await getStatus());
+  }
+
   function prepareDiagnosticsExport() {
     setDiagnosticsExport(serializeDiagnosticsExport(status));
   }
@@ -253,60 +259,88 @@ export function App() {
           <section className="panel-grid panel-grid--home">
             <div className="panel">
               <div className="panel-heading">
-                <h2>Simulated test</h2>
+                <h2>Desktop App</h2>
                 <span className={`status-pill status-pill--${status.workflow.phase.toLowerCase()}`}>
                   {status.workflow.phase}
                 </span>
               </div>
-              <p className="field-hint">
-                This panel simulates the pipeline for testing. Real dictation runs from the global
-                hotkey (Ctrl+Alt+Space) into the focused app.
-              </p>
-              <label className="field">
-                <span>Test transcript</span>
-                <textarea
-                  value={mockTranscript}
-                  onChange={(event) => setMockTranscript(event.currentTarget.value)}
-                  rows={5}
-                />
-              </label>
-              <div className="button-row">
-                <button type="button" onClick={startMockDictation} disabled={isBusy} title="Start">
-                  <Play size={16} aria-hidden="true" />
-                  Start
-                </button>
-                <button
-                  type="button"
-                  onClick={completeMockDictation}
-                  disabled={isBusy}
-                  title="Finish"
-                >
-                  <Save size={16} aria-hidden="true" />
-                  Finish
-                </button>
-                <button type="button" onClick={stopSession} disabled={isBusy} title="Cancel">
-                  <Square size={16} aria-hidden="true" />
-                  Cancel
-                </button>
+              <div className="button-row button-row--status">
+                <span className="status-pill">Tray background service</span>
+                <span className="status-pill">{settings.hotkeys.defaultHotkey}</span>
               </div>
+              <p className="field-hint">
+                LocalFlow is running as the packaged desktop app. The settings window can stay
+                hidden while dictation uses the bottom waveform overlay.
+              </p>
             </div>
 
-            <div className="panel">
-              <div className="panel-heading">
-                <h2>Last Output</h2>
-                {canUndoCleanup(status.workflow.lastCompleted) ? (
-                  <button type="button" onClick={undoLastCleanup} title="Undo AI cleanup">
-                    <RotateCcw size={16} aria-hidden="true" />
-                    Undo
-                  </button>
-                ) : (
-                  <FileClock size={18} aria-hidden="true" />
-                )}
-              </div>
-              <output className="transcript-output">
-                {status.workflow.lastCompleted?.finalText ?? "No completed dictation yet."}
-              </output>
-            </div>
+            {showDeveloperControls ? (
+              <>
+                <div className="panel">
+                  <div className="panel-heading">
+                    <h2>Simulated test</h2>
+                    <span
+                      className={`status-pill status-pill--${status.workflow.phase.toLowerCase()}`}
+                    >
+                      {status.workflow.phase}
+                    </span>
+                  </div>
+                  <p className="field-hint">
+                    This panel simulates the pipeline for testing. Real dictation runs from the
+                    global hotkey into the focused app.
+                  </p>
+                  <label className="field">
+                    <span>Test transcript</span>
+                    <textarea
+                      value={mockTranscript}
+                      onChange={(event) => setMockTranscript(event.currentTarget.value)}
+                      rows={5}
+                    />
+                  </label>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      onClick={startMockDictation}
+                      disabled={isBusy}
+                      title="Start"
+                    >
+                      <Play size={16} aria-hidden="true" />
+                      Start
+                    </button>
+                    <button
+                      type="button"
+                      onClick={completeMockDictation}
+                      disabled={isBusy}
+                      title="Finish"
+                    >
+                      <Save size={16} aria-hidden="true" />
+                      Finish
+                    </button>
+                    <button type="button" onClick={stopSession} disabled={isBusy} title="Cancel">
+                      <Square size={16} aria-hidden="true" />
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+
+                <div className="panel">
+                  <div className="panel-heading">
+                    <h2>Last Output</h2>
+                    {canUndoCleanup(status.workflow.lastCompleted) ? (
+                      <button type="button" onClick={undoLastCleanup} title="Undo AI cleanup">
+                        <RotateCcw size={16} aria-hidden="true" />
+                        Undo
+                      </button>
+                    ) : (
+                      <FileClock size={18} aria-hidden="true" />
+                    )}
+                  </div>
+                  <output className="transcript-output">
+                    {status.workflow.lastCompleted?.finalText ?? "No completed dictation yet."}
+                  </output>
+                </div>
+              </>
+            ) : null}
 
             <div className="panel">
               <div className="panel-heading">
@@ -650,6 +684,10 @@ export function App() {
             />
             <SettingsPanel title="Export">
               <div className="button-row">
+                <button type="button" onClick={refreshStatus} title="Refresh diagnostics">
+                  <RefreshCw size={16} aria-hidden="true" />
+                  Refresh
+                </button>
                 <button
                   type="button"
                   onClick={prepareDiagnosticsExport}

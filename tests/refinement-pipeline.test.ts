@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { runLocalCleanup, type DictationCleanupInput } from "../src/domain/refinementPipeline";
+import {
+  buildCleanupPrompt,
+  runLocalCleanup,
+  type DictationCleanupInput,
+} from "../src/domain/refinementPipeline";
 
 const input: DictationCleanupInput = {
   rawTranscript: "send it to james actually send it to sarah",
@@ -62,5 +66,22 @@ describe("local cleanup JSON contract", () => {
     expect(result.text).toBe(input.deterministicText);
     expect(result.rawTranscript).toBe(input.rawTranscript);
     expect(result.warnings[0]).toContain("invalid JSON twice");
+  });
+
+  it("preserves deterministic casing and punctuation in the cleanup contract", () => {
+    const deterministicText = "Email Sarah about PyTorch at 3.14 p.m.\n- Ship LocalFlow.";
+    const prompt = JSON.parse(
+      buildCleanupPrompt({
+        ...input,
+        rawTranscript:
+          "email sarah about pie torch at three point one four p m bullet ship local flow",
+        deterministicText,
+      }),
+    );
+
+    expect(prompt.deterministicText).toBe(deterministicText);
+    expect(prompt.rules).toContain(
+      "Preserve deterministicText capitalization, punctuation, line breaks, and technical casing unless rawTranscript clearly proves they are wrong.",
+    );
   });
 });

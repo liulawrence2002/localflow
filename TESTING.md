@@ -23,7 +23,7 @@ Current tests cover:
 - LLM JSON validation.
 - LLM JSON repair retry and deterministic fallback.
 - Timeout handling.
-- Performance metric recording, missing-measurement warnings, and latency/memory formatting.
+- Performance metric recording, native latency diagnostics, missing-measurement warnings, and latency/memory formatting.
 - Cursor-aware insertion spacing.
 - Insertion target validation.
 - Clipboard fallback delayed-restoration planning.
@@ -53,8 +53,9 @@ Current verification on this workstation:
 - `cargo test` with 14 passing tests.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
-- `.\scripts\Check-Ollama.ps1`, confirming local model `gemma4:12b-it-qat`.
-- Direct local Ollama generate smoke test with `gemma4:12b-it-qat`, returning strict cleanup JSON.
+- `.\scripts\Start-LocalFlow.ps1`, launching the release app without Vite.
+- `.\scripts\Check-Ollama.ps1`, confirming local model `llama3.2:3b`.
+- Direct local Ollama generate smoke test with `llama3.2:3b`, returning strict cleanup JSON.
 
 ## Manual Dictation Checklist
 
@@ -88,13 +89,17 @@ Manual acceptance tests must record exact app version, model, hardware, and obse
 
 ## Current Native Smoke Test
 
-1. Start the Tauri app with `.\scripts\Start-Dev.ps1`.
+1. Start the packaged app with `.\scripts\Start-LocalFlow.ps1`.
 2. Open a local text target such as Notepad.
 3. Click in the target field.
 4. Tap `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
 5. Speak a short sentence.
 6. Pause briefly after speaking, or press the hotkey again.
-7. Confirm the small waveform overlay appears while listening, the colored ribbon changes with speech pitch and volume, and it switches to processing/refining after the pause or second hotkey press.
-8. Confirm cleaned text appears in the target field.
+7. Confirm only the small frosted waveform pill appears above the taskbar while listening, with no larger transparent rectangle or outline; the waveform should change with speech pitch and volume, then switch to processing/refining after the pause or second hotkey press.
+8. Confirm deterministic text appears in the target field quickly after local Whisper finishes; local Ollama cleanup should continue in the background and update Diagnostics/Copy Last Transcript when available.
+9. Open Diagnostics, click Refresh, and record `Latency: speech end to visible text`, `Latency: Whisper sidecar`, and `Latency: Ollama cleanup`.
+10. Confirm `Get-NetTCPConnection -LocalPort 1420 -State Listen` returns nothing during this release-app smoke test.
 
-This validates microphone capture, end-of-speech auto-stop, pitch-reactive overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
+This validates microphone capture, end-of-speech auto-stop, pitch-reactive overlay events, local `whisper.cpp` execution, deterministic quick insert, background local Ollama `llama3.2:3b` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
+
+Use `.\scripts\Start-Dev.ps1` only when intentionally testing the developer Vite/Tauri loop.

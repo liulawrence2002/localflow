@@ -11,7 +11,7 @@ interface NativeDictationPayload {
   brightness?: number | null;
 }
 
-interface RibbonState {
+interface WaveState {
   level: number;
   pitch: number;
   brightness: number;
@@ -21,87 +21,75 @@ interface RibbonState {
   phase: NativeDictationPhase;
 }
 
-interface RibbonLayer {
+interface WaveLayer {
   color: string;
-  direction: -1 | 1;
+  verticalBias: number;
   frequency: number;
   speed: number;
   phase: number;
-  strands: number;
+  lineWidth: number;
   gain: number;
-  spread: number;
   alpha: number;
   pitchResponse: number;
+  detail: number;
 }
 
-const ribbonLayers: RibbonLayer[] = [
+const waveLayers: WaveLayer[] = [
   {
-    color: "255, 77, 35",
-    direction: -1,
-    frequency: 8.4,
-    speed: 1.32,
-    phase: 0.1,
-    strands: 18,
-    gain: 1.05,
-    spread: 1.0,
-    alpha: 0.12,
-    pitchResponse: 1.05,
+    color: "56, 63, 72",
+    verticalBias: 0,
+    frequency: 4.2,
+    speed: 1.05,
+    phase: 0.2,
+    lineWidth: 2.7,
+    gain: 1.0,
+    alpha: 0.72,
+    pitchResponse: 0.08,
+    detail: 0.22,
   },
   {
-    color: "255, 154, 34",
-    direction: -1,
-    frequency: 6.2,
-    speed: 1.08,
-    phase: 1.35,
-    strands: 14,
-    gain: 0.78,
-    spread: 0.82,
-    alpha: 0.11,
-    pitchResponse: 0.74,
+    color: "205, 111, 80",
+    verticalBias: -1,
+    frequency: 5.8,
+    speed: 1.16,
+    phase: 1.5,
+    lineWidth: 1.25,
+    gain: 0.72,
+    alpha: 0.32,
+    pitchResponse: 1.0,
+    detail: 0.36,
   },
   {
-    color: "37, 154, 255",
-    direction: 1,
-    frequency: 7.2,
-    speed: 1.18,
-    phase: 2.35,
-    strands: 18,
-    gain: 1.08,
-    spread: 1.06,
-    alpha: 0.13,
-    pitchResponse: -1.05,
-  },
-  {
-    color: "79, 77, 255",
-    direction: 1,
+    color: "70, 128, 178",
+    verticalBias: 1,
     frequency: 5.4,
-    speed: 0.92,
-    phase: 3.15,
-    strands: 15,
-    gain: 0.82,
-    spread: 0.92,
-    alpha: 0.12,
-    pitchResponse: -0.7,
+    speed: 0.98,
+    phase: 2.65,
+    lineWidth: 1.2,
+    gain: 0.74,
+    alpha: 0.34,
+    pitchResponse: -1.0,
+    detail: 0.32,
   },
   {
-    color: "255, 78, 210",
-    direction: -1,
-    frequency: 4.6,
-    speed: 0.86,
-    phase: 4.2,
-    strands: 8,
-    gain: 0.34,
-    spread: 0.34,
-    alpha: 0.22,
-    pitchResponse: 0.18,
+    color: "174, 131, 70",
+    verticalBias: -0.35,
+    frequency: 7.1,
+    speed: 1.34,
+    phase: 4.1,
+    lineWidth: 0.95,
+    gain: 0.38,
+    alpha: 0.28,
+    pitchResponse: 0.56,
+    detail: 0.48,
   },
 ];
-const ribbonVerticalCenter = 0.5;
-const ribbonVerticalLimit = 0.38;
+const waveVerticalCenter = 0.5;
+const waveVerticalLimit = 0.32;
 
 export function VoiceOverlay() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const visualRef = useRef<RibbonState>({
+  const visualRef = useRef<WaveState>({
     level: 0.12,
     pitch: 0.5,
     brightness: 0.35,
@@ -188,7 +176,7 @@ export function VoiceOverlay() {
       visual.pitch = lerp(visual.pitch, visual.targetPitch, 0.12);
       visual.brightness = lerp(visual.brightness, visual.targetBrightness, 0.12);
 
-      drawRibbon(context, rect.width, rect.height, visual, timeMs / 1000);
+      drawWaveform(context, rect.width, rect.height, visual, timeMs / 1000);
       animationFrame = window.requestAnimationFrame(drawFrame);
     };
 
@@ -218,153 +206,158 @@ export function VoiceOverlay() {
   );
 }
 
-function drawRibbon(
+function drawWaveform(
   context: CanvasRenderingContext2D,
   width: number,
   height: number,
-  visual: RibbonState,
+  visual: WaveState,
   time: number,
 ) {
   context.clearRect(0, 0, width, height);
 
-  drawBackground(context, width, height, visual);
-  drawCenterGlow(context, width, height, visual);
+  drawSoftGuide(context, width, height, visual);
+  drawEnergyWash(context, width, height, visual);
 
-  for (const layer of ribbonLayers) {
-    drawRibbonLayer(context, width, height, visual, time, layer);
+  for (const layer of waveLayers) {
+    drawWaveLayer(context, width, height, visual, time, layer);
   }
 
-  drawCenterLine(context, width, height, visual, time);
+  drawPrimaryLine(context, width, height, visual, time);
 }
 
-function drawBackground(
+function drawSoftGuide(
   context: CanvasRenderingContext2D,
   width: number,
   height: number,
-  visual: RibbonState,
+  visual: WaveState,
 ) {
-  const gradient = context.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, phaseBackgroundTop(visual.phase));
-  gradient.addColorStop(0.5, "#07090c");
-  gradient.addColorStop(1, phaseBackgroundBottom(visual.phase));
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, width, height);
-}
-
-function drawCenterGlow(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  visual: RibbonState,
-) {
-  const centerY = ribbonCenterY(height);
-  const glow = context.createLinearGradient(0, centerY - 18, 0, centerY + 18);
-  glow.addColorStop(0, `rgba(255, 99, 53, ${0.08 + visual.pitch * 0.08})`);
-  glow.addColorStop(0.5, `rgba(243, 73, 220, ${0.16 + visual.level * 0.14})`);
-  glow.addColorStop(1, `rgba(30, 139, 255, ${0.1 + (1 - visual.pitch) * 0.1})`);
-  context.fillStyle = glow;
-  context.fillRect(0, centerY - 20, width, 40);
-}
-
-function drawRibbonLayer(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  visual: RibbonState,
-  time: number,
-  layer: RibbonLayer,
-) {
-  const centerY = ribbonCenterY(height);
-  const level = visual.phase === "inserted" ? 0.18 : visual.level;
-  const phaseGain = visual.phase === "error" ? 0.72 : 1;
-  const pitchBias = (visual.pitch - 0.5) * layer.pitchResponse;
-  const pitchGain = 0.72 + Math.abs(pitchBias) * 0.95;
-  const amplitude = Math.min((8 + level * 34) * layer.gain * pitchGain * phaseGain, height * 0.3);
-  const frequency = layer.frequency + visual.brightness * 2.4 + visual.pitch * layer.pitchResponse;
-  const speed = layer.speed + level * 0.72;
-  const strandCount = layer.strands;
-
-  context.save();
-  context.globalCompositeOperation = "screen";
-
-  for (let strand = 0; strand < strandCount; strand += 1) {
-    const strandPosition = strandCount === 1 ? 0 : strand / (strandCount - 1);
-    const offset = (strandPosition - 0.5) * amplitude * layer.spread;
-    const alpha = layer.alpha * (0.38 + strandPosition * 0.86);
-
-    context.beginPath();
-    for (let x = 0; x <= width; x += 3) {
-      const progress = x / width;
-      const envelope =
-        0.34 +
-        0.66 *
-          Math.pow(
-            Math.sin(Math.PI * progress) *
-              (0.76 + 0.24 * Math.sin(progress * Math.PI * 5.0 + layer.phase)),
-            1.35,
-          );
-      const mainWave = Math.sin(progress * Math.PI * frequency + time * speed + layer.phase);
-      const detailWave = Math.sin(
-        progress * Math.PI * (frequency * 2.18 + visual.brightness * 4.2) -
-          time * (speed * 1.22) +
-          strand * 0.21,
-      );
-      const spikeWave = Math.pow(
-        Math.max(
-          0,
-          Math.sin(progress * Math.PI * (frequency * 0.62 + 1.2) + time * 0.7 + layer.phase),
-        ),
-        4,
-      );
-      const pitchShape =
-        layer.direction === -1
-          ? spikeWave * visual.pitch * 0.95
-          : spikeWave * (1 - visual.pitch) * 0.9;
-      const displacement =
-        layer.direction *
-        envelope *
-        amplitude *
-        (mainWave * 0.52 + detailWave * 0.28 + pitchShape + pitchBias * 0.32);
-      const rawY = centerY + displacement + offset;
-      const y = squashToRibbonBand(rawY, centerY, height);
-
-      if (x === 0) {
-        context.moveTo(x, y);
-      } else {
-        context.lineTo(x, y);
-      }
-    }
-
-    context.strokeStyle = `rgba(${phaseColor(layer.color, visual.phase)}, ${alpha})`;
-    context.lineWidth = 0.7 + strandPosition * 0.48;
-    context.stroke();
-  }
-
-  context.restore();
-}
-
-function drawCenterLine(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  visual: RibbonState,
-  time: number,
-) {
-  const centerY = ribbonCenterY(height);
-  const lineGradient = context.createLinearGradient(0, 0, width, 0);
-  lineGradient.addColorStop(0, "rgba(24, 140, 255, 0.1)");
-  lineGradient.addColorStop(0.45, `rgba(255, 101, 221, ${0.32 + visual.level * 0.28})`);
-  lineGradient.addColorStop(1, "rgba(255, 135, 36, 0.12)");
+  const centerY = waveCenterY(height);
+  const guide = context.createLinearGradient(26, 0, width - 26, 0);
+  guide.addColorStop(0, "rgba(69, 79, 88, 0)");
+  guide.addColorStop(0.18, `rgba(69, 79, 88, ${0.06 + visual.level * 0.04})`);
+  guide.addColorStop(0.5, `rgba(69, 79, 88, ${0.14 + visual.level * 0.08})`);
+  guide.addColorStop(0.82, `rgba(69, 79, 88, ${0.06 + visual.level * 0.04})`);
+  guide.addColorStop(1, "rgba(69, 79, 88, 0)");
 
   context.beginPath();
-  for (let x = 0; x <= width; x += 4) {
+  context.moveTo(28, centerY);
+  context.lineTo(width - 28, centerY);
+  context.strokeStyle = guide;
+  context.lineWidth = 1;
+  context.stroke();
+}
+
+function drawEnergyWash(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  visual: WaveState,
+) {
+  const centerY = waveCenterY(height);
+  const washHeight = 18 + visual.level * 18;
+  const glow = context.createRadialGradient(
+    width * 0.5,
+    centerY,
+    12,
+    width * 0.5,
+    centerY,
+    width * 0.48,
+  );
+  glow.addColorStop(0, `rgba(${phaseAccentColor(visual.phase)}, ${0.12 + visual.level * 0.1})`);
+  glow.addColorStop(
+    0.46,
+    `rgba(${phaseAccentColor(visual.phase)}, ${0.055 + visual.level * 0.06})`,
+  );
+  glow.addColorStop(1, "rgba(255, 255, 255, 0)");
+
+  context.fillStyle = glow;
+  context.fillRect(0, centerY - washHeight, width, washHeight * 2);
+}
+
+function drawWaveLayer(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  visual: WaveState,
+  time: number,
+  layer: WaveLayer,
+) {
+  const centerY = waveCenterY(height);
+  const level = levelForDraw(visual);
+  const pitchBias = (visual.pitch - 0.5) * layer.pitchResponse;
+  const pitchLift = layer.verticalBias * pitchBias * height * 0.13;
+  const amplitude = Math.min((5.5 + level * 25) * layer.gain, height * waveVerticalLimit);
+  const frequency = layer.frequency + visual.brightness * 1.25 + Math.abs(pitchBias) * 1.2;
+  const speed = layer.speed + level * 0.36;
+  const color = phaseWaveColor(layer.color, visual.phase);
+
+  context.save();
+  context.globalCompositeOperation = "source-over";
+  context.beginPath();
+
+  for (let x = 22; x <= width - 22; x += 2) {
     const progress = x / width;
     const y =
       centerY +
-      Math.sin(progress * Math.PI * (5.4 + visual.brightness * 2.1) + time * 1.5) *
-        (1.5 + visual.level * 4.2);
+      pitchLift +
+      waveEnvelope(progress) *
+        amplitude *
+        (Math.sin(progress * Math.PI * frequency + time * speed + layer.phase) * 0.72 +
+          Math.sin(
+            progress * Math.PI * (frequency * 1.82 + visual.brightness * 1.8) -
+              time * speed * 0.84 +
+              layer.phase,
+          ) *
+            layer.detail);
+    const boundedY = squashToWaveBand(y, centerY, height);
 
-    if (x === 0) {
+    if (x === 22) {
+      context.moveTo(x, boundedY);
+    } else {
+      context.lineTo(x, boundedY);
+    }
+  }
+
+  context.strokeStyle = `rgba(${color}, ${layer.alpha})`;
+  context.lineWidth = layer.lineWidth;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.stroke();
+  context.restore();
+}
+
+function drawPrimaryLine(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  visual: WaveState,
+  time: number,
+) {
+  const centerY = waveCenterY(height);
+  const level = levelForDraw(visual);
+  const pitchTilt = (visual.pitch - 0.5) * height * -0.06;
+  const amplitude = Math.min(6 + level * 24, height * 0.26);
+  const lineGradient = context.createLinearGradient(0, 0, width, 0);
+  lineGradient.addColorStop(0, "rgba(66, 74, 82, 0)");
+  lineGradient.addColorStop(0.16, `rgba(66, 74, 82, ${0.38 + level * 0.16})`);
+  lineGradient.addColorStop(0.5, `rgba(${phaseAccentColor(visual.phase)}, ${0.52 + level * 0.2})`);
+  lineGradient.addColorStop(0.84, `rgba(66, 74, 82, ${0.38 + level * 0.16})`);
+  lineGradient.addColorStop(1, "rgba(66, 74, 82, 0)");
+
+  context.beginPath();
+  for (let x = 20; x <= width - 20; x += 2) {
+    const progress = x / width;
+    const y =
+      centerY +
+      pitchTilt +
+      waveEnvelope(progress) *
+        amplitude *
+        (Math.sin(progress * Math.PI * (4.6 + visual.brightness * 1.6) + time * 1.28) * 0.78 +
+          Math.sin(progress * Math.PI * (9.4 + visual.brightness * 2.2) - time * 1.06) *
+            0.18 *
+            visual.brightness);
+
+    if (x === 20) {
       context.moveTo(x, y);
     } else {
       context.lineTo(x, y);
@@ -372,56 +365,67 @@ function drawCenterLine(
   }
 
   context.strokeStyle = lineGradient;
-  context.lineWidth = 2.2;
-  context.shadowColor = "rgba(255, 76, 225, 0.42)";
-  context.shadowBlur = 8;
+  context.lineWidth = 2.8;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.shadowColor = `rgba(${phaseAccentColor(visual.phase)}, ${0.16 + level * 0.12})`;
+  context.shadowBlur = 10;
   context.stroke();
   context.shadowBlur = 0;
 }
 
-function ribbonCenterY(height: number): number {
-  return height * ribbonVerticalCenter;
+function waveCenterY(height: number): number {
+  return height * waveVerticalCenter;
 }
 
-function squashToRibbonBand(value: number, centerY: number, height: number): number {
-  const limit = Math.max(1, height * ribbonVerticalLimit);
+function squashToWaveBand(value: number, centerY: number, height: number): number {
+  const limit = Math.max(1, height * waveVerticalLimit);
   return centerY + Math.tanh((value - centerY) / limit) * limit;
 }
 
-function phaseColor(color: string, phase: NativeDictationPhase): string {
+function waveEnvelope(progress: number): number {
+  const base = Math.sin(Math.PI * progress);
+  return Math.pow(Math.max(0, base), 0.72) * (0.92 + 0.08 * Math.sin(progress * Math.PI * 6));
+}
+
+function levelForDraw(visual: WaveState): number {
+  if (visual.phase === "inserted") {
+    return 0.14;
+  }
+
+  if (visual.phase === "error") {
+    return Math.max(visual.level, 0.24);
+  }
+
+  if (visual.phase === "processing" || visual.phase === "refining") {
+    return Math.max(visual.level, 0.3);
+  }
+
+  return visual.level;
+}
+
+function phaseAccentColor(phase: NativeDictationPhase): string {
   if (phase === "inserted") {
-    return "51, 224, 139";
+    return "42, 164, 103";
   }
 
   if (phase === "error") {
-    return "255, 78, 54";
+    return "210, 74, 54";
+  }
+
+  return "63, 132, 183";
+}
+
+function phaseWaveColor(color: string, phase: NativeDictationPhase): string {
+  if (phase === "inserted") {
+    return "42, 164, 103";
+  }
+
+  if (phase === "error") {
+    return "210, 74, 54";
   }
 
   return color;
-}
-
-function phaseBackgroundTop(phase: NativeDictationPhase): string {
-  if (phase === "inserted") {
-    return "#03130d";
-  }
-
-  if (phase === "error") {
-    return "#180604";
-  }
-
-  return "#050608";
-}
-
-function phaseBackgroundBottom(phase: NativeDictationPhase): string {
-  if (phase === "inserted") {
-    return "#061c13";
-  }
-
-  if (phase === "error") {
-    return "#210805";
-  }
-
-  return "#0b0f18";
 }
 
 function clampUnit(value: number): number {

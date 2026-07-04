@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start": "powershell -ExecutionPolicy Bypass -File ./scripts/Start-LocalFlow.ps1",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

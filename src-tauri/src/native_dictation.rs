@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -17,6 +18,10 @@ use cpal::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
+#[cfg(windows)]
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY, VK_CONTROL, VK_V,
@@ -30,6 +35,7 @@ pub struct NativeDictationRuntime {
     overlay_epoch: AtomicU64,
     sessions: Mutex<SessionRegistry>,
     last_transcript: Mutex<Option<String>>,
+    latency_snapshots: Mutex<VecDeque<NativeLatencySnapshot>>,
 }
 
 /// Tracks which dictation session is currently authorized to insert text.
@@ -125,7 +131,9 @@ struct RecordingSession {
     channels: u16,
     device_name: String,
     sample_format: SampleFormat,
+    hotkey_received_at: Instant,
     started_at: Instant,
+    last_voice_at: Arc<Mutex<Option<Instant>>>,
     level_stop_tx: mpsc::Sender<()>,
 }
 
@@ -147,6 +155,61 @@ struct OverlayAudioFeatures {
 struct RecorderCommand {
     app: AppHandle,
     state: String,
+    received_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct NativeLatencySnapshot {
+    session_id: u64,
+    ollama_model: String,
+    low_resource_mode: bool,
+    audio_duration_ms: u128,
+    hotkey_to_recording_start_ms: Option<u128>,
+    vad_tail_ms: Option<u128>,
+    capture_stop_ms: Option<u128>,
+    resample_ms: Option<u128>,
+    wav_write_ms: Option<u128>,
+    whisper_ms: Option<u128>,
+    deterministic_ms: Option<u128>,
+    paste_set_clipboard_ms: Option<u128>,
+    paste_send_ms: Option<u128>,
+    clipboard_restore_delay_ms: Option<u128>,
+    speech_end_to_visible_ms: Option<u128>,
+    recording_start_to_insert_ms: Option<u128>,
+    ollama_cleanup_ms: Option<u128>,
+    background_cleanup_status: BackgroundCleanupStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundCleanupStatus {
+    Pending,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+impl BackgroundCleanupStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PasteTimings {
+    set_clipboard_ms: u128,
+    send_paste_ms: u128,
+    visible_at: Instant,
+}
+
+#[derive(Debug)]
+struct PasteStart {
+    previous_text: Option<String>,
+    timings: PasteTimings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,7 +261,13 @@ const QUICK_TAP_RELEASE_MS: u64 = 700;
 const NO_SPEECH_TIMEOUT_MS: u64 = 2_500;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
-const OVERLAY_WIDTH: i32 = 540;
+const OVERLAY_WIDTH: i32 = 456;
+const OVERLAY_HEIGHT: i32 = 70;
+const OVERLAY_BOTTOM_GAP: i32 = 20;
+const MAX_LATENCY_SNAPSHOTS: usize = 5;
+const TARGET_VISIBLE_TEXT_MS: u128 = 1_000;
+const SLOW_VISIBLE_TEXT_MS: u128 = 2_000;
+const WHISPER_BOTTLENECK_MS: u128 = 700;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -212,7 +281,46 @@ impl Default for NativeDictationRuntime {
             overlay_epoch: AtomicU64::new(0),
             sessions: Mutex::new(SessionRegistry::default()),
             last_transcript: Mutex::new(None),
+            latency_snapshots: Mutex::new(VecDeque::new()),
         }
+    }
+}
+
+impl NativeDictationRuntime {
+    fn record_latency_snapshot(&self, snapshot: NativeLatencySnapshot) {
+        let mut snapshots = self
+            .latency_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        push_latency_snapshot(&mut snapshots, snapshot);
+    }
+
+    fn update_latency_snapshot(
+        &self,
+        session_id: u64,
+        update: impl FnOnce(&mut NativeLatencySnapshot),
+    ) {
+        let mut snapshots = self
+            .latency_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(snapshot) = snapshots
+            .iter_mut()
+            .rev()
+            .find(|snapshot| snapshot.session_id == session_id)
+        {
+            update(snapshot);
+        }
+    }
+
+    pub fn latency_diagnostics(&self) -> Vec<crate::app_state::DiagnosticMetric> {
+        let snapshots = self
+            .latency_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let latest = snapshots.back().cloned();
+        latency_diagnostics_for(latest.as_ref())
     }
 }
 
@@ -306,6 +414,209 @@ pub fn copy_last_transcript(app: AppHandle) -> Result<(), String> {
     copy_last_transcript_to_clipboard(&app)
 }
 
+fn record_latency_snapshot(app: &AppHandle, snapshot: NativeLatencySnapshot) {
+    app.state::<NativeDictationRuntime>()
+        .record_latency_snapshot(snapshot);
+}
+
+fn update_latency_snapshot(
+    app: &AppHandle,
+    session_id: u64,
+    update: impl FnOnce(&mut NativeLatencySnapshot),
+) {
+    app.state::<NativeDictationRuntime>()
+        .update_latency_snapshot(session_id, update);
+}
+
+fn push_latency_snapshot(
+    snapshots: &mut VecDeque<NativeLatencySnapshot>,
+    snapshot: NativeLatencySnapshot,
+) {
+    while snapshots.len() >= MAX_LATENCY_SNAPSHOTS {
+        snapshots.pop_front();
+    }
+    snapshots.push_back(snapshot);
+}
+
+fn latency_diagnostics_for(
+    latest: Option<&NativeLatencySnapshot>,
+) -> Vec<crate::app_state::DiagnosticMetric> {
+    let Some(snapshot) = latest else {
+        return vec![
+            diagnostic_metric(
+                "Latency: speech end to visible text",
+                "Not measured",
+                "warning",
+            ),
+            diagnostic_metric(
+                "Latency: recording start to insert",
+                "Not measured",
+                "warning",
+            ),
+            diagnostic_metric("Latency: Whisper sidecar", "Not measured", "warning"),
+            diagnostic_metric("Latency: Ollama cleanup", "Not measured", "warning"),
+        ];
+    };
+
+    vec![
+        diagnostic_metric(
+            "Latency: speech end to visible text",
+            format_optional_ms(snapshot.speech_end_to_visible_ms),
+            visible_latency_status(snapshot.speech_end_to_visible_ms),
+        ),
+        diagnostic_metric(
+            "Latency: recording start to insert",
+            format_optional_ms(snapshot.recording_start_to_insert_ms),
+            optional_ms_status(snapshot.recording_start_to_insert_ms),
+        ),
+        diagnostic_metric(
+            "Latency: VAD tail",
+            format_optional_ms(snapshot.vad_tail_ms),
+            optional_ms_status(snapshot.vad_tail_ms),
+        ),
+        diagnostic_metric(
+            "Latency: capture stop",
+            format_optional_ms(snapshot.capture_stop_ms),
+            optional_ms_status(snapshot.capture_stop_ms),
+        ),
+        diagnostic_metric(
+            "Latency: resample",
+            format_optional_ms(snapshot.resample_ms),
+            optional_ms_status(snapshot.resample_ms),
+        ),
+        diagnostic_metric(
+            "Latency: WAV write",
+            format_optional_ms(snapshot.wav_write_ms),
+            optional_ms_status(snapshot.wav_write_ms),
+        ),
+        diagnostic_metric(
+            "Latency: Whisper sidecar",
+            format_optional_ms(snapshot.whisper_ms),
+            whisper_latency_status(snapshot.whisper_ms),
+        ),
+        diagnostic_metric(
+            "Latency: deterministic formatting",
+            format_optional_ms(snapshot.deterministic_ms),
+            optional_ms_status(snapshot.deterministic_ms),
+        ),
+        diagnostic_metric(
+            "Latency: paste send",
+            format!(
+                "clipboard {} / send {}",
+                format_optional_ms(snapshot.paste_set_clipboard_ms),
+                format_optional_ms(snapshot.paste_send_ms)
+            ),
+            paste_latency_status(snapshot.paste_set_clipboard_ms, snapshot.paste_send_ms),
+        ),
+        diagnostic_metric(
+            "Latency: clipboard restore",
+            format_optional_ms(snapshot.clipboard_restore_delay_ms),
+            optional_ms_status(snapshot.clipboard_restore_delay_ms),
+        ),
+        diagnostic_metric(
+            "Latency: Ollama cleanup",
+            format_background_cleanup(snapshot),
+            background_cleanup_status(snapshot.background_cleanup_status),
+        ),
+        diagnostic_metric(
+            "Latency: latest audio",
+            format!(
+                "{} ms audio / model {} / cleanup {}",
+                snapshot.audio_duration_ms,
+                snapshot.ollama_model,
+                snapshot.background_cleanup_status.label()
+            ),
+            "ok",
+        ),
+        diagnostic_metric(
+            "Latency: hotkey to recording",
+            format_optional_ms(snapshot.hotkey_to_recording_start_ms),
+            optional_ms_status(snapshot.hotkey_to_recording_start_ms),
+        ),
+    ]
+}
+
+fn diagnostic_metric(
+    label: impl Into<String>,
+    value: impl Into<String>,
+    status: impl Into<String>,
+) -> crate::app_state::DiagnosticMetric {
+    crate::app_state::DiagnosticMetric {
+        label: label.into(),
+        value: value.into(),
+        status: status.into(),
+    }
+}
+
+fn format_optional_ms(value: Option<u128>) -> String {
+    value
+        .map(|value| format!("{value} ms"))
+        .unwrap_or_else(|| "Not measured".to_string())
+}
+
+fn visible_latency_status(value: Option<u128>) -> &'static str {
+    match value {
+        Some(value) if value < TARGET_VISIBLE_TEXT_MS => "ok",
+        Some(value) if value < SLOW_VISIBLE_TEXT_MS => "warning",
+        Some(_) => "error",
+        None => "warning",
+    }
+}
+
+fn whisper_latency_status(value: Option<u128>) -> &'static str {
+    match value {
+        Some(value) if value <= WHISPER_BOTTLENECK_MS => "ok",
+        Some(_) => "warning",
+        None => "warning",
+    }
+}
+
+fn optional_ms_status(value: Option<u128>) -> &'static str {
+    if value.is_some() {
+        "ok"
+    } else {
+        "warning"
+    }
+}
+
+fn paste_latency_status(
+    set_clipboard_ms: Option<u128>,
+    send_paste_ms: Option<u128>,
+) -> &'static str {
+    if set_clipboard_ms.is_some() && send_paste_ms.is_some() {
+        "ok"
+    } else {
+        "warning"
+    }
+}
+
+fn background_cleanup_status(status: BackgroundCleanupStatus) -> &'static str {
+    match status {
+        BackgroundCleanupStatus::Pending => "warning",
+        BackgroundCleanupStatus::Completed | BackgroundCleanupStatus::Skipped => "ok",
+        BackgroundCleanupStatus::Failed => "error",
+    }
+}
+
+fn format_background_cleanup(snapshot: &NativeLatencySnapshot) -> String {
+    match snapshot.background_cleanup_status {
+        BackgroundCleanupStatus::Pending => format!("Pending on {}", snapshot.ollama_model),
+        BackgroundCleanupStatus::Skipped if snapshot.low_resource_mode => {
+            "Skipped by low-resource mode".to_string()
+        }
+        BackgroundCleanupStatus::Skipped => "Skipped".to_string(),
+        BackgroundCleanupStatus::Completed => format_optional_ms(snapshot.ollama_cleanup_ms),
+        BackgroundCleanupStatus::Failed => format!(
+            "Failed after {}",
+            format_optional_ms(snapshot.ollama_cleanup_ms)
+        ),
+    }
+}
+
+fn duration_ms_between(start: Instant, end: Instant) -> u128 {
+    end.saturating_duration_since(start).as_millis()
+}
+
 pub fn handle_hotkey(app: AppHandle, state: &str) -> Result<(), String> {
     let runtime = app.state::<NativeDictationRuntime>();
     let command_tx = runtime
@@ -318,6 +629,7 @@ pub fn handle_hotkey(app: AppHandle, state: &str) -> Result<(), String> {
         .send(RecorderCommand {
             app: app.clone(),
             state: state.to_string(),
+            received_at: Instant::now(),
         })
         .map_err(|error| format!("Could not send native dictation command: {error}"))
 }
@@ -333,12 +645,12 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
                         let active_session = session
                             .take()
                             .expect("active recording session should exist");
-                        finish_recording(command.app.clone(), active_session)
+                        finish_recording(command.app.clone(), active_session, command.received_at)
                     } else {
                         Ok(())
                     }
                 } else {
-                    start_recording(&command.app, &mut session)
+                    start_recording(&command.app, &mut session, command.received_at)
                 }
             }
             "released" => {
@@ -350,7 +662,7 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
                         let active_session = session
                             .take()
                             .expect("active recording session should exist");
-                        finish_recording(command.app.clone(), active_session)
+                        finish_recording(command.app.clone(), active_session, command.received_at)
                     }
                 } else {
                     Ok(())
@@ -358,7 +670,7 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
             }
             "auto_stop" => {
                 if let Some(session) = session.take() {
-                    finish_recording(command.app.clone(), session)
+                    finish_recording(command.app.clone(), session, command.received_at)
                 } else {
                     Ok(())
                 }
@@ -393,7 +705,11 @@ fn should_toggle_stop(elapsed: Duration) -> bool {
     elapsed >= Duration::from_millis(QUICK_TAP_RELEASE_MS)
 }
 
-fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> Result<(), String> {
+fn start_recording(
+    app: &AppHandle,
+    session: &mut Option<RecordingSession>,
+    hotkey_received_at: Instant,
+) -> Result<(), String> {
     if session.is_some() {
         return Ok(());
     }
@@ -421,18 +737,26 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     let sample_format = supported_config.sample_format();
     let stream_config: StreamConfig = supported_config.into();
     let samples = Arc::new(Mutex::new(Vec::with_capacity(sample_rate as usize * 20)));
+    let last_voice_at = Arc::new(Mutex::new(None));
 
     let stream = build_stream(&device, &stream_config, sample_format, samples.clone())?;
     stream
         .play()
         .map_err(|error| format!("Could not start microphone capture: {error}"))?;
+    let recording_started_at = Instant::now();
     let command_tx = app
         .state::<NativeDictationRuntime>()
         .command_tx
         .lock()
         .map_err(|_| "Native dictation command lock was poisoned.".to_string())?
         .clone();
-    let level_stop_tx = start_level_meter(app.clone(), samples.clone(), sample_rate, command_tx);
+    let level_stop_tx = start_level_meter(
+        app.clone(),
+        samples.clone(),
+        sample_rate,
+        last_voice_at.clone(),
+        command_tx,
+    );
 
     // Assign and activate a fresh session id; this supersedes any worker still
     // processing a previous recording so it cannot insert stale text.
@@ -447,7 +771,9 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
         channels,
         device_name: device_name.clone(),
         sample_format,
-        started_at: Instant::now(),
+        hotkey_received_at,
+        started_at: recording_started_at,
+        last_voice_at,
         level_stop_tx,
     });
 
@@ -474,7 +800,12 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     Ok(())
 }
 
-fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), String> {
+fn finish_recording(
+    app: AppHandle,
+    session: RecordingSession,
+    stop_requested_at: Instant,
+) -> Result<(), String> {
+    let capture_stop_started_at = Instant::now();
     let RecordingSession {
         session_id,
         target,
@@ -484,7 +815,9 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         channels,
         device_name,
         sample_format,
+        hotkey_received_at,
         started_at,
+        last_voice_at,
         level_stop_tx,
     } = session;
 
@@ -497,6 +830,8 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         .lock()
         .map_err(|_| "Captured audio lock was poisoned.".to_string())?
         .clone();
+    let capture_stop_ms = capture_stop_started_at.elapsed().as_millis();
+    let speech_ended_at = last_voice_at.lock().map(|guard| *guard).unwrap_or(None);
 
     if captured.len() < sample_rate as usize / 4 {
         return Err("Recording was too short to transcribe.".to_string());
@@ -522,7 +857,7 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         ));
     }
 
-    // Run the blocking transcribe -> refine -> insert tail off the recorder thread so the
+    // Run the transcribe -> quick insert -> background refine tail off the recorder thread so the
     // recorder stays responsive and a newer or cancelled session can supersede this one.
     // The worker revalidates its session id before every side effect and, crucially, never
     // pastes if it is no longer the current session (spec §4.4).
@@ -534,7 +869,11 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
             channels,
             session_id,
             target,
+            hotkey_received_at,
             started_at,
+            speech_ended_at,
+            stop_requested_at,
+            capture_stop_ms,
         ) {
             Ok(()) => {}
             Err(error) => {
@@ -554,8 +893,9 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
     Ok(())
 }
 
-/// Transcribe -> refine -> insert. Runs on a worker thread. Revalidates the session before
-/// every side effect; a superseded or cancelled session aborts without pasting.
+/// Transcribe -> deterministic insert -> background refine. Runs on a worker thread.
+/// Revalidates the session before every side effect; a superseded or cancelled session aborts
+/// without pasting.
 fn process_session(
     app: &AppHandle,
     captured: &[f32],
@@ -563,7 +903,11 @@ fn process_session(
     channels: u16,
     session_id: u64,
     target: Option<TargetWindow>,
+    hotkey_received_at: Instant,
     started_at: Instant,
+    speech_ended_at: Option<Instant>,
+    stop_requested_at: Instant,
+    capture_stop_ms: u128,
 ) -> Result<(), String> {
     if !session_is_current(app, session_id) {
         emit_cancelled(app);
@@ -594,10 +938,17 @@ fn process_session(
     let wav_path = output_dir.join(format!("dictation-{stamp}.wav"));
     let output_base = output_dir.join(format!("dictation-{stamp}"));
 
+    let resample_started_at = Instant::now();
     let mono_16k = resample_to_16khz(captured, sample_rate);
-    write_wav(&wav_path, &mono_16k)?;
+    let resample_ms = resample_started_at.elapsed().as_millis();
 
+    let wav_write_started_at = Instant::now();
+    write_wav(&wav_path, &mono_16k)?;
+    let wav_write_ms = wav_write_started_at.elapsed().as_millis();
+
+    let whisper_started_at = Instant::now();
     let transcribe_result = run_whisper(app, &wav_path, &output_base, &dictionary_terms);
+    let whisper_ms = whisper_started_at.elapsed().as_millis();
     let _ = fs::remove_file(&wav_path);
     let _ = fs::remove_file(output_base.with_extension("json"));
     let transcript = transcribe_result?;
@@ -615,6 +966,7 @@ fn process_session(
     // cleanup) is applied before the LLM. It seeds the cleanup prompt and is the safe
     // fallback when the model is unavailable. Never let it collapse a non-empty transcript
     // to nothing (e.g. an all-filler utterance) — fall back to the raw transcript then.
+    let deterministic_started_at = Instant::now();
     let replacements: Vec<crate::transcript::Replacement> = settings
         .replacements
         .iter()
@@ -646,30 +998,17 @@ fn process_session(
             formatted
         }
     };
+    let deterministic_ms = deterministic_started_at.elapsed().as_millis();
 
-    // Fast mode: skip the LLM entirely and insert the deterministically formatted text for
-    // the lowest possible latency. Otherwise run the configured local cleanup model.
-    let final_text = if settings.models.low_resource_mode {
-        tracing::info!("low_resource_mode enabled; skipping LLM cleanup");
-        deterministic.clone()
+    // Remember the quick transcript before attempting insertion so it is recoverable
+    // (copy / paste-last) even if the paste is skipped because focus changed.
+    store_last_transcript(app, &deterministic);
+
+    let background_cleanup_status = if settings.models.low_resource_mode {
+        tracing::info!("low_resource_mode enabled; background LLM cleanup skipped");
+        BackgroundCleanupStatus::Skipped
     } else {
-        emit_status(
-            app,
-            "refining",
-            &format!("Cleaning with local {ollama_model}"),
-        );
-        match refine_with_pinned_ollama(&transcript, &deterministic, &ollama_model) {
-            Ok(text) => text,
-            Err(error) => {
-                tracing::warn!(error = %error, "local model cleanup failed; using formatted transcript");
-                emit_status(
-                    app,
-                    "error",
-                    "Local model cleanup failed; using the deterministically formatted transcript.",
-                );
-                deterministic.clone()
-            }
-        }
+        BackgroundCleanupStatus::Pending
     };
 
     // Final guard before the only irreversible side effect: never paste into whatever is
@@ -678,10 +1017,6 @@ fn process_session(
         emit_cancelled(app);
         return Ok(());
     }
-
-    // Remember the finalized transcript before attempting insertion so it is recoverable
-    // (copy / paste-last) even if the paste is skipped because focus changed.
-    store_last_transcript(app, &final_text);
 
     // Revalidate the insertion target. If focus moved to another window (or we cannot
     // confirm the original), do not paste — a Ctrl+V would land in the wrong app, possibly
@@ -697,17 +1032,106 @@ fn process_session(
         return Ok(());
     }
 
-    paste_text(&final_text)?;
+    let paste = paste_text_for_visible_insert(&deterministic)?;
+    let visible_at = paste.timings.visible_at;
+    let speech_end_reference = speech_ended_at.unwrap_or(stop_requested_at);
+
+    record_latency_snapshot(
+        app,
+        NativeLatencySnapshot {
+            session_id,
+            ollama_model: ollama_model.clone(),
+            low_resource_mode: settings.models.low_resource_mode,
+            audio_duration_ms: audio_duration_ms(captured.len(), sample_rate),
+            hotkey_to_recording_start_ms: Some(duration_ms_between(hotkey_received_at, started_at)),
+            vad_tail_ms: speech_ended_at
+                .map(|speech_ended_at| duration_ms_between(speech_ended_at, stop_requested_at)),
+            capture_stop_ms: Some(capture_stop_ms),
+            resample_ms: Some(resample_ms),
+            wav_write_ms: Some(wav_write_ms),
+            whisper_ms: Some(whisper_ms),
+            deterministic_ms: Some(deterministic_ms),
+            paste_set_clipboard_ms: Some(paste.timings.set_clipboard_ms),
+            paste_send_ms: Some(paste.timings.send_paste_ms),
+            clipboard_restore_delay_ms: None,
+            speech_end_to_visible_ms: Some(duration_ms_between(speech_end_reference, visible_at)),
+            recording_start_to_insert_ms: Some(duration_ms_between(started_at, visible_at)),
+            ollama_cleanup_ms: None,
+            background_cleanup_status,
+        },
+    );
+
     emit_status(app, "inserted", "Inserted transcript");
+    schedule_clipboard_restore(app.clone(), session_id, paste.previous_text);
+
+    if !settings.models.low_resource_mode {
+        start_background_cleanup(
+            app.clone(),
+            session_id,
+            transcript,
+            deterministic.clone(),
+            ollama_model.clone(),
+        );
+    }
+
     tracing::info!(
-        elapsed_ms = started_at.elapsed().as_millis(),
-        chars = final_text.chars().count(),
+        elapsed_ms = duration_ms_between(started_at, visible_at),
+        speech_end_to_visible_ms = duration_ms_between(speech_end_reference, visible_at),
+        whisper_ms,
+        chars = deterministic.chars().count(),
         sample_rate,
         channels,
-        "native dictation inserted transcript"
+        model = %ollama_model,
+        cleanup = %background_cleanup_status.label(),
+        "native dictation inserted quick transcript"
     );
 
     Ok(())
+}
+
+fn start_background_cleanup(
+    app: AppHandle,
+    session_id: u64,
+    transcript: String,
+    deterministic: String,
+    ollama_model: String,
+) {
+    thread::spawn(move || {
+        let cleanup_started_at = Instant::now();
+        let result = refine_with_pinned_ollama(&transcript, &deterministic, &ollama_model);
+        let cleanup_ms = cleanup_started_at.elapsed().as_millis();
+
+        match result {
+            Ok(refined) => {
+                if session_is_current(&app, session_id) {
+                    store_last_transcript(&app, &refined);
+                }
+                update_latency_snapshot(&app, session_id, |snapshot| {
+                    snapshot.ollama_cleanup_ms = Some(cleanup_ms);
+                    snapshot.background_cleanup_status = BackgroundCleanupStatus::Completed;
+                });
+                tracing::info!(
+                    session_id,
+                    cleanup_ms,
+                    model = %ollama_model,
+                    "native background cleanup completed"
+                );
+            }
+            Err(error) => {
+                update_latency_snapshot(&app, session_id, |snapshot| {
+                    snapshot.ollama_cleanup_ms = Some(cleanup_ms);
+                    snapshot.background_cleanup_status = BackgroundCleanupStatus::Failed;
+                });
+                tracing::warn!(
+                    session_id,
+                    cleanup_ms,
+                    model = %ollama_model,
+                    error = %error,
+                    "native background cleanup failed; quick transcript remains inserted"
+                );
+            }
+        }
+    });
 }
 
 fn emit_cancelled(app: &AppHandle) {
@@ -719,6 +1143,7 @@ fn start_level_meter(
     app: AppHandle,
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
+    last_voice_at: Arc<Mutex<Option<Instant>>>,
     command_tx: mpsc::Sender<RecorderCommand>,
 ) -> mpsc::Sender<()> {
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -751,6 +1176,9 @@ fn start_level_meter(
             emit_audio_features(&app, features);
 
             if detector.observe(Instant::now(), rms) {
+                if let Ok(mut last_voice) = last_voice_at.lock() {
+                    *last_voice = detector.last_voice_at;
+                }
                 // If speech was never detected, this is an abandoned tap: cancel silently
                 // (hides the overlay) instead of running the pipeline and flashing an error.
                 let state = if detector.speech_seen {
@@ -761,8 +1189,13 @@ fn start_level_meter(
                 let _ = command_tx.send(RecorderCommand {
                     app: app.clone(),
                     state: state.to_string(),
+                    received_at: Instant::now(),
                 });
                 break;
+            }
+
+            if let Ok(mut last_voice) = last_voice_at.lock() {
+                *last_voice = detector.last_voice_at;
             }
         }
     });
@@ -1378,6 +1811,7 @@ fn build_cleanup_prompt(raw_transcript: &str, deterministic_text: &str) -> Strin
         "contract": "Return only strict JSON with text, confidence, resolved_corrections, and warnings.",
         "rules": [
             "Start from deterministicText: it already has spoken punctuation, self-corrections, and filler cleanup applied. Preserve its wording and formatting unless it is clearly wrong.",
+            "Preserve deterministicText capitalization, punctuation, line breaks, and technical casing unless rawTranscript clearly proves they are wrong.",
             "Preserve meaning, facts, names, numbers, uncertainty, and intent.",
             "Never answer the dictated content.",
             "Never add new claims.",
@@ -1410,24 +1844,57 @@ fn build_repair_prompt(invalid_payload: &str, error: &str) -> String {
     .to_string()
 }
 
-fn paste_text(text: &str) -> Result<(), String> {
+fn paste_text_for_visible_insert(text: &str) -> Result<PasteStart, String> {
     let mut clipboard =
         Clipboard::new().map_err(|error| format!("Could not open clipboard: {error}"))?;
     let previous_text = clipboard.get_text().ok();
+    let set_clipboard_started_at = Instant::now();
     clipboard
         .set_text(text.to_string())
         .map_err(|error| format!("Could not set clipboard text: {error}"))?;
+    let set_clipboard_ms = set_clipboard_started_at.elapsed().as_millis();
 
+    let send_paste_started_at = Instant::now();
     send_ctrl_v()?;
-    // Give the target app time to read the pasted clipboard before we restore the prior
-    // contents. Kept short so the "inserted" state and overlay dismissal feel immediate.
-    thread::sleep(Duration::from_millis(400));
+    let send_paste_ms = send_paste_started_at.elapsed().as_millis();
+    let visible_at = Instant::now();
 
-    if let Some(previous_text) = previous_text {
-        let _ = clipboard.set_text(previous_text);
+    Ok(PasteStart {
+        previous_text,
+        timings: PasteTimings {
+            set_clipboard_ms,
+            send_paste_ms,
+            visible_at,
+        },
+    })
+}
+
+fn schedule_clipboard_restore(app: AppHandle, session_id: u64, previous_text: Option<String>) {
+    thread::spawn(move || {
+        let restore_started_at = Instant::now();
+        // Give the target app time to read the pasted clipboard before we restore the prior
+        // contents. This happens after visible insertion and is excluded from the main
+        // speech-end-to-visible-text latency.
+        thread::sleep(Duration::from_millis(400));
+
+        if let Some(previous_text) = previous_text {
+            if let Ok(mut clipboard) = Clipboard::new() {
+                let _ = clipboard.set_text(previous_text);
+            }
+        }
+
+        update_latency_snapshot(&app, session_id, |snapshot| {
+            snapshot.clipboard_restore_delay_ms = Some(restore_started_at.elapsed().as_millis());
+        });
+    });
+}
+
+fn audio_duration_ms(samples: usize, sample_rate: u32) -> u128 {
+    if sample_rate == 0 {
+        return 0;
     }
 
-    Ok(())
+    ((samples as f64 / sample_rate as f64) * 1000.0).round() as u128
 }
 
 fn send_ctrl_v() -> Result<(), String> {
@@ -1612,6 +2079,11 @@ fn schedule_overlay_hide(app: AppHandle, epoch: u64) {
 }
 
 fn position_overlay(window: &WebviewWindow) -> tauri::Result<()> {
+    if let Some((x, y)) = overlay_work_area(window) {
+        window.set_position(PhysicalPosition::new(x, y))?;
+        return Ok(());
+    }
+
     let monitor = window
         .current_monitor()?
         .or_else(|| window.primary_monitor().ok().flatten());
@@ -1619,12 +2091,62 @@ fn position_overlay(window: &WebviewWindow) -> tauri::Result<()> {
     if let Some(monitor) = monitor {
         let size = monitor.size();
         let position = monitor.position();
-        let x = position.x + ((size.width as i32 - OVERLAY_WIDTH) / 2).max(16);
-        let y = position.y + (size.height as i32 - 214).max(16);
+        let (x, y) = overlay_position_for_work_area(
+            position.x,
+            position.y,
+            size.width as i32,
+            size.height as i32,
+        );
         window.set_position(PhysicalPosition::new(x, y))?;
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn overlay_work_area(window: &WebviewWindow) -> Option<(i32, i32)> {
+    let hwnd = window.hwnd().ok()?;
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_invalid() {
+        return None;
+    }
+
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+
+    if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+        let work = monitor_info.rcWork;
+        Some(overlay_position_for_work_area(
+            work.left,
+            work.top,
+            work.right - work.left,
+            work.bottom - work.top,
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn overlay_work_area(_: &WebviewWindow) -> Option<(i32, i32)> {
+    None
+}
+
+fn overlay_position_for_work_area(
+    work_left: i32,
+    work_top: i32,
+    work_width: i32,
+    work_height: i32,
+) -> (i32, i32) {
+    let available_width = work_width.max(0);
+    let available_height = work_height.max(0);
+    let x = work_left + ((available_width - OVERLAY_WIDTH) / 2).max(16);
+    let y =
+        work_top + (available_height - OVERLAY_HEIGHT - OVERLAY_BOTTOM_GAP).max(OVERLAY_BOTTOM_GAP);
+
+    (x, y)
 }
 
 #[cfg(test)]
@@ -1656,6 +2178,82 @@ mod tests {
 
         assert!(is_near_silent(analyze_audio(&silent, 16_000)));
         assert!(!is_near_silent(analyze_audio(&speech, 16_000)));
+    }
+
+    #[test]
+    fn latency_duration_helpers_compute_milliseconds() {
+        let started_at = Instant::now();
+        let ended_at = started_at + Duration::from_millis(42);
+
+        assert_eq!(duration_ms_between(started_at, ended_at), 42);
+        assert_eq!(audio_duration_ms(48_000, 48_000), 1_000);
+    }
+
+    #[test]
+    fn latency_diagnostics_show_not_measured_before_first_dictation() {
+        let rows = latency_diagnostics_for(None);
+
+        let visible = diagnostic_row(&rows, "Latency: speech end to visible text");
+        assert_eq!(visible.value, "Not measured");
+        assert_eq!(visible.status, "warning");
+    }
+
+    #[test]
+    fn latency_diagnostics_apply_visible_and_whisper_thresholds() {
+        let mut snapshot = latency_snapshot();
+        snapshot.speech_end_to_visible_ms = Some(2_100);
+        snapshot.whisper_ms = Some(900);
+
+        let rows = latency_diagnostics_for(Some(&snapshot));
+
+        assert_eq!(
+            diagnostic_row(&rows, "Latency: speech end to visible text").status,
+            "error"
+        );
+        assert_eq!(
+            diagnostic_row(&rows, "Latency: Whisper sidecar").status,
+            "warning"
+        );
+    }
+
+    #[test]
+    fn latency_snapshots_keep_only_the_last_five() {
+        let mut snapshots = VecDeque::new();
+
+        for session_id in 1..=6 {
+            let mut snapshot = latency_snapshot();
+            snapshot.session_id = session_id;
+            push_latency_snapshot(&mut snapshots, snapshot);
+        }
+
+        assert_eq!(snapshots.len(), MAX_LATENCY_SNAPSHOTS);
+        assert_eq!(
+            snapshots.front().map(|snapshot| snapshot.session_id),
+            Some(2)
+        );
+        assert_eq!(
+            snapshots.back().map(|snapshot| snapshot.session_id),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn background_cleanup_failure_does_not_change_visible_latency() {
+        let mut snapshot = latency_snapshot();
+        snapshot.speech_end_to_visible_ms = Some(850);
+        snapshot.ollama_cleanup_ms = Some(2_400);
+        snapshot.background_cleanup_status = BackgroundCleanupStatus::Failed;
+
+        let rows = latency_diagnostics_for(Some(&snapshot));
+
+        assert_eq!(
+            diagnostic_row(&rows, "Latency: speech end to visible text").value,
+            "850 ms"
+        );
+        assert_eq!(
+            diagnostic_row(&rows, "Latency: Ollama cleanup").status,
+            "error"
+        );
     }
 
     #[test]
@@ -1774,6 +2372,32 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_prompt_preserves_seeded_casing_and_punctuation_contract() {
+        let deterministic_text = "Email Sarah about PyTorch at 3.14 p.m.\n- Ship LocalFlow.";
+        let prompt = build_cleanup_prompt(
+            "email sarah about pie torch at three point one four p m bullet ship local flow",
+            deterministic_text,
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&prompt).expect("cleanup prompt should be valid JSON");
+        let rules = value
+            .get("rules")
+            .and_then(|rules| rules.as_array())
+            .expect("cleanup prompt should include rules");
+
+        assert_eq!(
+            value
+                .get("deterministicText")
+                .and_then(|text| text.as_str()),
+            Some(deterministic_text)
+        );
+        assert!(rules.iter().filter_map(|rule| rule.as_str()).any(|rule| {
+            rule.contains("Preserve deterministicText capitalization, punctuation")
+                && rule.contains("technical casing")
+        }));
+    }
+
+    #[test]
     fn session_registry_begin_activates_new_id() {
         let mut registry = SessionRegistry::default();
 
@@ -1836,6 +2460,30 @@ mod tests {
     }
 
     #[test]
+    fn overlay_position_centers_inside_work_area() {
+        let (x, y) = overlay_position_for_work_area(0, 0, 1920, 1040);
+
+        assert_eq!(x, (1920 - OVERLAY_WIDTH) / 2);
+        assert_eq!(y, 1040 - OVERLAY_HEIGHT - OVERLAY_BOTTOM_GAP);
+    }
+
+    #[test]
+    fn overlay_position_respects_offset_work_area() {
+        let (x, y) = overlay_position_for_work_area(-1280, 40, 1280, 984);
+
+        assert_eq!(x, -1280 + ((1280 - OVERLAY_WIDTH) / 2));
+        assert_eq!(y, 40 + 984 - OVERLAY_HEIGHT - OVERLAY_BOTTOM_GAP);
+    }
+
+    #[test]
+    fn overlay_position_clamps_small_work_area() {
+        let (x, y) = overlay_position_for_work_area(10, 20, 320, 96);
+
+        assert_eq!(x, 26);
+        assert_eq!(y, 40);
+    }
+
+    #[test]
     fn cancel_invalidates_the_current_session() {
         let mut registry = SessionRegistry::default();
         let session = registry.begin();
@@ -1856,5 +2504,37 @@ mod tests {
                 (std::f32::consts::TAU * frequency_hz * t).sin() * 0.35
             })
             .collect()
+    }
+
+    fn latency_snapshot() -> NativeLatencySnapshot {
+        NativeLatencySnapshot {
+            session_id: 1,
+            ollama_model: "llama3.2:3b".to_string(),
+            low_resource_mode: false,
+            audio_duration_ms: 1_200,
+            hotkey_to_recording_start_ms: Some(30),
+            vad_tail_ms: Some(550),
+            capture_stop_ms: Some(5),
+            resample_ms: Some(2),
+            wav_write_ms: Some(3),
+            whisper_ms: Some(600),
+            deterministic_ms: Some(1),
+            paste_set_clipboard_ms: Some(2),
+            paste_send_ms: Some(4),
+            clipboard_restore_delay_ms: Some(400),
+            speech_end_to_visible_ms: Some(900),
+            recording_start_to_insert_ms: Some(1_500),
+            ollama_cleanup_ms: Some(1_100),
+            background_cleanup_status: BackgroundCleanupStatus::Completed,
+        }
+    }
+
+    fn diagnostic_row<'a>(
+        rows: &'a [crate::app_state::DiagnosticMetric],
+        label: &str,
+    ) -> &'a crate::app_state::DiagnosticMetric {
+        rows.iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| panic!("missing diagnostic row: {label}"))
     }
 }
