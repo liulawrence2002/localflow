@@ -336,7 +336,7 @@ fn default_settings() -> SettingsSnapshot {
             whisper_model_path: String::new(),
             language: "auto".to_string(),
             asr_threads: 4,
-            ollama_model: "gemma4:12b-it-qat".to_string(),
+            ollama_model: "llama3.2:3b".to_string(),
             low_resource_mode: false,
         },
         microphone: MicrophoneSettings {
@@ -413,7 +413,7 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
         },
         DiagnosticMetric {
             label: "Refinement model".to_string(),
-            value: "Configurable local Ollama model (default gemma4:12b-it-qat); dictionary biases ASR".to_string(),
+            value: "Configurable local Ollama model (default llama3.2:3b); dictionary biases ASR".to_string(),
             status: "ok".to_string(),
         },
         DiagnosticMetric {

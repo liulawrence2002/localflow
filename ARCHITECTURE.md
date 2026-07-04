@@ -14,7 +14,7 @@ LocalFlow is split into a Tauri native layer and a React settings/history interf
 - `src-tauri/src/context`: local context snapshot interface.
 - `src-tauri/src/insertion`: text insertion interface and mock insertion.
 - `src-tauri/src/hotkeys`: global hotkey registration through Tauri's global-shortcut plugin.
-- `src-tauri/src/native_dictation`: the live Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, pinned local Ollama `gemma4:12b-it-qat` cleanup, a waveform overlay event stream, and clipboard paste fallback. Carries a native `SessionRegistry` (session identity + supersede/cancel guard); the transcribe/refine/insert tail runs on a worker thread and revalidates the session before every side effect so a superseded or cancelled session never inserts.
+- `src-tauri/src/native_dictation`: the live Windows native push-to-talk path using `cpal`, local `whisper-cli.exe`, a configurable local Ollama cleanup model (default `llama3.2:3b`), a waveform overlay event stream, and clipboard paste fallback. Carries a native `SessionRegistry` (session identity + supersede/cancel guard); the transcribe/refine/insert tail runs on a worker thread and revalidates the session before every side effect so a superseded or cancelled session never inserts.
 - `src-tauri/src/transcript`: **authoritative** deterministic formatting for the native path — spoken punctuation, explicit self-corrections, filler/stutter cleanup, sentence capitalization, user replacements/snippets, and URL/email/decimal protection. Runs before the LLM and is the fallback when the LLM is unavailable.
 - `src-tauri/src/storage`: SQLite schema initialization.
 - `src-tauri/src/privacy`: redaction helpers for logs and diagnostics.

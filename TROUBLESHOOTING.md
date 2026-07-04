@@ -68,4 +68,4 @@ Run:
 .\scripts\Check-Ollama.ps1
 ```
 
-Native hotkey dictation is pinned to local Ollama model `gemma4:12b-it-qat`. If `gemma4:12b-it-qat` is missing or Ollama is not running, LocalFlow logs the cleanup failure and preserves the raw Whisper transcript rather than dropping the dictation.
+Native hotkey dictation uses a configurable local Ollama model (default `llama3.2:3b`; run `ollama pull llama3.2:3b`). If the selected model is missing or Ollama is not running, LocalFlow logs the cleanup failure and inserts the deterministically formatted transcript rather than dropping the dictation. For the fastest possible insertion, enable low-resource mode in Settings > Models to skip the LLM entirely.

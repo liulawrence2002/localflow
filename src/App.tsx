@@ -429,7 +429,8 @@ export function App() {
                   />
                 )}
                 <span className="field-hint">
-                  Native dictation is pinned to {pinnedOllamaModel}.
+                  Native dictation defaults to {pinnedOllamaModel} (fast local cleanup); pick any
+                  installed model here, or enable low-resource mode to skip the LLM.
                 </span>
               </label>
               <div className="button-row button-row--status">

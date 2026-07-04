@@ -71,7 +71,7 @@ Automated checks cover the shared network policy and the shared Ollama provider.
 
 The shared domain layer includes an allowlist check that permits localhost provider URLs and rejects remote URLs for ordinary dictation. The Ollama provider calls this policy for model discovery and cleanup requests. Native providers and future local server providers must keep using the same policy before any production network-capable path is enabled.
 
-Native dictation cleanup is pinned to local Ollama model `gemma4:12b-it-qat` at `http://127.0.0.1:11434/api/generate`.
+Native dictation cleanup uses a configurable local Ollama model (default `llama3.2:3b`) at `http://127.0.0.1:11434/api/generate`, and only ever a localhost model.
 
 ## Diagnostics
 

@@ -1,6 +1,6 @@
 import type { AppStatus, LocalFlowSettings, WorkflowState } from "./types";
 
-export const pinnedOllamaModel = "gemma4:12b-it-qat";
+export const pinnedOllamaModel = "llama3.2:3b";
 
 export const defaultTarget = {
   applicationName: "Mock target",

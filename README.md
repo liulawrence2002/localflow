@@ -7,7 +7,7 @@ The current build is a lightweight Tauri tray app. It launches quietly, keeps th
 On the native path LocalFlow:
 
 - **Formats deterministically before the LLM** — spoken punctuation ("comma", "new line", "bullet point"), explicit self-corrections ("meet Tuesday, actually Wednesday"), filler/stutter cleanup, and sentence capitalization, while protecting URLs, emails, and decimals.
-- **Personalizes from your settings** — exact replacements and snippets are applied, and your dictionary biases recognition via whisper's initial prompt. The refinement model is configurable (default `gemma4:12b-it-qat`).
+- **Personalizes from your settings** — exact replacements and snippets are applied, and your dictionary biases recognition via whisper's initial prompt. The refinement model is configurable (default `llama3.2:3b`, a fast small model; low-resource mode skips the LLM for instant text).
 - **Inserts safely** — each dictation has a session id; it never pastes into a different window than where you started, a superseded dictation never inserts, and **Escape cancels** while you are speaking.
 - **Never loses a transcript** — if insertion is skipped (focus changed) or the LLM is unavailable, the transcript is recoverable with "Copy last transcript" (tray or Home) and the deterministically formatted text is used as a fallback.
 
@@ -19,7 +19,7 @@ On the native path LocalFlow:
 - Rust stable with Cargo
 - Microsoft C++ Build Tools with the VCTools workload
 - WebView2 Runtime
-- Ollama with local model `gemma4:12b-it-qat` for native cleanup
+- Ollama with a local model for native cleanup — default `llama3.2:3b` (`ollama pull llama3.2:3b`); any installed model can be selected in Settings, or enable low-resource mode to skip the LLM
 
 Install/check common prerequisites:
 
@@ -65,7 +65,7 @@ If `Ctrl+Alt+Space` is already registered by another app, LocalFlow automaticall
 3. Click into the target field.
 4. Tap `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable; otherwise tap `Ctrl+Alt+Space`.
 5. Speak for 2-5 seconds.
-6. Stop speaking and pause briefly, or press the hotkey again, then wait for local Whisper transcription plus local `gemma4:12b-it-qat` cleanup.
+6. Stop speaking and pause briefly, or press the hotkey again, then wait for local Whisper transcription plus fast local cleanup (default `llama3.2:3b`, or skipped entirely in low-resource mode).
 
 The floating waveform appears while listening and processing. It uses live microphone level, pitch, and brightness estimates to draw layered audio ribbons: higher-pitch speech lifts warmer upper strands, while lower-pitch speech deepens cooler lower strands. The native path inserts the cleaned transcript through clipboard paste (restoring the previous text clipboard afterward) only after confirming the original window still has focus. If the local Ollama model is unavailable, LocalFlow uses the deterministically formatted transcript instead of losing the dictation; if focus changed, it keeps the transcript for "Copy last transcript".
 
@@ -94,8 +94,8 @@ The Tauri bundle config includes the local Whisper CLI, required DLLs, and the t
 ## Current Limitations
 
 - Native hotkey dictation currently uses the default input device.
-- The native hotkey path always requests cleanup from local Ollama model `gemma4:12b-it-qat`; deterministic personalization is still pending.
-- End-of-speech detection uses fixed native thresholds for now; a settings control is still pending.
+- The native path applies deterministic formatting + your replacements/snippets/dictionary, then a configurable local cleanup model (default `llama3.2:3b`), unless low-resource mode is on (LLM skipped). ASR language is fixed to English for now.
+- End-of-speech detection uses fixed native thresholds tuned for a snappy feel (~550 ms after you stop; ~2.5 s idle close); a settings control is still pending.
 - Clipboard fallback restores only prior text clipboard content, not full rich clipboard formats.
 - UI Automation insertion, target-window verification, and startup-at-login are still pending.
 - Manual speech insertion has to be checked by the user in real target apps; automated checks cannot speak into the microphone.

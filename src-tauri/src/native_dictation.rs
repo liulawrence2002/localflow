@@ -184,7 +184,7 @@ struct CleanupModelResponse {
     text: String,
 }
 
-const OLLAMA_MODEL: &str = "gemma4:12b-it-qat";
+const OLLAMA_MODEL: &str = "llama3.2:3b";
 const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const SILENCE_PEAK_THRESHOLD: f32 = 0.003;
 const SILENCE_RMS_THRESHOLD: f32 = 0.0005;
@@ -192,10 +192,10 @@ const VAD_POLL_MS: u64 = 55;
 const VAD_START_RMS_THRESHOLD: f32 = 0.008;
 const VAD_CONTINUE_RMS_THRESHOLD: f32 = 0.0045;
 const VAD_CONFIRM_SPEECH_MS: u64 = 120;
-const END_OF_SPEECH_TIMEOUT_MS: u64 = 760;
-const MIN_AUTO_STOP_RECORDING_MS: u64 = 420;
+const END_OF_SPEECH_TIMEOUT_MS: u64 = 550;
+const MIN_AUTO_STOP_RECORDING_MS: u64 = 350;
 const QUICK_TAP_RELEASE_MS: u64 = 700;
-const NO_SPEECH_TIMEOUT_MS: u64 = 6_000;
+const NO_SPEECH_TIMEOUT_MS: u64 = 2_500;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
 const OVERLAY_WIDTH: i32 = 540;
@@ -647,21 +647,28 @@ fn process_session(
         }
     };
 
-    emit_status(
-        app,
-        "refining",
-        &format!("Cleaning with local {ollama_model}"),
-    );
-    let final_text = match refine_with_pinned_ollama(&transcript, &deterministic, &ollama_model) {
-        Ok(text) => text,
-        Err(error) => {
-            tracing::warn!(error = %error, "local model cleanup failed; using formatted transcript");
-            emit_status(
-                app,
-                "error",
-                "Local model cleanup failed; using the deterministically formatted transcript.",
-            );
-            deterministic.clone()
+    // Fast mode: skip the LLM entirely and insert the deterministically formatted text for
+    // the lowest possible latency. Otherwise run the configured local cleanup model.
+    let final_text = if settings.models.low_resource_mode {
+        tracing::info!("low_resource_mode enabled; skipping LLM cleanup");
+        deterministic.clone()
+    } else {
+        emit_status(
+            app,
+            "refining",
+            &format!("Cleaning with local {ollama_model}"),
+        );
+        match refine_with_pinned_ollama(&transcript, &deterministic, &ollama_model) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!(error = %error, "local model cleanup failed; using formatted transcript");
+                emit_status(
+                    app,
+                    "error",
+                    "Local model cleanup failed; using the deterministically formatted transcript.",
+                );
+                deterministic.clone()
+            }
         }
     };
 
@@ -744,9 +751,16 @@ fn start_level_meter(
             emit_audio_features(&app, features);
 
             if detector.observe(Instant::now(), rms) {
+                // If speech was never detected, this is an abandoned tap: cancel silently
+                // (hides the overlay) instead of running the pipeline and flashing an error.
+                let state = if detector.speech_seen {
+                    "auto_stop"
+                } else {
+                    "cancel"
+                };
                 let _ = command_tx.send(RecorderCommand {
                     app: app.clone(),
-                    state: "auto_stop".to_string(),
+                    state: state.to_string(),
                 });
                 break;
             }
@@ -1260,7 +1274,9 @@ fn refine_with_pinned_ollama(
 }
 
 fn request_ollama_cleanup(prompt: &str, model: &str) -> Result<String, String> {
-    request_ollama_generate(prompt, Duration::from_secs(60), 0.1, model)
+    // Bounded so a slow/oversized model falls back to the deterministic transcript quickly
+    // instead of freezing the overlay on "refining".
+    request_ollama_generate(prompt, Duration::from_secs(20), 0.1, model)
 }
 
 fn request_ollama_generate(
@@ -1403,7 +1419,9 @@ fn paste_text(text: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not set clipboard text: {error}"))?;
 
     send_ctrl_v()?;
-    thread::sleep(Duration::from_millis(700));
+    // Give the target app time to read the pasted clipboard before we restore the prior
+    // contents. Kept short so the "inserted" state and overlay dismissal feel immediate.
+    thread::sleep(Duration::from_millis(400));
 
     if let Some(previous_text) = previous_text {
         let _ = clipboard.set_text(previous_text);
@@ -1580,7 +1598,7 @@ fn hide_overlay(app: &AppHandle) {
 
 fn schedule_overlay_hide(app: AppHandle, epoch: u64) {
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(1200));
+        thread::sleep(Duration::from_millis(700));
 
         if app
             .state::<NativeDictationRuntime>()
@@ -1708,6 +1726,33 @@ mod tests {
                 ),
             0.0,
         ));
+    }
+
+    #[test]
+    fn no_speech_timeout_is_distinguishable_from_end_of_speech() {
+        let started_at = Instant::now();
+
+        // Abandoned tap: never any voice -> stops via NO_SPEECH_TIMEOUT with speech_seen false,
+        // so the recorder cancels silently instead of flashing an error.
+        let mut idle = EndOfSpeechDetector::new(started_at);
+        assert!(idle.observe(
+            started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS),
+            0.0,
+        ));
+        assert!(!idle.speech_seen, "abandoned tap must not report speech");
+
+        // Real speech then silence -> stops via END_OF_SPEECH with speech_seen true.
+        let mut spoken = EndOfSpeechDetector::new(started_at);
+        assert!(!spoken.observe(started_at + Duration::from_millis(80), 0.02));
+        assert!(!spoken.observe(started_at + Duration::from_millis(220), 0.012));
+        assert!(spoken.observe(
+            started_at
+                + Duration::from_millis(
+                    MIN_AUTO_STOP_RECORDING_MS + END_OF_SPEECH_TIMEOUT_MS + 120,
+                ),
+            0.0,
+        ));
+        assert!(spoken.speech_seen, "spoken dictation must report speech");
     }
 
     #[test]

@@ -22,7 +22,21 @@ Still pending: persistent/streaming ASR, sidecar health checks, process recovery
 
 ## Ollama
 
-Install Ollama and make sure the local model you want is available. The default is `gemma4:12b-it-qat`; you can change it in Settings > Models, and native dictation uses that choice (it never silently switches to a remote model).
+Install Ollama and make sure the local model you want is available. The default is a fast
+small model, `llama3.2:3b` — pull it once:
+
+```powershell
+ollama pull llama3.2:3b
+```
+
+It is chosen for low latency: LocalFlow's deterministic layer already handles punctuation,
+self-corrections, filler cleanup, and your replacements/snippets, so the LLM only does light
+semantic cleanup and a small model is plenty (this mirrors the small Llama-family model Wispr
+Flow fine-tunes for its cleanup). You can change the model in Settings > Models — good
+alternatives are `qwen2.5:3b` (quality) or the original `gemma4:12b-it-qat` (heaviest, slowest)
+— and native dictation uses your choice (it never silently switches to a remote model). To
+skip the LLM entirely for the fastest possible insertion, enable low-resource mode; the
+deterministically formatted text is inserted directly.
 
 Check availability:
 

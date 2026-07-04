@@ -10,7 +10,7 @@ LocalFlow is a local-first Windows desktop dictation app. The intended user flow
 4. A small bottom waveform overlay appears.
 5. LocalFlow records microphone audio.
 6. Local `whisper.cpp` transcribes the audio.
-7. Local Ollama model `gemma4:12b-it-qat` cleans the transcript.
+7. A configurable local Ollama model (default `llama3.2:3b`) cleans the transcript — or, in low-resource mode, the deterministically formatted text is inserted directly with no LLM.
 8. The final text is pasted into the focused field.
 
 The app is designed to avoid cloud services, telemetry, accounts, and silent remote fallback. Ordinary dictation is expected to work offline after the local Whisper runtime and Ollama model are installed.
@@ -299,7 +299,7 @@ Recent verification on this workstation:
 - `npm run test` with 80 frontend tests (77 baseline + 3 recovery tests, Slice 3).
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test` with 47 Rust tests (14 baseline; +3 session-guard Slice 1; +2 target-window Slice 2; +10 deterministic-formatting Slice 4; +3 personalization Slice 5; +15 streaming-ASR foundation Slice 8).
+- `cargo test` with 48 Rust tests (14 baseline; +3 session-guard Slice 1; +2 target-window Slice 2; +10 deterministic-formatting Slice 4; +3 personalization Slice 5; +15 streaming-ASR foundation Slice 8; +1 no-speech-branch Slice 9).
 - `cargo check`
 - `npm run tauri:build`
 
@@ -386,12 +386,30 @@ Known Rust warnings (14) are from scaffolded provider traits and future-facing s
   `StreamingSession`, emit partials to the overlay, and build the benchmark harness. That
   step needs local models + a mic to verify, which this environment lacks.
 
+### Slice 9 (snappier, more Wispr Flow-like feel)
+
+- Timing constants tightened in `native_dictation.rs`: `END_OF_SPEECH_TIMEOUT_MS`
+  760→550, `NO_SPEECH_TIMEOUT_MS` 6000→2500, `MIN_AUTO_STOP_RECORDING_MS` 420→350;
+  `schedule_overlay_hide` 1200→700 ms; `paste_text` clipboard-restore sleep 700→400 ms.
+- **Silent idle close:** when speech was never detected, the level meter now sends `cancel`
+  (overlay just hides) instead of `auto_stop` (which flashed a "too short" error). New test
+  `no_speech_timeout_is_distinguishable_from_end_of_speech`.
+- **Faster default model:** default cleanup model changed from `gemma4:12b-it-qat` (12B) to
+  `llama3.2:3b` (fast, small, same Llama family Wispr Flow fine-tunes for its cleanup; our
+  deterministic layer already does the heavy formatting). Still configurable; `qwen2.5:3b`
+  and the original 12B are documented alternatives. Cleanup HTTP timeout 60→20 s so a slow
+  model falls back to deterministic text quickly.
+- **Instant mode:** the previously-unused `low_resource_mode` setting now skips the LLM and
+  inserts the deterministically formatted text for the lowest latency.
+- Insertion safety (session guard, target revalidation, Escape, recovery) is unchanged.
+- Manual validation needs a mic + `ollama pull llama3.2:3b`; steps in the plan file.
+
 ## Known Limitations
 
 - Native hotkey dictation currently uses the default Windows input device.
-- Native dictation cleanup model is configurable via settings (default `gemma4:12b-it-qat`);
-  ASR language is still fixed to English and the whisper model path/threads are not yet
-  settings-driven.
+- Native dictation cleanup model is configurable via settings (default `llama3.2:3b`, a fast
+  small model; low-resource mode skips the LLM entirely). ASR language is still fixed to
+  English and the whisper model path/threads are not yet settings-driven.
 - Deterministic formatting + user replacements/snippets/dictionary now run on the native
   hotkey path (Slices 4-5). Style profiles are not yet applied to the cleanup prompt.
 - UI Automation text insertion is pending (insertion is still clipboard + Ctrl+V).

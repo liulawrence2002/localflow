@@ -41,6 +41,13 @@ Phase 1 (unify the production pipeline): in progress.
   metric for the benchmark harness. All unit-tested (+15 Rust tests, 47 total). This is the
   Phase 3 foundation; wiring a persistent whisper provider onto it + the benchmark harness is
   next (requires local models to verify).
+- **Slice 9 — snappier, more Wispr Flow-like feel (done).** Tightened VAD/overlay timings
+  (end-of-speech 760→550 ms, no-speech idle 6 s→2.5 s, overlay hold 1200→700 ms, paste
+  settle 700→400 ms); silent idle close (no more "too short" error flash when you tap without
+  speaking); changed the default cleanup model from the 12B `gemma4:12b-it-qat` to the fast
+  `llama3.2:3b` (configurable; researched — the same Llama family Wispr Flow uses for cleanup)
+  with the cleanup timeout bounded to 20 s; wired `low_resource_mode` as an instant-text mode
+  that skips the LLM. +1 Rust test (48 total).
 - Follow-ups (roadmap): persistent/streaming whisper provider + benchmark harness; native
   SQLite persistence + retention jobs; UI Automation insertion; native context capture;
   paste-last-into-focus hotkey; module split of `native_dictation.rs`.

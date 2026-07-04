@@ -18,8 +18,8 @@ import {
 } from "../src/domain/settings";
 
 describe("settings mutations", () => {
-  it("pins the default Ollama model to the local gemma4:12b-it-qat model", () => {
-    expect(defaultSettings.models.ollamaModel).toBe("gemma4:12b-it-qat");
+  it("defaults the Ollama model to the fast local llama3.2:3b model", () => {
+    expect(defaultSettings.models.ollamaModel).toBe("llama3.2:3b");
   });
 
   it("adds, updates, and removes dictionary entries", () => {

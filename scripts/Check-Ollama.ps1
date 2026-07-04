@@ -4,7 +4,9 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
   throw "Ollama is not installed or is not on PATH."
 }
 
-$requiredModel = "gemma4:12b-it-qat"
+# Default native cleanup model. Override with the LOCALFLOW_OLLAMA_MODEL env var to check
+# whichever model you have selected in Settings > Models.
+$requiredModel = if ($env:LOCALFLOW_OLLAMA_MODEL) { $env:LOCALFLOW_OLLAMA_MODEL } else { "llama3.2:3b" }
 $models = ollama list
 $models
 
