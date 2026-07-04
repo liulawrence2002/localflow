@@ -40,7 +40,11 @@ Click into the target text field before holding the hotkey. The current native p
 
 ## Dictation Feels Slow To Finish
 
-Native dictation now listens for end-of-speech while the hotkey is held. After speech is detected, a short pause triggers transcription automatically; releasing the hotkey still finishes immediately. If it stops too early, speak in one steadier pass for now. A configurable end-of-speech control is still pending.
+Native dictation listens for end-of-speech after the shortcut starts recording. Tap the shortcut, speak, then pause briefly; a short post-speech silence triggers transcription automatically. You can also press the hotkey again to stop manually, or use a longer hold-and-release gesture. If no voice arrives after a tap, LocalFlow times out instead of staying open indefinitely. A configurable end-of-speech control is still pending.
+
+## Waveform Opens Then Immediately Closes
+
+Update to the latest build from this repository. Quick shortcut releases are treated as tap-to-start, so the waveform should stay open long enough for you to speak. If it still closes immediately, check whether another app is also intercepting `Ctrl+Alt+Space` or `Ctrl+Alt+Shift+Space`.
 
 ## Blank Or Silent Audio
 

@@ -41,6 +41,8 @@ Completed:
 - Added a hidden-on-start settings window and a compact always-on-top waveform overlay for active dictation.
 - Added native microphone level events so the overlay reacts to speech volume while listening.
 - Added native end-of-speech auto-stop so dictation starts processing after a short post-speech pause, while still allowing hotkey release to finish immediately.
+- Added hybrid tap/hold hotkey handling: quick releases now keep recording open for tap-to-start dictation, while a second tap or longer hold release can stop manually.
+- Added no-speech timeout after tap-to-start so the overlay does not stay open forever when no voice is detected.
 - Added native `gemma4:12b-it-qat` warmup on recording start and longer Ollama keep-alive to reduce cleanup wait on repeated dictations.
 - Refined the floating overlay into a wider polished waveform with live bars, generated wave paths, processing sheen, and success/error state colors.
 
@@ -52,7 +54,7 @@ Verified:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cd src-tauri; cargo fmt --check`
-- `cd src-tauri; cargo test` with 11 passing tests.
+- `cd src-tauri; cargo test` with 13 passing tests.
 - `cd src-tauri; cargo check`
 - `npm run tauri:build`, producing:
   - `src-tauri\target\release\localflow.exe`
@@ -111,6 +113,8 @@ Completed:
 - Native `cpal` default-microphone capture on a dedicated recorder thread.
 - Multi-channel input downmixing selects the loudest active channel to avoid phase-cancellation silence.
 - Native end-of-speech detection stops recording after speech is heard and a short silence follows.
+- Quick hotkey taps now start dictation without closing the overlay on key release.
+- No-speech timeout ends abandoned tap-to-start sessions.
 - Native recording has a maximum-duration cap for the current hotkey path.
 - Capture diagnostics compute duration, peak, RMS, and nonzero sample ratio before Whisper runs.
 - Temporary mono 16 kHz WAV writing for the current sidecar path, with cleanup after transcription.

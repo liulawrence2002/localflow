@@ -2,7 +2,7 @@
 
 LocalFlow is a local-first Windows desktop voice-dictation app built with Tauri 2, Rust, React, TypeScript, SQLite, `whisper.cpp`, and local LLM refinement through Ollama.
 
-The current build is a lightweight Tauri tray app. It launches quietly, keeps the settings window hidden until opened from the tray, and shows a small floating waveform while dictation is active. Hold the global hotkey, speak into the default microphone, then either release the hotkey or pause briefly after speaking; LocalFlow transcribes with local `whisper.cpp`, cleans with your local Ollama `gemma4:12b-it-qat` model, then pastes the result into the focused field.
+The current build is a lightweight Tauri tray app. It launches quietly, keeps the settings window hidden until opened from the tray, and shows a small floating waveform while dictation is active. Tap the global hotkey, speak into the default microphone, then pause briefly after speaking; LocalFlow transcribes with local `whisper.cpp`, cleans with your local Ollama `gemma4:12b-it-qat` model, then pastes the result into the focused field. Longer hold-and-release dictation is still supported.
 
 ## Prerequisites
 
@@ -56,9 +56,9 @@ If `Ctrl+Alt+Space` is already registered by another app, LocalFlow automaticall
 1. Start LocalFlow.
 2. Open Notepad, VS Code, or any text box.
 3. Click into the target field.
-4. Hold `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable; otherwise hold `Ctrl+Alt+Space`.
+4. Tap `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable; otherwise tap `Ctrl+Alt+Space`.
 5. Speak for 2-5 seconds.
-6. Stop speaking and pause briefly, or release the hotkey, then wait for local Whisper transcription plus local `gemma4:12b-it-qat` cleanup.
+6. Stop speaking and pause briefly, or press the hotkey again, then wait for local Whisper transcription plus local `gemma4:12b-it-qat` cleanup.
 
 The floating waveform appears while listening and processing. It uses live microphone level bars while recording, a processing pulse while local models run, and a success/error color change before hiding. The current native path inserts the cleaned transcript through clipboard paste and restores the previous text clipboard afterward. If local Ollama or `gemma4:12b-it-qat` is unavailable, LocalFlow preserves the raw Whisper transcript instead of losing the dictation.
 

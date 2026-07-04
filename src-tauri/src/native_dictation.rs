@@ -94,6 +94,8 @@ const VAD_CONTINUE_RMS_THRESHOLD: f32 = 0.0045;
 const VAD_CONFIRM_SPEECH_MS: u64 = 120;
 const END_OF_SPEECH_TIMEOUT_MS: u64 = 760;
 const MIN_AUTO_STOP_RECORDING_MS: u64 = 420;
+const QUICK_TAP_RELEASE_MS: u64 = 700;
+const NO_SPEECH_TIMEOUT_MS: u64 = 6_000;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
 const OVERLAY_WIDTH: i32 = 320;
@@ -131,8 +133,36 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
 
     for command in command_rx {
         let result = match command.state.as_str() {
-            "pressed" => start_recording(&command.app, &mut session),
-            "released" | "auto_stop" => {
+            "pressed" => {
+                if let Some(active_session) = session.as_ref() {
+                    if should_toggle_stop(active_session.started_at.elapsed()) {
+                        let active_session = session
+                            .take()
+                            .expect("active recording session should exist");
+                        finish_recording(command.app.clone(), active_session)
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    start_recording(&command.app, &mut session)
+                }
+            }
+            "released" => {
+                if let Some(active_session) = session.as_ref() {
+                    if should_ignore_quick_release(active_session.started_at.elapsed()) {
+                        tracing::info!("quick hotkey release ignored; continuing tap-to-dictate");
+                        Ok(())
+                    } else {
+                        let active_session = session
+                            .take()
+                            .expect("active recording session should exist");
+                        finish_recording(command.app.clone(), active_session)
+                    }
+                } else {
+                    Ok(())
+                }
+            }
+            "auto_stop" => {
                 if let Some(session) = session.take() {
                     finish_recording(command.app.clone(), session)
                 } else {
@@ -147,6 +177,14 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
             emit_status(&command.app, "error", &error);
         }
     }
+}
+
+fn should_ignore_quick_release(elapsed: Duration) -> bool {
+    elapsed < Duration::from_millis(QUICK_TAP_RELEASE_MS)
+}
+
+fn should_toggle_stop(elapsed: Duration) -> bool {
+    elapsed >= Duration::from_millis(QUICK_TAP_RELEASE_MS)
 }
 
 fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> Result<(), String> {
@@ -361,7 +399,13 @@ impl EndOfSpeechDetector {
     }
 
     fn observe(&mut self, now: Instant, rms: f32) -> bool {
-        if now.duration_since(self.started_at) >= Duration::from_secs(MAX_RECORDING_SECS) {
+        let elapsed = now.duration_since(self.started_at);
+
+        if elapsed >= Duration::from_secs(MAX_RECORDING_SECS) {
+            return true;
+        }
+
+        if !self.speech_seen && elapsed >= Duration::from_millis(NO_SPEECH_TIMEOUT_MS) {
             return true;
         }
 
@@ -1076,6 +1120,34 @@ mod tests {
 
         assert!(!detector.observe(started_at + Duration::from_millis(900), 0.0));
         assert!(!detector.observe(started_at + Duration::from_millis(1_800), 0.001));
+    }
+
+    #[test]
+    fn quick_hotkey_release_is_treated_as_tap_to_start() {
+        assert!(should_ignore_quick_release(Duration::from_millis(
+            QUICK_TAP_RELEASE_MS - 1,
+        )));
+        assert!(!should_ignore_quick_release(Duration::from_millis(
+            QUICK_TAP_RELEASE_MS,
+        )));
+        assert!(should_toggle_stop(Duration::from_millis(
+            QUICK_TAP_RELEASE_MS,
+        )));
+    }
+
+    #[test]
+    fn end_of_speech_detector_times_out_when_no_voice_arrives() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(
+            started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS - 100),
+            0.0,
+        ));
+        assert!(detector.observe(
+            started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS),
+            0.0,
+        ));
     }
 
     #[test]

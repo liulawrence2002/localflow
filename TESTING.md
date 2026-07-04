@@ -90,10 +90,10 @@ Manual acceptance tests must record exact app version, model, hardware, and obse
 1. Start the Tauri app with `.\scripts\Start-Dev.ps1`.
 2. Open a local text target such as Notepad.
 3. Click in the target field.
-4. Hold `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
+4. Tap `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
 5. Speak a short sentence.
-6. Pause briefly after speaking, or release the hotkey.
-7. Confirm the small waveform overlay appears while listening, its bars react to speech, and it switches to processing/refining after the pause or release.
+6. Pause briefly after speaking, or press the hotkey again.
+7. Confirm the small waveform overlay appears while listening, its bars react to speech, and it switches to processing/refining after the pause or second hotkey press.
 8. Confirm cleaned text appears in the target field.
 
 This validates microphone capture, end-of-speech auto-stop, live overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
