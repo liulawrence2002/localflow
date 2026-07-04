@@ -1,0 +1,73 @@
+mod app_state;
+mod audio;
+mod asr;
+mod context;
+mod hotkeys;
+mod insertion;
+mod platform;
+mod privacy;
+mod refinement;
+mod storage;
+mod workflow;
+
+use app_state::{begin_mock_session, cancel_session, finish_mock_session, get_status, LocalFlowRuntime};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager,
+};
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tracing_subscriber::fmt()
+        .with_env_filter("localflow=info,tauri=warn")
+        .without_time()
+        .init();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(LocalFlowRuntime::default())
+        .setup(|app| {
+            let database_path = storage::initialize(app.handle())?;
+            tracing::info!(path = %database_path.display(), "initialized local settings database");
+            build_tray(app)?;
+
+            #[cfg(desktop)]
+            hotkeys::register_default_hotkey(app.handle())?;
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_status,
+            begin_mock_session,
+            finish_mock_session,
+            cancel_session
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running LocalFlow");
+}
+
+fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show LocalFlow", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("LocalFlow")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
