@@ -49,7 +49,7 @@ Current verification on this workstation:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test` with 4 passing tests.
+- `cargo test` with 8 passing tests.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
 - `.\scripts\Check-Ollama.ps1`, confirming local model `gemma4:12b-it-qat`.

@@ -49,7 +49,7 @@ Verified:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cd src-tauri; cargo fmt --check`
-- `cd src-tauri; cargo test` with 4 passing tests.
+- `cd src-tauri; cargo test` with 8 passing tests.
 - `cd src-tauri; cargo check`
 - `npm run tauri:build`, producing:
   - `src-tauri\target\release\localflow.exe`
@@ -106,8 +106,11 @@ Completed:
 - Timeout guard for local provider calls.
 - Shared performance recorder for hotkey-to-recording, ASR partial, release-to-final, LLM, insertion, model-load, and peak-memory metrics.
 - Native `cpal` default-microphone capture on a dedicated recorder thread.
+- Multi-channel input downmixing selects the loudest active channel to avoid phase-cancellation silence.
+- Capture diagnostics compute duration, peak, RMS, and nonzero sample ratio before Whisper runs.
 - Temporary mono 16 kHz WAV writing for the current sidecar path, with cleanup after transcription.
 - Local `whisper-cli.exe` launch against `ggml-tiny.en-q5_1.bin` with JSON output parsing.
+- Near-silence captures and blank Whisper markers are rejected with clearer errors.
 - Clear missing-runtime and missing-model errors for the native path.
 - Live microphone level sampling for the floating waveform overlay.
 

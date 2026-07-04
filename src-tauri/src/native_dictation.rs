@@ -32,8 +32,18 @@ struct RecordingSession {
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
     channels: u16,
+    device_name: String,
+    sample_format: SampleFormat,
     started_at: Instant,
     level_stop_tx: mpsc::Sender<()>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioStats {
+    duration_secs: f32,
+    peak: f32,
+    rms: f32,
+    nonzero_ratio: f32,
 }
 
 struct RecorderCommand {
@@ -76,6 +86,8 @@ struct CleanupModelResponse {
 
 const OLLAMA_MODEL: &str = "gemma4:12b-it-qat";
 const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
+const SILENCE_PEAK_THRESHOLD: f32 = 0.003;
+const SILENCE_RMS_THRESHOLD: f32 = 0.0005;
 
 impl Default for NativeDictationRuntime {
     fn default() -> Self {
@@ -137,6 +149,9 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
     let device = host
         .default_input_device()
         .ok_or_else(|| "No default microphone is available.".to_string())?;
+    let device_name = device
+        .name()
+        .unwrap_or_else(|_| "Unknown input device".to_string());
     let supported_config = device
         .default_input_config()
         .map_err(|error| format!("Could not read default microphone config: {error}"))?;
@@ -157,12 +172,20 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
         samples,
         sample_rate,
         channels,
+        device_name: device_name.clone(),
+        sample_format,
         started_at: Instant::now(),
         level_stop_tx,
     });
 
     emit_status(app, "listening", "Listening");
-    tracing::info!(sample_rate, channels, "native microphone recording started");
+    tracing::info!(
+        device = %device_name,
+        sample_rate,
+        channels,
+        sample_format = ?sample_format,
+        "native microphone recording started"
+    );
     Ok(())
 }
 
@@ -172,6 +195,8 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         samples,
         sample_rate,
         channels,
+        device_name,
+        sample_format,
         started_at,
         level_stop_tx,
     } = session;
@@ -189,6 +214,26 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
         return Err("Recording was too short to transcribe.".to_string());
     }
 
+    let stats = analyze_audio(&captured, sample_rate);
+    tracing::info!(
+        device = %device_name,
+        sample_rate,
+        channels,
+        sample_format = ?sample_format,
+        duration_secs = stats.duration_secs,
+        peak = stats.peak,
+        rms = stats.rms,
+        nonzero_ratio = stats.nonzero_ratio,
+        "native microphone recording finished"
+    );
+
+    if is_near_silent(stats) {
+        return Err(format!(
+            "Captured audio from \"{device_name}\" was silent or near-silent. peak={:.5}, rms={:.5}. Check the Windows default input device, microphone privacy access, and input gain.",
+            stats.peak, stats.rms
+        ));
+    }
+
     let output_dir = env::temp_dir().join("localflow");
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("Could not create temporary audio directory: {error}"))?;
@@ -200,7 +245,7 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
     write_wav(&wav_path, &mono_16k)?;
 
     let transcript = run_whisper(&app, &wav_path, &output_base)?;
-    if transcript.trim().is_empty() {
+    if transcript.trim().is_empty() || is_blank_transcript(&transcript) {
         return Err("Local whisper.cpp did not return any transcript text.".to_string());
     }
 
@@ -326,11 +371,93 @@ fn push_mono_samples(data: &[f32], channels: usize, samples: &Arc<Mutex<Vec<f32>
     }
 
     if let Ok(mut output) = samples.lock() {
-        for frame in data.chunks(channels) {
-            let sum: f32 = frame.iter().copied().sum();
-            output.push((sum / frame.len() as f32).clamp(-1.0, 1.0));
+        output.extend(downmix_input_callback(data, channels));
+    }
+}
+
+fn downmix_input_callback(data: &[f32], channels: usize) -> Vec<f32> {
+    if channels == 0 {
+        return Vec::new();
+    }
+
+    if channels == 1 {
+        return data
+            .iter()
+            .copied()
+            .map(|sample| sample.clamp(-1.0, 1.0))
+            .collect();
+    }
+
+    let selected_channel = loudest_channel(data, channels);
+    data.chunks(channels)
+        .filter_map(|frame| frame.get(selected_channel).copied())
+        .map(|sample| sample.clamp(-1.0, 1.0))
+        .collect()
+}
+
+fn loudest_channel(data: &[f32], channels: usize) -> usize {
+    let mut energy = vec![0.0f64; channels];
+    let mut counts = vec![0usize; channels];
+
+    for frame in data.chunks(channels) {
+        for (channel, sample) in frame.iter().enumerate() {
+            energy[channel] += (*sample as f64) * (*sample as f64);
+            counts[channel] += 1;
         }
     }
+
+    let mut selected = 0usize;
+    let mut selected_energy = 0.0f64;
+
+    for channel in 0..channels {
+        let channel_energy = if counts[channel] == 0 {
+            0.0
+        } else {
+            energy[channel] / counts[channel] as f64
+        };
+
+        if channel_energy > selected_energy {
+            selected = channel;
+            selected_energy = channel_energy;
+        }
+    }
+
+    selected
+}
+
+fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioStats {
+    if samples.is_empty() || sample_rate == 0 {
+        return AudioStats {
+            duration_secs: 0.0,
+            peak: 0.0,
+            rms: 0.0,
+            nonzero_ratio: 0.0,
+        };
+    }
+
+    let mut peak = 0.0f32;
+    let mut sum_squares = 0.0f64;
+    let mut nonzero = 0usize;
+
+    for sample in samples {
+        let abs = sample.abs();
+        peak = peak.max(abs);
+        sum_squares += (*sample as f64) * (*sample as f64);
+        if abs > 0.000_01 {
+            nonzero += 1;
+        }
+    }
+
+    AudioStats {
+        duration_secs: samples.len() as f32 / sample_rate as f32,
+        peak,
+        rms: (sum_squares / samples.len() as f64).sqrt() as f32,
+        nonzero_ratio: nonzero as f32 / samples.len() as f32,
+    }
+}
+
+fn is_near_silent(stats: AudioStats) -> bool {
+    stats.peak < SILENCE_PEAK_THRESHOLD && stats.rms < SILENCE_RMS_THRESHOLD
 }
 
 fn resample_to_16khz(input: &[f32], input_rate: u32) -> Vec<f32> {
@@ -433,6 +560,25 @@ fn parse_whisper_json(path: &Path) -> Result<String, String> {
     }
 
     Err("whisper.cpp JSON output did not include transcript text.".to_string())
+}
+
+fn is_blank_transcript(transcript: &str) -> bool {
+    let normalized = transcript
+        .trim()
+        .trim_matches(|character: char| {
+            character.is_whitespace()
+                || matches!(
+                    character,
+                    '[' | ']' | '(' | ')' | '{' | '}' | '.' | '!' | '?'
+                )
+        })
+        .to_ascii_lowercase()
+        .replace(['_', '-'], " ");
+
+    matches!(
+        normalized.as_str(),
+        "" | "blank audio" | "silence" | "no speech" | "inaudible"
+    )
 }
 
 fn refine_with_pinned_ollama(raw_transcript: &str) -> Result<String, String> {
@@ -762,4 +908,43 @@ fn position_overlay(window: &WebviewWindow) -> tauri::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downmix_uses_loudest_channel_to_avoid_phase_cancellation() {
+        let interleaved = vec![0.8, -0.8, 0.7, -0.7, 0.6, -0.6, 0.5, -0.5];
+
+        let mono = downmix_input_callback(&interleaved, 2);
+
+        assert_eq!(mono, vec![0.8, 0.7, 0.6, 0.5]);
+    }
+
+    #[test]
+    fn downmix_prefers_nonzero_channel_for_sparse_multichannel_input() {
+        let interleaved = vec![0.0, 0.25, 0.0, 0.5, 0.0, 0.75];
+
+        let mono = downmix_input_callback(&interleaved, 2);
+
+        assert_eq!(mono, vec![0.25, 0.5, 0.75]);
+    }
+
+    #[test]
+    fn audio_stats_detect_near_silence() {
+        let silent = vec![0.0; 16_000];
+        let speech = vec![0.02; 16_000];
+
+        assert!(is_near_silent(analyze_audio(&silent, 16_000)));
+        assert!(!is_near_silent(analyze_audio(&speech, 16_000)));
+    }
+
+    #[test]
+    fn detects_blank_whisper_markers() {
+        assert!(is_blank_transcript("[BLANK_AUDIO]"));
+        assert!(is_blank_transcript("(silence)"));
+        assert!(!is_blank_transcript("hello local flow"));
+    }
 }

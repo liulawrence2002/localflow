@@ -38,6 +38,12 @@ $env:LOCALFLOW_WHISPER_MODEL = "C:\path\to\ggml-base.en.bin"
 
 Click into the target text field before holding the hotkey. The current native path uses clipboard paste fallback, so the focused app must accept `Ctrl+V`.
 
+## Blank Or Silent Audio
+
+LocalFlow now rejects near-silent recordings before Whisper runs and reports the opened input device with peak/RMS diagnostics in the native log. The capture path also avoids multi-channel phase cancellation by selecting the loudest active input channel instead of averaging channels together.
+
+If silence is still reported, check the Windows default input device, input gain, and microphone privacy access for desktop apps.
+
 ## Waveform Does Not Appear
 
 LocalFlow launches the settings window hidden and shows a small overlay only during active dictation states. If no overlay appears, check that the `localflow.exe` process is running and that the global hotkey is registered.

@@ -62,6 +62,8 @@ If `Ctrl+Alt+Space` is already registered by another app, LocalFlow automaticall
 
 The floating waveform appears while listening and processing. The current native path inserts the cleaned transcript through clipboard paste and restores the previous text clipboard afterward. If local Ollama or `gemma4:12b-it-qat` is unavailable, LocalFlow preserves the raw Whisper transcript instead of losing the dictation.
 
+For multi-channel microphones, LocalFlow selects the loudest active input channel instead of averaging channels, which avoids phase-cancellation recordings that sound like blank audio to Whisper.
+
 ## Checks
 
 ```powershell
