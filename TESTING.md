@@ -22,6 +22,7 @@ Current tests cover:
 - LLM JSON validation.
 - LLM JSON repair retry and deterministic fallback.
 - Timeout handling.
+- Performance metric recording, missing-measurement warnings, and latency/memory formatting.
 - Cursor-aware insertion spacing.
 - Insertion target validation.
 - Clipboard fallback delayed-restoration planning.

@@ -30,6 +30,7 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/context.ts`: context snapshot privacy policy, application categorization, and cleanup input mapping.
 - `src/domain/privacy.ts`: history retention and redaction helpers.
 - `src/domain/diagnostics.ts`: redacted diagnostics export assembly for support bundles.
+- `src/domain/performance.ts`: latency and peak-memory measurement helpers with diagnostic formatting.
 - `src/domain/settings.ts`: typed personalization and style-profile mutations used by the UI and local fallback.
 - `src/domain/commandMode.ts`: selected-text command planning, OS-command rejection, preview decisions, and command response parsing.
 - `src/domain/insertionPlan.ts`: target validation, insertion method ordering, clipboard fallback restoration timing, and duplicate insertion guards.

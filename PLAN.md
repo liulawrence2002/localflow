@@ -22,6 +22,7 @@ Completed:
 - Added privacy retention helpers for disabled history, transcript-only history, delete-after windows, context retention, and redacted diagnostics.
 - Added diagnostics export generation that excludes dictated content and local model paths by default.
 - Added shared context snapshot policy with protected-field blocking, context limits, cleanup mapping, and application category classification.
+- Added shared performance recorder and diagnostics formatter for latency and peak-memory metrics without invented values.
 - Added timeout guard for local providers.
 - Added editable dictionary, replacement, snippet, and style-profile controls in the settings UI.
 - Added settings mutation helpers for personalization CRUD and browser fallback persistence.
@@ -38,7 +39,7 @@ Verified:
 - `npm install`
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 70 passing tests.
+- `npm run test` with 76 passing tests.
 - `npm run build`
 - Vite dev server at `http://127.0.0.1:1420/`
 - Live dev-server smoke check: page status 200, root element present, transformed `App.tsx` contains LocalFlow Home, Privacy, Diagnostics, mock transcript UI markers, editable personalization UI markers, Undo cleanup marker, Ollama check markers, and command-mode module task marker.
@@ -84,12 +85,13 @@ Completed:
 - Shared `whisper.cpp` JSON transcript parser with segment timestamps.
 - Initial prompt builder for dictionary terms and pronunciation hints.
 - Timeout guard for local provider calls.
+- Shared performance recorder for hotkey-to-recording, ASR partial, release-to-final, LLM, insertion, model-load, and peak-memory metrics.
 
 Not yet completed:
 
 - Add `cpal` microphone capture.
 - Add `whisper.cpp` sidecar process manager.
-- Add final transcription with cancellation, timeout, model-not-found errors, and latency metrics.
+- Add final transcription with cancellation, timeout, model-not-found errors, and native latency metric feeds.
 - Wire rolling partial transcription into real ASR events.
 
 ## Milestone 3: Insertion and Cleanup
