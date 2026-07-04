@@ -14,6 +14,7 @@ Current tests cover:
 - Bounded audio ring buffers.
 - RMS-based VAD and end-of-speech detection.
 - Mono downmixing and sample-rate normalization helpers.
+- Native overlay audio-feature extraction, including pitch distinction for lower and higher voice tones.
 - Boundary-aware replacements.
 - Snippet expansion.
 - Spoken punctuation.
@@ -49,7 +50,7 @@ Current verification on this workstation:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test` with 11 passing tests.
+- `cargo test` with 14 passing tests.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
 - `.\scripts\Check-Ollama.ps1`, confirming local model `gemma4:12b-it-qat`.
@@ -93,7 +94,7 @@ Manual acceptance tests must record exact app version, model, hardware, and obse
 4. Tap `Ctrl+Alt+Space`, or `Ctrl+Alt+Shift+Space` if the primary hotkey is unavailable.
 5. Speak a short sentence.
 6. Pause briefly after speaking, or press the hotkey again.
-7. Confirm the small waveform overlay appears while listening, its bars react to speech, and it switches to processing/refining after the pause or second hotkey press.
+7. Confirm the small waveform overlay appears while listening, the colored ribbon changes with speech pitch and volume, and it switches to processing/refining after the pause or second hotkey press.
 8. Confirm cleaned text appears in the target field.
 
-This validates microphone capture, end-of-speech auto-stop, live overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
+This validates microphone capture, end-of-speech auto-stop, pitch-reactive overlay events, local `whisper.cpp` execution, local Ollama `gemma4:12b-it-qat` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.

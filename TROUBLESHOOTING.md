@@ -58,7 +58,7 @@ If silence is still reported, check the Windows default input device, input gain
 
 ## Waveform Does Not Appear
 
-LocalFlow launches the settings window hidden and shows a small overlay only during active dictation states. While you speak, the blue bars should move with microphone level. If no overlay appears, check that the `localflow.exe` process is running and that the global hotkey is registered.
+LocalFlow launches the settings window hidden and shows a small overlay only during active dictation states. While you speak, the colored ribbon should move with microphone level and pitch. If no overlay appears, check that the `localflow.exe` process is running and that the global hotkey is registered.
 
 ## Ollama Is Unavailable
 

@@ -540,180 +540,92 @@ textarea {
 
 .voice-overlay__surface {
   align-items: center;
-  background: linear-gradient(180deg, rgba(255, 255, 252, 0.99), rgba(242, 244, 238, 0.98));
-  border: 1px solid rgba(45, 51, 48, 0.14);
-  border-radius: 24px;
+  background: #06080b;
+  border: 1px solid rgba(116, 132, 154, 0.18);
+  border-radius: 18px;
   box-shadow:
-    0 18px 46px rgba(13, 19, 18, 0.22),
-    0 5px 16px rgba(13, 19, 18, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+    0 18px 54px rgba(0, 0, 0, 0.38),
+    0 8px 22px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
   display: grid;
-  height: 78px;
+  height: 118px;
   overflow: hidden;
   place-items: center;
   position: relative;
-  width: 300px;
+  width: 512px;
 }
 
 .voice-overlay__surface::before {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.74), transparent);
+  background:
+    radial-gradient(circle at 18% 24%, rgba(255, 94, 42, 0.14), transparent 30%),
+    radial-gradient(circle at 74% 70%, rgba(28, 129, 255, 0.18), transparent 38%),
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
   content: "";
   height: 100%;
-  left: -60%;
-  opacity: 0;
+  inset: 0;
+  opacity: 1;
   position: absolute;
-  top: 0;
-  transform: skewX(-18deg);
-  width: 52%;
+  width: 100%;
 }
 
 .voice-overlay__surface::after {
-  background: rgba(66, 124, 151, 0.68);
-  border-radius: 999px;
-  box-shadow: 0 0 14px rgba(66, 124, 151, 0.42);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size:
+    100% 18px,
+    32px 100%;
   content: "";
-  height: 6px;
-  opacity: 0.74;
+  inset: 0;
+  opacity: 0.5;
   position: absolute;
-  right: 20px;
-  top: 17px;
+}
+
+.voice-overlay__canvas {
+  display: block;
+  height: 100%;
+  position: relative;
+  width: 100%;
+  z-index: 1;
+}
+
+.voice-overlay__status {
+  background: rgba(56, 175, 255, 0.86);
+  border-radius: 999px;
+  bottom: 12px;
+  box-shadow: 0 0 16px rgba(56, 175, 255, 0.68);
+  height: 6px;
+  opacity: 0.88;
+  position: absolute;
+  right: 16px;
   width: 6px;
+  z-index: 2;
 }
 
 .voice-overlay--processing .voice-overlay__surface::before,
 .voice-overlay--refining .voice-overlay__surface::before {
-  animation: overlay-sheen 1.15s ease-in-out infinite;
-  opacity: 1;
+  animation: overlay-ribbon-sheen 1.4s ease-in-out infinite alternate;
 }
 
-.voice-overlay--inserted .voice-overlay__surface::after {
-  background: rgba(42, 142, 95, 0.74);
-  box-shadow: 0 0 14px rgba(42, 142, 95, 0.4);
+.voice-overlay--inserted .voice-overlay__status {
+  background: rgba(51, 224, 139, 0.9);
+  box-shadow: 0 0 16px rgba(51, 224, 139, 0.68);
 }
 
-.voice-overlay--error .voice-overlay__surface::after {
-  background: rgba(185, 69, 50, 0.78);
-  box-shadow: 0 0 14px rgba(185, 69, 50, 0.38);
+.voice-overlay--error .voice-overlay__status {
+  background: rgba(255, 78, 54, 0.9);
+  box-shadow: 0 0 16px rgba(255, 78, 54, 0.68);
 }
 
-.voice-overlay__glow {
-  background: radial-gradient(circle at center, rgba(74, 139, 166, 0.14), transparent 62%);
-  height: 88px;
-  opacity: calc(0.32 + var(--overlay-level) * 0.4);
-  position: absolute;
-  transform: scaleX(1.22);
-  width: 260px;
-}
-
-.voice-overlay__wave {
-  height: 56px;
-  overflow: visible;
-  position: absolute;
-  width: 244px;
-}
-
-.voice-overlay__wave path {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transform-origin: center;
-}
-
-.voice-overlay__wave-shadow {
-  opacity: 0.22;
-  stroke: rgba(59, 65, 62, 0.44);
-  stroke-width: 6.2;
-}
-
-.voice-overlay__wave-live {
-  filter: drop-shadow(0 2px 5px rgba(27, 35, 32, 0.16));
-  stroke: rgba(73, 79, 75, 0.76);
-  stroke-width: 4.2;
-}
-
-.voice-overlay--listening .voice-overlay__wave-live {
-  animation: voice-line 620ms ease-in-out infinite alternate;
-}
-
-.voice-overlay--processing .voice-overlay__wave-live,
-.voice-overlay--refining .voice-overlay__wave-live {
-  stroke: rgba(49, 112, 145, 0.78);
-}
-
-.voice-overlay--inserted .voice-overlay__wave-live {
-  stroke: rgba(42, 142, 95, 0.82);
-}
-
-.voice-overlay--error .voice-overlay__wave-live {
-  stroke: rgba(185, 69, 50, 0.84);
-}
-
-.voice-overlay__bars {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  height: 50px;
-  justify-content: center;
-  opacity: 0.74;
-  position: absolute;
-}
-
-.voice-overlay__bars span {
-  animation: voice-bar 460ms ease-in-out infinite alternate;
-  animation-delay: var(--bar-delay);
-  background: linear-gradient(180deg, rgba(57, 137, 173, 0.74), rgba(76, 151, 178, 0.28));
-  border-radius: 999px;
-  display: block;
-  height: 46px;
-  transform: scaleY(var(--bar-scale));
-  transform-origin: center;
-  width: 4px;
-}
-
-.voice-overlay--processing .voice-overlay__bars span,
-.voice-overlay--refining .voice-overlay__bars span {
-  animation-duration: 780ms;
-  background: linear-gradient(180deg, rgba(47, 119, 153, 0.78), rgba(64, 111, 136, 0.3));
-}
-
-.voice-overlay--inserted .voice-overlay__bars span {
-  animation: none;
-  background: rgba(42, 142, 95, 0.5);
-  transform: scaleY(0.34);
-}
-
-.voice-overlay--error .voice-overlay__bars span {
-  animation: none;
-  background: rgba(185, 69, 50, 0.52);
-  transform: scaleY(0.38);
-}
-
-@keyframes voice-bar {
+@keyframes overlay-ribbon-sheen {
   from {
-    transform: scaleY(var(--bar-scale-low));
+    filter: saturate(1);
+    opacity: 0.82;
   }
 
   to {
-    transform: scaleY(var(--bar-scale-high));
-  }
-}
-
-@keyframes voice-line {
-  from {
-    transform: translateY(1px) scaleY(0.92);
-  }
-
-  to {
-    transform: translateY(-1px) scaleY(1.06);
-  }
-}
-
-@keyframes overlay-sheen {
-  from {
-    left: -60%;
-  }
-
-  to {
-    left: 120%;
+    filter: saturate(1.45);
+    opacity: 1;
   }
 }

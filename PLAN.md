@@ -46,6 +46,7 @@ Completed:
 - Added native `gemma4:12b-it-qat` warmup on recording start and longer Ollama keep-alive to reduce cleanup wait on repeated dictations.
 - Refined the floating overlay into a wider polished waveform with live bars, generated wave paths, processing sheen, and success/error state colors.
 - Hid the `whisper-cli.exe` sidecar process window on Windows so hotkey dictation only surfaces the waveform overlay.
+- Added live pitch and brightness extraction from microphone chunks and replaced the overlay with a dark, layered audio-ribbon canvas: higher pitch lifts warmer upper strands and lower pitch deepens cooler lower strands.
 
 Verified:
 
@@ -55,7 +56,7 @@ Verified:
 - `npm run test` with 77 passing tests.
 - `npm run build`
 - `cd src-tauri; cargo fmt --check`
-- `cd src-tauri; cargo test` with 13 passing tests.
+- `cd src-tauri; cargo test` with 14 passing tests.
 - `cd src-tauri; cargo check`
 - `npm run tauri:build`, producing:
   - `src-tauri\target\release\localflow.exe`
@@ -123,14 +124,15 @@ Completed:
 - Hidden Windows sidecar launch prevents terminal flashes during transcription.
 - Near-silence captures and blank Whisper markers are rejected with clearer errors.
 - Clear missing-runtime and missing-model errors for the native path.
-- Live microphone level sampling for the floating waveform overlay.
-- Polished floating overlay shows live speech bars and distinct processing, inserted, and error states without opening the full settings UI.
+- Live microphone level, pitch, and brightness sampling for the floating waveform overlay.
+- Polished floating overlay shows pitch-reactive colored ribbon waves and distinct processing, inserted, and error states without opening the full settings UI.
 
 Not yet completed:
 
 - Replace the temporary WAV path with a longer-term sidecar process manager and narrower IPC boundary.
 - Add cancellation, timeout enforcement, sidecar crash recovery, and native latency metric feeds.
 - Wire rolling partial transcription into real ASR events.
+- Drive overlay motion from stabilized partial transcript timing once live partial ASR is wired; the current overlay reacts to live acoustic features.
 - Add microphone selection and device-disconnect recovery.
 
 ## Milestone 3: Insertion and Cleanup

@@ -49,6 +49,13 @@ struct AudioStats {
     nonzero_ratio: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OverlayAudioFeatures {
+    level: f32,
+    pitch: f32,
+    brightness: f32,
+}
+
 struct RecorderCommand {
     app: AppHandle,
     state: String,
@@ -60,6 +67,8 @@ struct NativeDictationEvent {
     phase: String,
     message: String,
     level: Option<f32>,
+    pitch: Option<f32>,
+    brightness: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,7 +110,7 @@ const QUICK_TAP_RELEASE_MS: u64 = 700;
 const NO_SPEECH_TIMEOUT_MS: u64 = 6_000;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
-const OVERLAY_WIDTH: i32 = 320;
+const OVERLAY_WIDTH: i32 = 540;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -223,7 +232,7 @@ fn start_recording(app: &AppHandle, session: &mut Option<RecordingSession>) -> R
         .lock()
         .map_err(|_| "Native dictation command lock was poisoned.".to_string())?
         .clone();
-    let level_stop_tx = start_level_meter(app.clone(), samples.clone(), command_tx);
+    let level_stop_tx = start_level_meter(app.clone(), samples.clone(), sample_rate, command_tx);
 
     *session = Some(RecordingSession {
         stream,
@@ -341,6 +350,7 @@ fn finish_recording(app: AppHandle, session: RecordingSession) -> Result<(), Str
 fn start_level_meter(
     app: AppHandle,
     samples: Arc<Mutex<Vec<f32>>>,
+    sample_rate: u32,
     command_tx: mpsc::Sender<RecorderCommand>,
 ) -> mpsc::Sender<()> {
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -369,8 +379,8 @@ fn start_level_meter(
             }
 
             let rms = rms_level(&chunk);
-            let level = display_level_from_rms(rms);
-            emit_level(&app, level);
+            let features = overlay_audio_features(&chunk, sample_rate, rms);
+            emit_audio_features(&app, features);
 
             if detector.observe(Instant::now(), rms) {
                 let _ = command_tx.send(RecorderCommand {
@@ -453,6 +463,90 @@ fn rms_level(samples: &[f32]) -> f32 {
 
 fn display_level_from_rms(rms: f32) -> f32 {
     (rms * 15.0).clamp(0.05, 1.0)
+}
+
+fn overlay_audio_features(samples: &[f32], sample_rate: u32, rms: f32) -> OverlayAudioFeatures {
+    OverlayAudioFeatures {
+        level: display_level_from_rms(rms),
+        pitch: estimate_pitch_normalized(samples, sample_rate, rms).unwrap_or(0.5),
+        brightness: estimate_brightness(samples, rms),
+    }
+}
+
+fn estimate_pitch_normalized(samples: &[f32], sample_rate: u32, rms: f32) -> Option<f32> {
+    if rms < VAD_CONTINUE_RMS_THRESHOLD || sample_rate == 0 {
+        return None;
+    }
+
+    let min_hz = 75.0f32;
+    let max_hz = 420.0f32;
+    let min_lag = (sample_rate as f32 / max_hz).round().max(1.0) as usize;
+    let max_lag = (sample_rate as f32 / min_hz).round() as usize;
+
+    if samples.len() <= max_lag + 2 {
+        return None;
+    }
+
+    let mean = samples.iter().copied().sum::<f32>() / samples.len() as f32;
+    let centered: Vec<f32> = samples.iter().map(|sample| sample - mean).collect();
+    let mut best_lag = 0usize;
+    let mut best_score = 0.0f32;
+    let mut scores = Vec::with_capacity(max_lag.saturating_sub(min_lag) + 1);
+
+    for lag in min_lag..=max_lag {
+        let mut correlation = 0.0f32;
+        let mut left_energy = 0.0f32;
+        let mut right_energy = 0.0f32;
+
+        for index in lag..centered.len() {
+            let left = centered[index];
+            let right = centered[index - lag];
+            correlation += left * right;
+            left_energy += left * left;
+            right_energy += right * right;
+        }
+
+        let energy = (left_energy * right_energy).sqrt();
+        if energy <= f32::EPSILON {
+            continue;
+        }
+
+        let score = correlation / energy;
+        scores.push((lag, score));
+        if score > best_score {
+            best_score = score;
+            best_lag = lag;
+        }
+    }
+
+    if best_score < 0.34 || best_lag == 0 {
+        return None;
+    }
+
+    let strong_score = best_score * 0.9;
+    if let Some((lag, _)) = scores
+        .iter()
+        .find(|(_, score)| *score >= strong_score)
+        .copied()
+    {
+        best_lag = lag;
+    }
+
+    let hz = sample_rate as f32 / best_lag as f32;
+    Some(((hz - min_hz) / (max_hz - min_hz)).clamp(0.0, 1.0))
+}
+
+fn estimate_brightness(samples: &[f32], rms: f32) -> f32 {
+    if samples.len() < 2 || rms < VAD_CONTINUE_RMS_THRESHOLD {
+        return 0.35;
+    }
+
+    let crossings = samples
+        .windows(2)
+        .filter(|pair| (pair[0] < 0.0 && pair[1] >= 0.0) || (pair[0] >= 0.0 && pair[1] < 0.0))
+        .count();
+
+    (crossings as f32 / samples.len() as f32 * 12.0).clamp(0.12, 1.0)
 }
 
 fn build_stream(
@@ -1017,11 +1111,16 @@ fn emit_status(app: &AppHandle, phase: &str, message: &str) {
     emit_native_event(app, phase, message, None);
 }
 
-fn emit_level(app: &AppHandle, level: f32) {
-    emit_native_event(app, "listening", "Listening", Some(level));
+fn emit_audio_features(app: &AppHandle, features: OverlayAudioFeatures) {
+    emit_native_event(app, "listening", "Listening", Some(features));
 }
 
-fn emit_native_event(app: &AppHandle, phase: &str, message: &str, level: Option<f32>) {
+fn emit_native_event(
+    app: &AppHandle,
+    phase: &str,
+    message: &str,
+    features: Option<OverlayAudioFeatures>,
+) {
     let epoch = app
         .state::<NativeDictationRuntime>()
         .overlay_epoch
@@ -1030,7 +1129,7 @@ fn emit_native_event(app: &AppHandle, phase: &str, message: &str, level: Option<
 
     match phase {
         "listening" | "processing" | "refining" | "inserted" | "error" => {
-            show_overlay(app, level.is_none());
+            show_overlay(app, features.is_none());
         }
         _ => hide_overlay(app),
     }
@@ -1040,11 +1139,13 @@ fn emit_native_event(app: &AppHandle, phase: &str, message: &str, level: Option<
         NativeDictationEvent {
             phase: phase.to_string(),
             message: message.to_string(),
-            level,
+            level: features.map(|features| features.level),
+            pitch: features.map(|features| features.pitch),
+            brightness: features.map(|features| features.brightness),
         },
     );
 
-    if matches!(phase, "inserted" | "error") && level.is_none() {
+    if matches!(phase, "inserted" | "error") && features.is_none() {
         schedule_overlay_hide(app.clone(), epoch);
     }
 }
@@ -1090,7 +1191,7 @@ fn position_overlay(window: &WebviewWindow) -> tauri::Result<()> {
         let size = monitor.size();
         let position = monitor.position();
         let x = position.x + ((size.width as i32 - OVERLAY_WIDTH) / 2).max(16);
-        let y = position.y + (size.height as i32 - 178).max(16);
+        let y = position.y + (size.height as i32 - 214).max(16);
         window.set_position(PhysicalPosition::new(x, y))?;
     }
 
@@ -1151,6 +1252,19 @@ mod tests {
     }
 
     #[test]
+    fn pitch_estimator_distinguishes_lower_and_higher_voice_tones() {
+        let sample_rate = 48_000;
+        let low = sine_wave(120.0, sample_rate, 0.08);
+        let high = sine_wave(260.0, sample_rate, 0.08);
+        let low_pitch = estimate_pitch_normalized(&low, sample_rate, rms_level(&low)).unwrap();
+        let high_pitch = estimate_pitch_normalized(&high, sample_rate, rms_level(&high)).unwrap();
+
+        assert!(high_pitch > low_pitch);
+        assert!(low_pitch < 0.3);
+        assert!(high_pitch > 0.45);
+    }
+
+    #[test]
     fn end_of_speech_detector_times_out_when_no_voice_arrives() {
         let started_at = Instant::now();
         let mut detector = EndOfSpeechDetector::new(started_at);
@@ -1201,5 +1315,16 @@ mod tests {
         assert!(is_blank_transcript("[BLANK_AUDIO]"));
         assert!(is_blank_transcript("(silence)"));
         assert!(!is_blank_transcript("hello local flow"));
+    }
+
+    fn sine_wave(frequency_hz: f32, sample_rate: u32, duration_secs: f32) -> Vec<f32> {
+        let sample_count = (sample_rate as f32 * duration_secs).round() as usize;
+
+        (0..sample_count)
+            .map(|index| {
+                let t = index as f32 / sample_rate as f32;
+                (std::f32::consts::TAU * frequency_hz * t).sin() * 0.35
+            })
+            .collect()
     }
 }
