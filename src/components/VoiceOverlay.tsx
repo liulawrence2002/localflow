@@ -96,6 +96,8 @@ const ribbonLayers: RibbonLayer[] = [
     pitchResponse: 0.18,
   },
 ];
+const ribbonVerticalCenter = 0.5;
+const ribbonVerticalLimit = 0.38;
 
 export function VoiceOverlay() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -255,7 +257,7 @@ function drawCenterGlow(
   height: number,
   visual: RibbonState,
 ) {
-  const centerY = height * 0.52;
+  const centerY = ribbonCenterY(height);
   const glow = context.createLinearGradient(0, centerY - 18, 0, centerY + 18);
   glow.addColorStop(0, `rgba(255, 99, 53, ${0.08 + visual.pitch * 0.08})`);
   glow.addColorStop(0.5, `rgba(243, 73, 220, ${0.16 + visual.level * 0.14})`);
@@ -272,12 +274,12 @@ function drawRibbonLayer(
   time: number,
   layer: RibbonLayer,
 ) {
-  const centerY = height * 0.52;
+  const centerY = ribbonCenterY(height);
   const level = visual.phase === "inserted" ? 0.18 : visual.level;
   const phaseGain = visual.phase === "error" ? 0.72 : 1;
   const pitchBias = (visual.pitch - 0.5) * layer.pitchResponse;
   const pitchGain = 0.72 + Math.abs(pitchBias) * 0.95;
-  const amplitude = (12 + level * 46) * layer.gain * pitchGain * phaseGain;
+  const amplitude = Math.min((8 + level * 34) * layer.gain * pitchGain * phaseGain, height * 0.3);
   const frequency = layer.frequency + visual.brightness * 2.4 + visual.pitch * layer.pitchResponse;
   const speed = layer.speed + level * 0.72;
   const strandCount = layer.strands;
@@ -323,7 +325,8 @@ function drawRibbonLayer(
         envelope *
         amplitude *
         (mainWave * 0.52 + detailWave * 0.28 + pitchShape + pitchBias * 0.32);
-      const y = centerY + displacement + offset;
+      const rawY = centerY + displacement + offset;
+      const y = squashToRibbonBand(rawY, centerY, height);
 
       if (x === 0) {
         context.moveTo(x, y);
@@ -347,7 +350,7 @@ function drawCenterLine(
   visual: RibbonState,
   time: number,
 ) {
-  const centerY = height * 0.52;
+  const centerY = ribbonCenterY(height);
   const lineGradient = context.createLinearGradient(0, 0, width, 0);
   lineGradient.addColorStop(0, "rgba(24, 140, 255, 0.1)");
   lineGradient.addColorStop(0.45, `rgba(255, 101, 221, ${0.32 + visual.level * 0.28})`);
@@ -374,6 +377,15 @@ function drawCenterLine(
   context.shadowBlur = 8;
   context.stroke();
   context.shadowBlur = 0;
+}
+
+function ribbonCenterY(height: number): number {
+  return height * ribbonVerticalCenter;
+}
+
+function squashToRibbonBand(value: number, centerY: number, height: number): number {
+  const limit = Math.max(1, height * ribbonVerticalLimit);
+  return centerY + Math.tanh((value - centerY) / limit) * limit;
 }
 
 function phaseColor(color: string, phase: NativeDictationPhase): string {

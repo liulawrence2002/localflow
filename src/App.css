@@ -59,7 +59,7 @@ button:disabled {
 }
 
 .app-shell {
-  display: grid;
+  display: block;
   grid-template-columns: 232px minmax(0, 1fr);
   min-height: 100vh;
 }
@@ -551,7 +551,6 @@ textarea {
   display: grid;
   height: 118px;
   overflow: hidden;
-  place-items: center;
   position: relative;
   width: 512px;
 }
@@ -585,7 +584,8 @@ textarea {
 .voice-overlay__canvas {
   display: block;
   height: 100%;
-  position: relative;
+  inset: 0;
+  position: absolute;
   width: 100%;
   z-index: 1;
 }
