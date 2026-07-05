@@ -50,3 +50,5 @@ export function App() {
 ## Boundaries
 
 The v1 spike is in-app only. Host apps decide where transcript text goes, and the SDK does not paste into other mobile apps. Mobile on-device Whisper should be added as a new `LocalFlowTranscriber` implementation after the SDK boundary is proven.
+
+The SDK and `?view=mobile-sdk-example` route are supplementary developer surfaces. Normal desktop usage still launches from the Windows shortcut through `scripts\Start-LocalFlow.vbs`, then `scripts\Start-LocalFlow.ps1`, and finally the packaged `src-tauri\target\release\localflow.exe` without starting Vite or a localhost UI.

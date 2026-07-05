@@ -2,6 +2,7 @@ mod app_state;
 mod asr;
 mod audio;
 mod context;
+mod desktop_health;
 mod hotkeys;
 mod insertion;
 mod native_dictation;
@@ -54,6 +55,13 @@ pub fn run() {
             }
 
             build_tray(app)?;
+            desktop_health::record_app_start(app.handle());
+            desktop_health::start_launch_signal_watcher(app.handle().clone());
+
+            if std::env::args().any(|arg| arg == "--localflow-desktop-launch") {
+                desktop_health::record_shortcut_launch(app.handle());
+                native_dictation::show_ready_pulse(app.handle(), "LocalFlow ready");
+            }
 
             #[cfg(desktop)]
             hotkeys::register_default_hotkey(app.handle())?;

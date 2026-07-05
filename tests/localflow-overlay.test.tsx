@@ -47,6 +47,21 @@ describe("LocalFlowOverlay", () => {
 
     expect(screen.queryByLabelText("LocalFlow voice active")).not.toBeInTheDocument();
   });
+
+  it("renders the ready pulse state", () => {
+    render(
+      <LocalFlowOverlay
+        state={{
+          sessionId: "desktop-ready",
+          phase: "ready",
+          message: "LocalFlow ready",
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("LocalFlow voice ready")).toHaveClass("voice-overlay--ready");
+    expect(screen.getByLabelText("LocalFlow ready")).toBeInTheDocument();
+  });
 });
 
 function createCanvasContextStub() {

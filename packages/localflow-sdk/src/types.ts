@@ -1,5 +1,5 @@
 export type LocalFlowDictationPhase =
-  "idle" | "listening" | "processing" | "refining" | "inserted" | "error";
+  "ready" | "idle" | "cancelled" | "listening" | "processing" | "refining" | "inserted" | "error";
 
 export interface LocalFlowVoiceState {
   sessionId: string;

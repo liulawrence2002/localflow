@@ -91,13 +91,22 @@
 }
 
 .voice-overlay--processing .voice-overlay__surface::before,
+.voice-overlay--ready .voice-overlay__surface::before,
 .voice-overlay--refining .voice-overlay__surface::before {
   animation: overlay-pill-sheen 1.8s ease-in-out infinite alternate;
 }
 
 .voice-overlay--processing .voice-overlay__status,
+.voice-overlay--ready .voice-overlay__status,
 .voice-overlay--refining .voice-overlay__status {
   animation: overlay-status-pulse 1.05s ease-in-out infinite;
+}
+
+.voice-overlay--ready .voice-overlay__status {
+  background: rgba(58, 143, 121, 0.92);
+  box-shadow:
+    0 0 0 3px rgba(58, 143, 121, 0.14),
+    0 2px 8px rgba(35, 95, 80, 0.28);
 }
 
 .voice-overlay--inserted .voice-overlay__status {

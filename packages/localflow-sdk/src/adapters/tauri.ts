@@ -149,6 +149,10 @@ function mapWorkflowPhase(phase: string | undefined): LocalFlowDictationPhase {
       return "refining";
     case "Complete":
       return "inserted";
+    case "Ready":
+      return "ready";
+    case "Cancelled":
+      return "cancelled";
     case "Error":
       return "error";
     default:

@@ -172,7 +172,14 @@ export function LocalFlowOverlay({
     return null;
   }
 
-  const status = phase === "error" ? "Error" : phase === "inserted" ? "Inserted" : "Active";
+  const status =
+    phase === "error"
+      ? "Error"
+      : phase === "inserted"
+        ? "Inserted"
+        : phase === "ready"
+          ? "Ready"
+          : "Active";
   const classes = [
     "voice-overlay",
     `voice-overlay--${phase}`,
@@ -383,6 +390,10 @@ function levelForDraw(visual: WaveState): number {
     return Math.max(visual.level, 0.24);
   }
 
+  if (visual.phase === "ready") {
+    return Math.max(visual.level, 0.2);
+  }
+
   if (visual.phase === "processing" || visual.phase === "refining") {
     return Math.max(visual.level, 0.3);
   }
@@ -395,6 +406,10 @@ function phaseAccentColor(phase: LocalFlowDictationPhase): string {
     return "42, 164, 103";
   }
 
+  if (phase === "ready") {
+    return "58, 143, 121";
+  }
+
   if (phase === "error") {
     return "210, 74, 54";
   }
@@ -405,6 +420,10 @@ function phaseAccentColor(phase: LocalFlowDictationPhase): string {
 function phaseWaveColor(color: string, phase: LocalFlowDictationPhase): string {
   if (phase === "inserted") {
     return "42, 164, 103";
+  }
+
+  if (phase === "ready") {
+    return color;
   }
 
   if (phase === "error") {
@@ -424,6 +443,8 @@ function clampUnit(value: number): number {
 
 function defaultLevelForPhase(phase: LocalFlowDictationPhase): number {
   switch (phase) {
+    case "ready":
+      return 0.22;
     case "processing":
     case "refining":
       return 0.34;
@@ -438,6 +459,8 @@ function defaultLevelForPhase(phase: LocalFlowDictationPhase): number {
 
 function defaultPitchForPhase(phase: LocalFlowDictationPhase): number {
   switch (phase) {
+    case "ready":
+      return 0.5;
     case "processing":
     case "refining":
       return 0.58;
@@ -450,6 +473,8 @@ function defaultPitchForPhase(phase: LocalFlowDictationPhase): number {
 
 function defaultBrightnessForPhase(phase: LocalFlowDictationPhase): number {
   switch (phase) {
+    case "ready":
+      return 0.5;
     case "processing":
     case "refining":
       return 0.56;

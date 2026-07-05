@@ -92,8 +92,19 @@ function Ensure-Ollama {
   Start-Sleep -Seconds 2
 }
 
+function Signal-DesktopLaunch {
+  $appDataDir = Join-Path $env:APPDATA "app.localflow.desktop"
+  $signalPath = Join-Path $appDataDir "desktop-launch-signal.json"
+  New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
+  [pscustomobject]@{
+    source = "desktop-shortcut"
+    at     = (Get-Date).ToUniversalTime().ToString("o")
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath $signalPath -Encoding UTF8
+}
+
 Stop-KnownViteServer
 Ensure-Ollama
+Signal-DesktopLaunch
 
 $releaseExe = Join-Path $repoRoot "src-tauri\target\release\localflow.exe"
 Ensure-ReleaseBuild -ExePath $releaseExe
@@ -113,6 +124,7 @@ if ($existing -and -not $Restart) {
   $existingRelease | Select-Object -Skip 1 | Stop-Process -Force
   Set-Content -LiteralPath ".localflow-release.pid" -Value $existing.Id
   Write-Host "LocalFlow release app is already running as PID $($existing.Id)."
+  Write-Host "Desktop launch signal was sent to the running app."
   Write-Host "No Vite dev server was started."
   return
 }
@@ -123,7 +135,7 @@ if ($existingRelease.Count -gt 0 -and $Restart) {
 }
 
 $workingDirectory = Split-Path -Parent $resolvedReleaseExe
-$process = Start-Process -FilePath $resolvedReleaseExe -WorkingDirectory $workingDirectory -WindowStyle Hidden -PassThru
+$process = Start-Process -FilePath $resolvedReleaseExe -ArgumentList @("--localflow-desktop-launch") -WorkingDirectory $workingDirectory -WindowStyle Hidden -PassThru
 Set-Content -LiteralPath ".localflow-release.pid" -Value $process.Id
 
 Write-Host "LocalFlow release app started as PID $($process.Id)."

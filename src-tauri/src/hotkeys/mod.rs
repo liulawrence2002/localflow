@@ -2,7 +2,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-use crate::native_dictation;
+use crate::{
+    desktop_health::{self, HotkeyRegistrationFailure},
+    native_dictation,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +57,7 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                         ShortcutState::Pressed => "pressed",
                         ShortcutState::Released => "released",
                     };
+                    desktop_health::record_hotkey_event(app, shortcut_label, state);
                     let _ = app.emit(
                         "localflow://hotkey",
                         HotkeyPayload {
@@ -69,22 +73,44 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
             .build(),
     )?;
 
-    if let Err(error) = app.global_shortcut().register(default_shortcut) {
-        tracing::warn!(
-            error = %error,
-            "Ctrl+Alt+Space global shortcut unavailable; trying fallback"
-        );
+    let mut registered = Vec::new();
+    let mut failed = Vec::new();
 
-        if let Err(fallback_error) = app.global_shortcut().register(fallback_shortcut) {
-            tracing::warn!(
-                error = %fallback_error,
-                "Ctrl+Alt+Shift+Space fallback global shortcut unavailable; continuing without a global hotkey"
-            );
-        } else {
-            tracing::info!("registered fallback global hotkey Ctrl+Alt+Shift+Space");
+    match app.global_shortcut().register(default_shortcut) {
+        Ok(()) => {
+            registered.push("Ctrl+Alt+Space".to_string());
+            tracing::info!("registered global hotkey Ctrl+Alt+Space");
         }
-    } else {
-        tracing::info!("registered global hotkey Ctrl+Alt+Space");
+        Err(error) => {
+            tracing::warn!(error = %error, "Ctrl+Alt+Space global shortcut unavailable");
+            failed.push(HotkeyRegistrationFailure {
+                shortcut: "Ctrl+Alt+Space".to_string(),
+                error: error.to_string(),
+            });
+        }
+    }
+
+    match app.global_shortcut().register(fallback_shortcut) {
+        Ok(()) => {
+            registered.push("Ctrl+Alt+Shift+Space".to_string());
+            tracing::info!("registered global hotkey Ctrl+Alt+Shift+Space");
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "Ctrl+Alt+Shift+Space global shortcut unavailable");
+            failed.push(HotkeyRegistrationFailure {
+                shortcut: "Ctrl+Alt+Shift+Space".to_string(),
+                error: error.to_string(),
+            });
+        }
+    }
+
+    desktop_health::record_hotkey_registration(app, registered.clone(), failed);
+
+    if registered.is_empty() {
+        native_dictation::show_error_pulse(
+            app,
+            "LocalFlow is running, but no desktop dictation hotkey registered.",
+        );
     }
 
     Ok(())
