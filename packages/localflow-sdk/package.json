@@ -1,0 +1,27 @@
+{
+  "name": "@localflow/sdk",
+  "version": "0.0.0-spike",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./react": {
+      "types": "./src/react.ts",
+      "default": "./src/react.ts"
+    },
+    "./adapters/tauri": {
+      "types": "./src/adapters/tauri.ts",
+      "default": "./src/adapters/tauri.ts"
+    },
+    "./styles.css": "./src/react/LocalFlowOverlay.css"
+  },
+  "peerDependencies": {
+    "@tauri-apps/api": "^2",
+    "react": "^19"
+  }
+}
