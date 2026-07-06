@@ -4,10 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalFlowOverlay } from "@localflow/sdk/react";
 
 describe("LocalFlowOverlay", () => {
+  let rafSpy: ReturnType<typeof vi.spyOn>;
+  let cafSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(createCanvasContextStub());
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
-    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+    cafSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -62,32 +65,48 @@ describe("LocalFlowOverlay", () => {
     expect(screen.getByLabelText("LocalFlow voice ready")).toHaveClass("voice-overlay--ready");
     expect(screen.getByLabelText("LocalFlow ready")).toBeInTheDocument();
   });
+
+  it("runs a single animation loop across rapid state changes", () => {
+    const { rerender } = render(
+      <LocalFlowOverlay
+        state={{ sessionId: "s", phase: "listening", message: "Listening", level: 0.4 }}
+      />,
+    );
+
+    for (const phase of ["processing", "refining", "listening", "processing"] as const) {
+      rerender(<LocalFlowOverlay state={{ sessionId: "s", phase, message: phase }} />);
+    }
+
+    // The mocked rAF never fires its callback, so any additional loop would
+    // show up as a second requestAnimationFrame call.
+    expect(rafSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels the animation frame and stays quiet after unmount", () => {
+    const { unmount } = render(
+      <LocalFlowOverlay
+        state={{ sessionId: "s", phase: "listening", message: "Listening", level: 0.4 }}
+      />,
+    );
+
+    expect(rafSpy).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(cafSpy).toHaveBeenCalledWith(1);
+  });
 });
 
 function createCanvasContextStub() {
-  const gradient = {
-    addColorStop: vi.fn(),
-  };
-
   return {
+    arc: vi.fn(),
     beginPath: vi.fn(),
     clearRect: vi.fn(),
-    createLinearGradient: vi.fn(() => gradient),
-    createRadialGradient: vi.fn(() => gradient),
-    fillRect: vi.fn(),
+    fill: vi.fn(),
     lineTo: vi.fn(),
     moveTo: vi.fn(),
-    restore: vi.fn(),
-    save: vi.fn(),
     setTransform: vi.fn(),
     stroke: vi.fn(),
     set fillStyle(_value: unknown) {},
-    set globalCompositeOperation(_value: unknown) {},
-    set lineCap(_value: unknown) {},
-    set lineJoin(_value: unknown) {},
     set lineWidth(_value: unknown) {},
-    set shadowBlur(_value: unknown) {},
-    set shadowColor(_value: unknown) {},
     set strokeStyle(_value: unknown) {},
   } as unknown as CanvasRenderingContext2D;
 }
