@@ -51,7 +51,8 @@ Cancellation and errors are terminal states until reset. Overlapping sessions ar
 - `src/domain/ollama.ts`: shared local Ollama discovery and cleanup provider with localhost-only enforcement.
 - `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
 - `src/components`: focused UI components.
-- `src/components/VoiceOverlay.tsx`: compact waveform-only overlay rendered in the Tauri `overlay` window.
+- `src/components/VoiceOverlay.tsx`: compact waveform-only overlay rendered in the Tauri `overlay` window. Subscribes to `localflow://native-dictation`; phase changes flow through React state while ~18 Hz audio features flow through a ref polled by the renderer, so React never re-renders at microphone-event frequency.
+- `packages/localflow-sdk/src/react/topology/`: the topographic waveform renderer behind `LocalFlowOverlay`. `topologyMath.ts` (deterministic surface heights + oblique projection), `audioFeatureSmoothing.ts` (frame-rate-independent attack/release smoothing, bounded level history), `overlayStateVisuals.ts` (dictation phase → visual parameters, reduced-motion variants), and `topologyRenderer.ts` (single-rAF Canvas 2D loop with DPI handling, visibility pause, and full listener cleanup). The renderer contains no dictation business logic.
 - `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.
 
 ## Provider Boundary

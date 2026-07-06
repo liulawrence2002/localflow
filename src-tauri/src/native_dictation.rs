@@ -261,8 +261,8 @@ const QUICK_TAP_RELEASE_MS: u64 = 700;
 const NO_SPEECH_TIMEOUT_MS: u64 = 2_500;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
-const OVERLAY_WIDTH: i32 = 456;
-const OVERLAY_HEIGHT: i32 = 70;
+const OVERLAY_WIDTH: i32 = 593;
+const OVERLAY_HEIGHT: i32 = 91;
 const OVERLAY_BOTTOM_GAP: i32 = 20;
 const MAX_LATENCY_SNAPSHOTS: usize = 5;
 const TARGET_VISIBLE_TEXT_MS: u128 = 1_000;
@@ -412,6 +412,14 @@ pub fn get_last_transcript(app: AppHandle) -> Option<String> {
 #[tauri::command]
 pub fn copy_last_transcript(app: AppHandle) -> Result<(), String> {
     copy_last_transcript_to_clipboard(&app)
+}
+
+pub fn show_ready_pulse(app: &AppHandle, message: &str) {
+    emit_status(app, "ready", message);
+}
+
+pub fn show_error_pulse(app: &AppHandle, message: &str) {
+    emit_status(app, "error", message);
 }
 
 fn record_latency_snapshot(app: &AppHandle, snapshot: NativeLatencySnapshot) {
@@ -692,6 +700,7 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
 
         if let Err(error) = result {
             tracing::warn!(error = %error, "native dictation command failed");
+            crate::desktop_health::record_recording_error(&command.app, &error);
             emit_status(&command.app, "error", &error);
         }
     }
@@ -778,6 +787,7 @@ fn start_recording(
     });
 
     emit_status(app, "listening", "Listening");
+    crate::desktop_health::record_recording_start(app, &device_name, sample_rate, channels);
     set_escape_cancel(app, true);
     let warm_model = {
         let settings = app
@@ -879,6 +889,7 @@ fn finish_recording(
             Err(error) => {
                 if session_is_current(&app, session_id) {
                     tracing::warn!(error = %error, "native dictation processing failed");
+                    crate::desktop_health::record_recording_error(&app, &error);
                     emit_status(&app, "error", &error);
                 } else {
                     tracing::info!(
@@ -2024,11 +2035,13 @@ fn emit_native_event(
         + 1;
 
     match phase {
-        "listening" | "processing" | "refining" | "inserted" | "error" => {
+        "ready" | "listening" | "processing" | "refining" | "inserted" | "error" => {
             show_overlay(app, features.is_none());
         }
         _ => hide_overlay(app),
     }
+
+    crate::desktop_health::record_overlay_event(app, phase, message);
 
     let _ = app.emit(
         "localflow://native-dictation",
@@ -2041,7 +2054,7 @@ fn emit_native_event(
         },
     );
 
-    if matches!(phase, "inserted" | "error") && features.is_none() {
+    if matches!(phase, "ready" | "inserted" | "error") && features.is_none() {
         schedule_overlay_hide(app.clone(), epoch);
     }
 }

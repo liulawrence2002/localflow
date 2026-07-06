@@ -1,0 +1,126 @@
+.voice-overlay {
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.voice-overlay--window {
+  align-items: center;
+  display: grid;
+  height: 100vh;
+  justify-items: center;
+  width: 100vw;
+}
+
+.voice-overlay--in-app {
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  height: 91px;
+  left: 50%;
+  max-width: calc(100vw - 24px);
+  position: fixed;
+  transform: translateX(-50%);
+  width: 593px;
+  z-index: 50;
+}
+
+.voice-overlay__surface {
+  align-items: center;
+  backdrop-filter: blur(20px) saturate(1.08);
+  background:
+    radial-gradient(120% 160% at 50% 0%, rgba(46, 52, 62, 0.42), transparent 62%),
+    linear-gradient(180deg, rgba(24, 27, 33, 0.78), rgba(14, 16, 20, 0.84));
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 31px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -14px 26px rgba(0, 0, 0, 0.22),
+    0 10px 32px rgba(0, 0, 0, 0.32);
+  display: grid;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.voice-overlay__surface::after {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 29px;
+  content: "";
+  inset: 1px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.voice-overlay__canvas {
+  display: block;
+  height: 100%;
+  inset: 0;
+  /* Fade the terrain into the pill's rounded ends; cheaper and smoother than
+     per-frame gradient fills inside the canvas. */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 9%, #000 91%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 9%, #000 91%, transparent 100%);
+  position: absolute;
+  width: 100%;
+  z-index: 1;
+}
+
+.voice-overlay__status {
+  background: rgba(148, 196, 232, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 3px rgba(120, 170, 210, 0.14),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+  height: 10px;
+  opacity: 0.92;
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  z-index: 2;
+}
+
+.voice-overlay--processing .voice-overlay__status,
+.voice-overlay--ready .voice-overlay__status,
+.voice-overlay--refining .voice-overlay__status {
+  animation: overlay-status-pulse 1.05s ease-in-out infinite;
+}
+
+.voice-overlay--ready .voice-overlay__status {
+  background: rgba(96, 180, 156, 0.9);
+  box-shadow:
+    0 0 0 3px rgba(96, 180, 156, 0.16),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.voice-overlay--inserted .voice-overlay__status {
+  background: rgba(84, 186, 126, 0.92);
+  box-shadow:
+    0 0 0 3px rgba(84, 186, 126, 0.16),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.voice-overlay--error .voice-overlay__status {
+  background: rgba(222, 104, 86, 0.92);
+  box-shadow:
+    0 0 0 3px rgba(222, 104, 86, 0.16),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+@keyframes overlay-status-pulse {
+  0%,
+  100% {
+    transform: translateY(-50%) scale(0.94);
+  }
+
+  50% {
+    transform: translateY(-50%) scale(1.18);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-overlay__status {
+    animation: none !important;
+  }
+}

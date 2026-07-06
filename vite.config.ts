@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -9,6 +10,28 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  resolve: {
+    alias: [
+      {
+        find: "@localflow/sdk/react",
+        replacement: fileURLToPath(
+          new URL("./packages/localflow-sdk/src/react.ts", import.meta.url),
+        ),
+      },
+      {
+        find: "@localflow/sdk/adapters/tauri",
+        replacement: fileURLToPath(
+          new URL("./packages/localflow-sdk/src/adapters/tauri.ts", import.meta.url),
+        ),
+      },
+      {
+        find: "@localflow/sdk",
+        replacement: fileURLToPath(
+          new URL("./packages/localflow-sdk/src/index.ts", import.meta.url),
+        ),
+      },
+    ],
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

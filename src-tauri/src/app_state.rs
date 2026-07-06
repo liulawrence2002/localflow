@@ -181,19 +181,24 @@ pub struct DiagnosticMetric {
 
 #[tauri::command]
 pub fn get_status(
+    app: AppHandle,
     runtime: State<'_, LocalFlowRuntime>,
     native: State<'_, NativeDictationRuntime>,
 ) -> Result<AppStatus, String> {
-    build_status(&runtime, Some(&native))
+    build_status(&runtime, Some(&native), Some(&app))
 }
 
 fn build_status(
     runtime: &LocalFlowRuntime,
     native: Option<&NativeDictationRuntime>,
+    app: Option<&AppHandle>,
 ) -> Result<AppStatus, String> {
     let mut diagnostics = default_diagnostics();
     if let Some(native) = native {
         diagnostics.extend(native.latency_diagnostics());
+    }
+    if let Some(app) = app {
+        diagnostics.extend(crate::desktop_health::diagnostics(app));
     }
 
     Ok(AppStatus {
@@ -214,7 +219,7 @@ pub fn save_settings(
     crate::storage::save_settings(&app, &settings)
         .map_err(|error| format!("Could not persist settings: {error}"))?;
     *runtime.settings.lock().map_err(lock_error)? = settings;
-    build_status(&runtime, Some(&native))
+    build_status(&runtime, Some(&native), Some(&app))
 }
 
 #[tauri::command]
@@ -241,6 +246,7 @@ pub fn begin_mock_session(runtime: State<'_, LocalFlowRuntime>) -> Result<Workfl
 
 #[tauri::command]
 pub fn finish_mock_session(
+    app: AppHandle,
     runtime: State<'_, LocalFlowRuntime>,
     native: State<'_, NativeDictationRuntime>,
     raw_transcript: String,
@@ -324,7 +330,7 @@ pub fn finish_mock_session(
     }
 
     drop(workflow);
-    build_status(&runtime, Some(&native))
+    build_status(&runtime, Some(&native), Some(&app))
 }
 
 #[tauri::command]

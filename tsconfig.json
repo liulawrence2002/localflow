@@ -11,6 +11,12 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@localflow/sdk": ["packages/localflow-sdk/src/index.ts"],
+      "@localflow/sdk/react": ["packages/localflow-sdk/src/react.ts"],
+      "@localflow/sdk/adapters/tauri": ["packages/localflow-sdk/src/adapters/tauri.ts"]
+    },
     "noEmit": true,
     "jsx": "react-jsx",
 
@@ -20,6 +26,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
+  "include": ["src", "packages"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

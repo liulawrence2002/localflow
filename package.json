@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File ./scripts/Start-LocalFlow.ps1",
     "dev": "vite",
@@ -14,8 +17,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"tests/**/*.ts\" \"*.{json,ts,js,md}\"",
-    "format:write": "prettier --write \"src/**/*.{ts,tsx,css}\" \"tests/**/*.ts\" \"*.{json,ts,js,md}\"",
+    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"packages/**/*.{ts,tsx,css,json,md}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,js,md}\"",
+    "format:write": "prettier --write \"src/**/*.{ts,tsx,css}\" \"packages/**/*.{ts,tsx,css,json,md}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,js,md}\"",
     "check": "npm run format && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
