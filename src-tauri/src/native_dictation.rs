@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY, VK_CONTROL, VK_V,
@@ -105,9 +106,41 @@ fn foreground_target() -> Option<TargetWindow> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn foreground_target() -> Option<TargetWindow> {
+    linux_foreground_target()
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 fn foreground_target() -> Option<TargetWindow> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_foreground_target() -> Option<TargetWindow> {
+    if env::var_os("DISPLAY").is_none() {
+        if env::var_os("WAYLAND_DISPLAY").is_some() && command_exists("wtype") {
+            // Wayland intentionally does not expose a global active-window id to ordinary
+            // clients. Use a stable sentinel so the session can proceed with wtype typing.
+            return Some(TargetWindow { hwnd: -1, pid: 0 });
+        }
+
+        return None;
+    }
+
+    let window = run_command_output("xdotool", &["getactivewindow"]).ok()?;
+    let window = window.trim();
+    if window.is_empty() {
+        return None;
+    }
+
+    let pid = run_command_output("xdotool", &["getwindowpid", window])
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    let hwnd = window.parse::<isize>().ok()?;
+    Some(TargetWindow { hwnd, pid })
 }
 
 /// Whether it is safe to insert into the current foreground window. Fails closed: unless
@@ -134,6 +167,7 @@ struct RecordingSession {
     hotkey_received_at: Instant,
     started_at: Instant,
     last_voice_at: Arc<Mutex<Option<Instant>>>,
+    tap_mode: Arc<AtomicBool>,
     level_stop_tx: mpsc::Sender<()>,
 }
 
@@ -252,13 +286,21 @@ const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const SILENCE_PEAK_THRESHOLD: f32 = 0.003;
 const SILENCE_RMS_THRESHOLD: f32 = 0.0005;
 const VAD_POLL_MS: u64 = 55;
-const VAD_START_RMS_THRESHOLD: f32 = 0.008;
 const VAD_CONTINUE_RMS_THRESHOLD: f32 = 0.0045;
-const VAD_CONFIRM_SPEECH_MS: u64 = 120;
+const MIN_DBFS: f32 = -100.0;
+const INITIAL_NOISE_FLOOR_DBFS: f32 = -90.0;
+const VAD_START_DBFS_FLOOR: f32 = -62.0;
+const VAD_CONTINUE_DBFS_FLOOR: f32 = -60.0;
+const VAD_START_ABOVE_NOISE_DB: f32 = 7.0;
+const VAD_CONTINUE_ABOVE_NOISE_DB: f32 = 6.0;
+const VAD_CONTINUE_BELOW_SPEECH_DB: f32 = 10.0;
+const VAD_START_DYNAMIC_DB: f32 = 1.8;
+const VAD_CONFIRM_SPEECH_MS: u64 = 80;
 const END_OF_SPEECH_TIMEOUT_MS: u64 = 550;
 const MIN_AUTO_STOP_RECORDING_MS: u64 = 350;
 const QUICK_TAP_RELEASE_MS: u64 = 700;
-const NO_SPEECH_TIMEOUT_MS: u64 = 2_500;
+const NO_SPEECH_TIMEOUT_MS: u64 = 8_000;
+const TAP_MODE_BOUNDARY_TIMEOUT_MS: u64 = 10_000;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
 const OVERLAY_WIDTH: i32 = 593;
@@ -662,8 +704,9 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
                 }
             }
             "released" => {
-                if let Some(active_session) = session.as_ref() {
+                if let Some(active_session) = session.as_mut() {
                     if should_ignore_quick_release(active_session.started_at.elapsed()) {
+                        active_session.tap_mode.store(true, Ordering::Relaxed);
                         tracing::info!("quick hotkey release ignored; continuing tap-to-dictate");
                         Ok(())
                     } else {
@@ -693,6 +736,32 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
                 set_escape_cancel(&command.app, false);
                 invalidate_session(&command.app);
                 emit_status(&command.app, "cancelled", "Cancelled");
+                Ok(())
+            }
+            "no_speech" => {
+                if let Some(active_session) = session.take() {
+                    let _ = active_session.level_stop_tx.send(());
+                    let stats = active_session
+                        .samples
+                        .lock()
+                        .ok()
+                        .map(|samples| analyze_audio(&samples, active_session.sample_rate));
+                    drop(active_session.stream);
+                    if let Some(stats) = stats {
+                        tracing::info!(
+                            duration_secs = stats.duration_secs,
+                            peak = stats.peak,
+                            rms = stats.rms,
+                            nonzero_ratio = stats.nonzero_ratio,
+                            "native microphone recording stopped before transcription because speech was not detected"
+                        );
+                    }
+                }
+                set_escape_cancel(&command.app, false);
+                invalidate_session(&command.app);
+                let message = "No speech was detected from the default microphone. Check the selected input device, input gain, and microphone privacy access.";
+                crate::desktop_health::record_recording_error(&command.app, message);
+                emit_status(&command.app, "error", message);
                 Ok(())
             }
             _ => Ok(()),
@@ -747,6 +816,7 @@ fn start_recording(
     let stream_config: StreamConfig = supported_config.into();
     let samples = Arc::new(Mutex::new(Vec::with_capacity(sample_rate as usize * 20)));
     let last_voice_at = Arc::new(Mutex::new(None));
+    let tap_mode = Arc::new(AtomicBool::new(false));
 
     let stream = build_stream(&device, &stream_config, sample_format, samples.clone())?;
     stream
@@ -764,6 +834,7 @@ fn start_recording(
         samples.clone(),
         sample_rate,
         last_voice_at.clone(),
+        tap_mode.clone(),
         command_tx,
     );
 
@@ -783,6 +854,7 @@ fn start_recording(
         hotkey_received_at,
         started_at: recording_started_at,
         last_voice_at,
+        tap_mode,
         level_stop_tx,
     });
 
@@ -828,6 +900,7 @@ fn finish_recording(
         hotkey_received_at,
         started_at,
         last_voice_at,
+        tap_mode: _,
         level_stop_tx,
     } = session;
 
@@ -862,7 +935,7 @@ fn finish_recording(
 
     if is_near_silent(stats) {
         return Err(format!(
-            "Captured audio from \"{device_name}\" was silent or near-silent. peak={:.5}, rms={:.5}. Check the Windows default input device, microphone privacy access, and input gain.",
+            "Captured audio from \"{device_name}\" was silent or near-silent. peak={:.5}, rms={:.5}. Check the default input device, microphone privacy access, and input gain.",
             stats.peak, stats.rms
         ));
     }
@@ -1155,6 +1228,7 @@ fn start_level_meter(
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
     last_voice_at: Arc<Mutex<Option<Instant>>>,
+    tap_mode: Arc<AtomicBool>,
     command_tx: mpsc::Sender<RecorderCommand>,
 ) -> mpsc::Sender<()> {
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -1186,16 +1260,30 @@ fn start_level_meter(
             let features = overlay_audio_features(&chunk, sample_rate, rms);
             emit_audio_features(&app, features);
 
-            if detector.observe(Instant::now(), rms) {
+            let voice_like = is_voice_like(&chunk, sample_rate, rms);
+            let now = Instant::now();
+            if tap_mode.load(Ordering::Relaxed)
+                && now.duration_since(detector.started_at)
+                    >= Duration::from_millis(TAP_MODE_BOUNDARY_TIMEOUT_MS)
+            {
+                let _ = command_tx.send(RecorderCommand {
+                    app: app.clone(),
+                    state: "no_speech".to_string(),
+                    received_at: now,
+                });
+                break;
+            }
+
+            if detector.observe(now, rms, voice_like) {
                 if let Ok(mut last_voice) = last_voice_at.lock() {
                     *last_voice = detector.last_voice_at;
                 }
-                // If speech was never detected, this is an abandoned tap: cancel silently
-                // (hides the overlay) instead of running the pipeline and flashing an error.
+                // If speech was never detected, stop before running Whisper and surface a
+                // clear microphone diagnostic instead of silently hiding the overlay.
                 let state = if detector.speech_seen {
                     "auto_stop"
                 } else {
-                    "cancel"
+                    "no_speech"
                 };
                 let _ = command_tx.send(RecorderCommand {
                     app: app.clone(),
@@ -1220,6 +1308,10 @@ struct EndOfSpeechDetector {
     speech_started_at: Option<Instant>,
     last_voice_at: Option<Instant>,
     speech_seen: bool,
+    noise_floor_dbfs: f32,
+    speech_reference_dbfs: Option<f32>,
+    candidate_min_dbfs: f32,
+    candidate_max_dbfs: f32,
 }
 
 impl EndOfSpeechDetector {
@@ -1229,11 +1321,16 @@ impl EndOfSpeechDetector {
             speech_started_at: None,
             last_voice_at: None,
             speech_seen: false,
+            noise_floor_dbfs: INITIAL_NOISE_FLOOR_DBFS,
+            speech_reference_dbfs: None,
+            candidate_min_dbfs: 0.0,
+            candidate_max_dbfs: MIN_DBFS,
         }
     }
 
-    fn observe(&mut self, now: Instant, rms: f32) -> bool {
+    fn observe(&mut self, now: Instant, rms: f32, voice_like: bool) -> bool {
         let elapsed = now.duration_since(self.started_at);
+        let dbfs = rms_to_dbfs(rms);
 
         if elapsed >= Duration::from_secs(MAX_RECORDING_SECS) {
             return true;
@@ -1243,24 +1340,38 @@ impl EndOfSpeechDetector {
             return true;
         }
 
+        let start_threshold = self.start_threshold_dbfs();
         let voice_threshold = if self.speech_seen {
-            VAD_CONTINUE_RMS_THRESHOLD
+            self.continue_threshold_dbfs()
         } else {
-            VAD_START_RMS_THRESHOLD
+            start_threshold
         };
 
-        if rms >= voice_threshold {
-            let speech_started_at = self.speech_started_at.get_or_insert(now);
+        if dbfs >= voice_threshold && (self.speech_seen || voice_like) {
+            let speech_started_at = match self.speech_started_at {
+                Some(started_at) => started_at,
+                None => {
+                    self.speech_started_at = Some(now);
+                    self.candidate_min_dbfs = dbfs;
+                    self.candidate_max_dbfs = dbfs;
+                    now
+                }
+            };
+            self.candidate_min_dbfs = self.candidate_min_dbfs.min(dbfs);
+            self.candidate_max_dbfs = self.candidate_max_dbfs.max(dbfs);
             self.last_voice_at = Some(now);
+            self.update_speech_reference(dbfs);
 
-            if now.duration_since(*speech_started_at)
-                >= Duration::from_millis(VAD_CONFIRM_SPEECH_MS)
-                || rms >= VAD_START_RMS_THRESHOLD * 1.6
+            if now.duration_since(speech_started_at) >= Duration::from_millis(VAD_CONFIRM_SPEECH_MS)
+                && self.candidate_dynamic_db() >= VAD_START_DYNAMIC_DB
             {
                 self.speech_seen = true;
             }
         } else if !self.speech_seen {
-            self.speech_started_at = None;
+            self.reset_candidate();
+            self.update_noise_floor(dbfs);
+        } else {
+            self.update_noise_floor(dbfs);
         }
 
         self.speech_seen
@@ -1270,6 +1381,43 @@ impl EndOfSpeechDetector {
                 now.duration_since(last_voice_at) >= Duration::from_millis(END_OF_SPEECH_TIMEOUT_MS)
             })
     }
+
+    fn start_threshold_dbfs(&self) -> f32 {
+        (self.noise_floor_dbfs + VAD_START_ABOVE_NOISE_DB).max(VAD_START_DBFS_FLOOR)
+    }
+
+    fn continue_threshold_dbfs(&self) -> f32 {
+        let noise_threshold =
+            (self.noise_floor_dbfs + VAD_CONTINUE_ABOVE_NOISE_DB).max(VAD_CONTINUE_DBFS_FLOOR);
+        if let Some(speech_reference_dbfs) = self.speech_reference_dbfs {
+            noise_threshold.max(speech_reference_dbfs - VAD_CONTINUE_BELOW_SPEECH_DB)
+        } else {
+            noise_threshold
+        }
+    }
+
+    fn update_noise_floor(&mut self, dbfs: f32) {
+        let clamped = dbfs.clamp(MIN_DBFS, 0.0);
+        self.noise_floor_dbfs =
+            (self.noise_floor_dbfs * 0.92 + clamped * 0.08).clamp(MIN_DBFS, 0.0);
+    }
+
+    fn update_speech_reference(&mut self, dbfs: f32) {
+        self.speech_reference_dbfs = Some(match self.speech_reference_dbfs {
+            Some(current) => (current * 0.88 + dbfs * 0.12).max(dbfs),
+            None => dbfs,
+        });
+    }
+
+    fn candidate_dynamic_db(&self) -> f32 {
+        self.candidate_max_dbfs - self.candidate_min_dbfs
+    }
+
+    fn reset_candidate(&mut self) {
+        self.speech_started_at = None;
+        self.candidate_min_dbfs = 0.0;
+        self.candidate_max_dbfs = MIN_DBFS;
+    }
 }
 
 fn rms_level(samples: &[f32]) -> f32 {
@@ -1278,6 +1426,14 @@ fn rms_level(samples: &[f32]) -> f32 {
     }
 
     (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+fn rms_to_dbfs(rms: f32) -> f32 {
+    if rms <= f32::EPSILON {
+        MIN_DBFS
+    } else {
+        (20.0 * rms.clamp(f32::EPSILON, 1.0).log10()).clamp(MIN_DBFS, 0.0)
+    }
 }
 
 fn display_level_from_rms(rms: f32) -> f32 {
@@ -1290,6 +1446,10 @@ fn overlay_audio_features(samples: &[f32], sample_rate: u32, rms: f32) -> Overla
         pitch: estimate_pitch_normalized(samples, sample_rate, rms).unwrap_or(0.5),
         brightness: estimate_brightness(samples, rms),
     }
+}
+
+fn is_voice_like(samples: &[f32], sample_rate: u32, rms: f32) -> bool {
+    estimate_pitch_normalized(samples, sample_rate, rms).is_some()
 }
 
 fn estimate_pitch_normalized(samples: &[f32], sample_rate: u32, rms: f32) -> Option<f32> {
@@ -1638,13 +1798,16 @@ fn build_whisper_prompt(terms: &[String]) -> Option<String> {
     }
 }
 
+#[cfg(windows)]
 fn hidden_sidecar_command(program: &Path) -> Command {
     let mut command = Command::new(program);
-
-    #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-
     command
+}
+
+#[cfg(not(windows))]
+fn hidden_sidecar_command(program: &Path) -> Command {
+    Command::new(program)
 }
 
 fn whisper_thread_count() -> usize {
@@ -1789,15 +1952,40 @@ fn warm_ollama_in_background(model: String) {
 
 fn parse_cleanup_text(payload: &str) -> Result<String, String> {
     let value = parse_json_value(payload)?;
-    let cleanup: CleanupModelResponse = serde_json::from_value(value)
-        .map_err(|error| format!("Cleanup payload did not match the strict contract: {error}"))?;
-    let text = cleanup.text.trim();
+    let text = cleanup_text_from_value(&value)?;
 
     if text.is_empty() {
         Err("Cleanup payload returned empty text.".to_string())
     } else {
         Ok(text.to_string())
     }
+}
+
+fn cleanup_text_from_value(value: &serde_json::Value) -> Result<String, String> {
+    if let Some(text) = value.as_str() {
+        return Ok(text.trim().to_string());
+    }
+
+    if let Ok(cleanup) = serde_json::from_value::<CleanupModelResponse>(value.clone()) {
+        return Ok(cleanup.text.trim().to_string());
+    }
+
+    const TEXT_KEYS: &[&str] = &[
+        "cleaned_text",
+        "cleanedText",
+        "final_text",
+        "finalText",
+        "transcript",
+        "response",
+    ];
+
+    for key in TEXT_KEYS {
+        if let Some(text) = value.get(key).and_then(|text| text.as_str()) {
+            return Ok(text.trim().to_string());
+        }
+    }
+
+    Err("Cleanup payload did not include a text field.".to_string())
 }
 
 fn parse_json_value(payload: &str) -> Result<serde_json::Value, String> {
@@ -1856,6 +2044,25 @@ fn build_repair_prompt(invalid_payload: &str, error: &str) -> String {
 }
 
 fn paste_text_for_visible_insert(text: &str) -> Result<PasteStart, String> {
+    #[cfg(target_os = "linux")]
+    if linux_direct_text_supported() {
+        let send_paste_started_at = Instant::now();
+        tracing::info!(
+            chars = text.chars().count(),
+            "native dictation is typing transcript directly into focused Linux target"
+        );
+        send_linux_text(text)?;
+        let send_paste_ms = send_paste_started_at.elapsed().as_millis();
+        return Ok(PasteStart {
+            previous_text: None,
+            timings: PasteTimings {
+                set_clipboard_ms: 0,
+                send_paste_ms,
+                visible_at: Instant::now(),
+            },
+        });
+    }
+
     let mut clipboard =
         Clipboard::new().map_err(|error| format!("Could not open clipboard: {error}"))?;
     let previous_text = clipboard.get_text().ok();
@@ -1866,6 +2073,10 @@ fn paste_text_for_visible_insert(text: &str) -> Result<PasteStart, String> {
     let set_clipboard_ms = set_clipboard_started_at.elapsed().as_millis();
 
     let send_paste_started_at = Instant::now();
+    tracing::info!(
+        chars = text.chars().count(),
+        "native dictation prepared clipboard and is sending paste shortcut"
+    );
     send_ctrl_v()?;
     let send_paste_ms = send_paste_started_at.elapsed().as_millis();
     let visible_at = Instant::now();
@@ -1886,7 +2097,7 @@ fn schedule_clipboard_restore(app: AppHandle, session_id: u64, previous_text: Op
         // Give the target app time to read the pasted clipboard before we restore the prior
         // contents. This happens after visible insertion and is excluded from the main
         // speech-end-to-visible-text latency.
-        thread::sleep(Duration::from_millis(400));
+        thread::sleep(Duration::from_millis(1_500));
 
         if let Some(previous_text) = previous_text {
             if let Ok(mut clipboard) = Clipboard::new() {
@@ -1908,6 +2119,17 @@ fn audio_duration_ms(samples: usize, sample_rate: u32) -> u128 {
     ((samples as f64 / sample_rate as f64) * 1000.0).round() as u128
 }
 
+#[cfg(target_os = "linux")]
+fn send_ctrl_v() -> Result<(), String> {
+    send_linux_paste()
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn send_ctrl_v() -> Result<(), String> {
+    Err("Automatic paste is not supported on this platform.".to_string())
+}
+
+#[cfg(windows)]
 fn send_ctrl_v() -> Result<(), String> {
     let inputs = [
         key_input(VK_CONTROL, KEYBD_EVENT_FLAGS(0)),
@@ -1927,6 +2149,143 @@ fn send_ctrl_v() -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn send_linux_paste() -> Result<(), String> {
+    if env::var_os("DISPLAY").is_some() && command_exists("xdotool") {
+        run_command_status("xdotool", &["key", "--clearmodifiers", "ctrl+v"])
+            .map_err(|error| format!("Could not send Ctrl+V with xdotool: {error}"))?;
+        return Ok(());
+    }
+
+    if env::var_os("WAYLAND_DISPLAY").is_some() && command_exists("wtype") {
+        run_command_status("wtype", &["-M", "ctrl", "v", "-m", "ctrl"])
+            .map_err(|error| format!("Could not send Ctrl+V with wtype: {error}"))?;
+        return Ok(());
+    }
+
+    Err("Linux automatic paste requires xdotool on X11 or wtype on Wayland.".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_direct_text_supported() -> bool {
+    (env::var_os("DISPLAY").is_some() && command_exists("xdotool"))
+        || (env::var_os("WAYLAND_DISPLAY").is_some() && command_exists("wtype"))
+}
+
+#[cfg(target_os = "linux")]
+fn send_linux_text(text: &str) -> Result<(), String> {
+    if env::var_os("DISPLAY").is_some() && command_exists("xdotool") {
+        run_command_with_stdin(
+            "xdotool",
+            &["type", "--clearmodifiers", "--delay", "0", "--file", "-"],
+            text,
+        )
+        .map_err(|error| format!("Could not type text with xdotool: {error}"))?;
+        return Ok(());
+    }
+
+    if env::var_os("WAYLAND_DISPLAY").is_some() && command_exists("wtype") {
+        run_command_status("wtype", &[text])
+            .map_err(|error| format!("Could not type text with wtype: {error}"))?;
+        return Ok(());
+    }
+
+    Err("Linux direct text insertion requires xdotool on X11 or wtype on Wayland.".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn command_exists(command: &str) -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "command -v {} >/dev/null 2>&1",
+            shell_escape(command)
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn shell_escape(value: &str) -> String {
+    value.replace('\'', "'\\''")
+}
+
+#[cfg(target_os = "linux")]
+fn run_command_output(command: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("{command} could not start: {error}"))?;
+
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .map_err(|error| format!("{command} returned invalid UTF-8: {error}"))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("{command} exited with {}", output.status)
+        } else {
+            stderr
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_command_status(command: &str, args: &[&str]) -> Result<(), String> {
+    let status = Command::new(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|error| format!("{command} could not start: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{command} exited with {status}"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_command_with_stdin(command: &str, args: &[&str], input: &str) -> Result<(), String> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{command} could not start: {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|error| format!("{command} stdin write failed: {error}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("{command} wait failed: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("{command} exited with {}", output.status)
+        } else {
+            stderr
+        })
+    }
+}
+
+#[cfg(windows)]
 fn key_input(key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
@@ -1949,13 +2308,19 @@ fn whisper_cli_path(app: &AppHandle) -> Result<PathBuf, String> {
 
     find_file(
         "whisper.cpp executable",
-        runtime_candidates(app).into_iter().map(|runtime| {
-            runtime
-                .join("whisper")
-                .join("Release")
-                .join("whisper-cli.exe")
-        }),
+        runtime_candidates(app)
+            .into_iter()
+            .flat_map(|runtime| whisper_cli_candidates(&runtime)),
     )
+}
+
+fn whisper_cli_candidates(runtime: &Path) -> Vec<PathBuf> {
+    let release = runtime.join("whisper").join("Release");
+    vec![
+        release.join("whisper-cli.exe"),
+        release.join("whisper-cli"),
+        runtime.join("whisper").join("whisper-cli"),
+    ]
 }
 
 fn whisper_model_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -2274,8 +2639,8 @@ mod tests {
         let started_at = Instant::now();
         let mut detector = EndOfSpeechDetector::new(started_at);
 
-        assert!(!detector.observe(started_at + Duration::from_millis(900), 0.0));
-        assert!(!detector.observe(started_at + Duration::from_millis(1_800), 0.001));
+        assert!(!detector.observe(started_at + Duration::from_millis(900), 0.0, false));
+        assert!(!detector.observe(started_at + Duration::from_millis(1_800), 0.001, false));
     }
 
     #[test]
@@ -2312,11 +2677,46 @@ mod tests {
         assert!(!detector.observe(
             started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS - 100),
             0.0,
+            false,
         ));
         assert!(detector.observe(
             started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS),
             0.0,
+            false,
         ));
+    }
+
+    #[test]
+    fn end_of_speech_detector_times_out_loud_non_voice_noise() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(started_at + Duration::from_millis(200), 0.035, false));
+        assert!(!detector.observe(started_at + Duration::from_millis(2_000), 0.032, false));
+        assert!(detector.observe(
+            started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS),
+            0.033,
+            false,
+        ));
+        assert!(!detector.speech_seen, "noise must not report speech");
+    }
+
+    #[test]
+    fn end_of_speech_detector_times_out_steady_pitched_noise() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(started_at + Duration::from_millis(200), 0.033, true));
+        assert!(!detector.observe(started_at + Duration::from_millis(2_000), 0.032, true));
+        assert!(detector.observe(
+            started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS),
+            0.033,
+            true,
+        ));
+        assert!(
+            !detector.speech_seen,
+            "steady pitched noise must not report speech"
+        );
     }
 
     #[test]
@@ -2324,11 +2724,12 @@ mod tests {
         let started_at = Instant::now();
         let mut detector = EndOfSpeechDetector::new(started_at);
 
-        assert!(!detector.observe(started_at + Duration::from_millis(80), 0.02));
-        assert!(!detector.observe(started_at + Duration::from_millis(220), 0.012));
+        assert!(!detector.observe(started_at + Duration::from_millis(80), 0.02, true));
+        assert!(!detector.observe(started_at + Duration::from_millis(220), 0.012, true));
         assert!(!detector.observe(
             started_at + Duration::from_millis(MIN_AUTO_STOP_RECORDING_MS + 120),
             0.0,
+            false,
         ));
         assert!(detector.observe(
             started_at
@@ -2336,7 +2737,67 @@ mod tests {
                     MIN_AUTO_STOP_RECORDING_MS + END_OF_SPEECH_TIMEOUT_MS + 120,
                 ),
             0.0,
+            false,
         ));
+    }
+
+    #[test]
+    fn end_of_speech_detector_uses_decibel_drop_from_speech() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(started_at + Duration::from_millis(80), 0.025, true));
+        assert!(!detector.observe(started_at + Duration::from_millis(220), 0.02, true));
+        assert!(detector.speech_seen);
+
+        // A noisy room tone can still have non-zero RMS. Once it is far enough below
+        // the speech level in dBFS, it counts as post-speech pause and auto-stops.
+        assert!(!detector.observe(
+            started_at + Duration::from_millis(MIN_AUTO_STOP_RECORDING_MS + 120),
+            0.002,
+            false,
+        ));
+        assert!(detector.observe(
+            started_at
+                + Duration::from_millis(
+                    MIN_AUTO_STOP_RECORDING_MS + END_OF_SPEECH_TIMEOUT_MS + 120,
+                ),
+            0.002,
+            false,
+        ));
+    }
+
+    #[test]
+    fn end_of_speech_detector_stops_on_noisy_pause_below_speech() {
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+
+        assert!(!detector.observe(started_at + Duration::from_millis(80), 0.025, true));
+        assert!(!detector.observe(started_at + Duration::from_millis(220), 0.018, true));
+        assert!(detector.speech_seen);
+
+        // Room tone at about -46 dBFS is non-silent, but it is still more than
+        // 10 dB below the detected speech level, so it should count as a pause.
+        assert!(!detector.observe(
+            started_at + Duration::from_millis(MIN_AUTO_STOP_RECORDING_MS + 120),
+            0.005,
+            false,
+        ));
+        assert!(detector.observe(
+            started_at
+                + Duration::from_millis(
+                    MIN_AUTO_STOP_RECORDING_MS + END_OF_SPEECH_TIMEOUT_MS + 120,
+                ),
+            0.005,
+            false,
+        ));
+    }
+
+    #[test]
+    fn rms_to_dbfs_maps_silence_and_unity() {
+        assert_eq!(rms_to_dbfs(0.0), MIN_DBFS);
+        assert!((rms_to_dbfs(1.0) - 0.0).abs() < f32::EPSILON);
+        assert!((rms_to_dbfs(0.01) + 40.0).abs() < 0.01);
     }
 
     #[test]
@@ -2349,19 +2810,21 @@ mod tests {
         assert!(idle.observe(
             started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS),
             0.0,
+            false,
         ));
         assert!(!idle.speech_seen, "abandoned tap must not report speech");
 
         // Real speech then silence -> stops via END_OF_SPEECH with speech_seen true.
         let mut spoken = EndOfSpeechDetector::new(started_at);
-        assert!(!spoken.observe(started_at + Duration::from_millis(80), 0.02));
-        assert!(!spoken.observe(started_at + Duration::from_millis(220), 0.012));
+        assert!(!spoken.observe(started_at + Duration::from_millis(80), 0.02, true));
+        assert!(!spoken.observe(started_at + Duration::from_millis(220), 0.012, true));
         assert!(spoken.observe(
             started_at
                 + Duration::from_millis(
                     MIN_AUTO_STOP_RECORDING_MS + END_OF_SPEECH_TIMEOUT_MS + 120,
                 ),
             0.0,
+            false,
         ));
         assert!(spoken.speech_seen, "spoken dictation must report speech");
     }
@@ -2373,7 +2836,8 @@ mod tests {
 
         assert!(detector.observe(
             started_at + Duration::from_secs(MAX_RECORDING_SECS + 1),
-            0.0
+            0.0,
+            false
         ));
     }
 
@@ -2408,6 +2872,22 @@ mod tests {
             rule.contains("Preserve deterministicText capitalization, punctuation")
                 && rule.contains("technical casing")
         }));
+    }
+
+    #[test]
+    fn cleanup_parser_accepts_common_text_key_variants() {
+        assert_eq!(
+            parse_cleanup_text(r#"{"cleaned_text":"Hello there."}"#).unwrap(),
+            "Hello there."
+        );
+        assert_eq!(
+            parse_cleanup_text(r#"{"finalText":"Ship it."}"#).unwrap(),
+            "Ship it."
+        );
+        assert_eq!(
+            parse_cleanup_text(r#""Already clean.""#).unwrap(),
+            "Already clean."
+        );
     }
 
     #[test]

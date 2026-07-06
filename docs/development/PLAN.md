@@ -72,6 +72,15 @@ Phase 1 (unify the production pipeline): in progress.
   to Diagnostics and changed the native path to paste deterministic text immediately after Whisper,
   then run configured local Ollama cleanup in the background for recovery/diagnostics. +5 Rust tests
   (58 total).
+- **Slice 16 -- Linux developer launch path (done).** Added a Linux branch path with
+  user-space runtime lookup for `whisper-cli`, bundled Linux `.so` resources, Linux paste helpers
+  (`xdotool` on X11, `wtype` on Wayland), Ubuntu prerequisite installer, repo launcher, and a
+  desktop shortcut installer that now creates both the app-menu entry and `~/Desktop/LocalFlow.desktop`.
+  Linux VAD now allows quieter microphone input, records an explicit no-speech diagnostic instead of
+  silently cancelling, and caps noisy tap-to-dictate sessions before they can hang or feed background
+  noise into Whisper. Linux insertion now types directly with `xdotool`/`wtype` before falling back to
+  clipboard paste, avoiding clipboard timing problems in text fields. Verified on Ubuntu/X11: `cargo check`
+  passes and `npm run start:linux` reaches the running Tauri app with both desktop hotkeys registered.
 - Follow-ups (roadmap): persistent/streaming whisper provider + benchmark harness; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey; module split of `native_dictation.rs`.

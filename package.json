@@ -8,6 +8,8 @@
   ],
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File ./scripts/Start-LocalFlow.ps1",
+    "start:linux": "bash ./scripts/Start-LocalFlow-linux.sh",
+    "install:linux-shortcut": "bash ./scripts/Install-DesktopShortcut-linux.sh",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

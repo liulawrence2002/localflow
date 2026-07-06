@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod app_state;
 mod asr;
 mod audio;

@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "../.localflow-runtime/whisper/Release/*.exe": "localflow-runtime/whisper/Release/",
+      "../.localflow-runtime/whisper/Release/*.dll": "localflow-runtime/whisper/Release/"
+    }
+  }
+}
