@@ -1,3 +1,6 @@
+pub mod resample;
+pub mod wav;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioDevice {
     pub id: String,

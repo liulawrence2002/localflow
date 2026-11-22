@@ -1,0 +1,3055 @@
+{
+  "configs": [
+    {
+      "afterIdleMs": 954.727,
+      "audioSecondsProcessed": 3006.6001874999997,
+      "concurrentFailures": 0,
+      "concurrentWallMs": 2073.2844,
+      "config": "inprocess:parakeet-tdt-0.6b-v3-Q5_K_M.gguf:1:6",
+      "crashRecoveryMs": null,
+      "description": "transcribe.cpp in-process, model kept loaded (parakeet-tdt-0.6b-v3-Q5_K_M.gguf)",
+      "emptyOutputs": 0,
+      "errors": 0,
+      "firstRequestMs": 1119.035,
+      "maxMs": 3081.2941,
+      "meanMs": 641.7650281862747,
+      "nonSpeechHallucinations": 0,
+      "nonSpeechProbes": 2,
+      "p50Ms": 530.7037,
+      "p95Ms": 1340.7617,
+      "peakMemoryMb": 1241.09765625,
+      "perUtterance": [
+        {
+          "edits": 0,
+          "id": "1089-134686-0000",
+          "latenciesMs": [
+            1119.035,
+            864.2949,
+            881.2279
+          ],
+          "referenceWords": 28,
+          "seconds": 10.435
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0001",
+          "latenciesMs": [
+            324.15290000000005,
+            327.5115,
+            336.7892
+          ],
+          "referenceWords": 8,
+          "seconds": 3.275
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0002",
+          "latenciesMs": [
+            606.3108000000001,
+            601.2067,
+            601.3848
+          ],
+          "referenceWords": 18,
+          "seconds": 6.625
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0003",
+          "latenciesMs": [
+            315.4486,
+            310.02279999999996,
+            321.793
+          ],
+          "referenceWords": 7,
+          "seconds": 2.68
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0004",
+          "latenciesMs": [
+            513.0439,
+            512.4066,
+            487.8136
+          ],
+          "referenceWords": 11,
+          "seconds": 5.2150625
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0005",
+          "latenciesMs": [
+            781.6661,
+            781.1661,
+            770.0056
+          ],
+          "referenceWords": 22,
+          "seconds": 9.635
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0006",
+          "latenciesMs": [
+            860.235,
+            935.9213,
+            849.6696999999999
+          ],
+          "referenceWords": 24,
+          "seconds": 10.555
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0007",
+          "latenciesMs": [
+            379.9791,
+            375.0055,
+            396.3327
+          ],
+          "referenceWords": 8,
+          "seconds": 4.275
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0008",
+          "latenciesMs": [
+            577.2213,
+            605.8732,
+            562.5819
+          ],
+          "referenceWords": 15,
+          "seconds": 6.73
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0009",
+          "latenciesMs": [
+            850.9264,
+            901.0706,
+            850.2421
+          ],
+          "referenceWords": 27,
+          "seconds": 10.575
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0010",
+          "latenciesMs": [
+            413.7307,
+            404.5632,
+            396.62579999999997
+          ],
+          "referenceWords": 14,
+          "seconds": 4.405
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0011",
+          "latenciesMs": [
+            1014.3225,
+            1051.5036,
+            1019.7092000000001
+          ],
+          "referenceWords": 39,
+          "seconds": 12.445
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0012",
+          "latenciesMs": [
+            924.7282,
+            987.6173,
+            921.615
+          ],
+          "referenceWords": 28,
+          "seconds": 11.64
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0013",
+          "latenciesMs": [
+            719.9167,
+            725.6868,
+            673.1665999999999
+          ],
+          "referenceWords": 25,
+          "seconds": 7.915
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0014",
+          "latenciesMs": [
+            218.0841,
+            219.7671,
+            213.26239999999999
+          ],
+          "referenceWords": 8,
+          "seconds": 2.225
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0015",
+          "latenciesMs": [
+            534.771,
+            539.1751,
+            500.7039
+          ],
+          "referenceWords": 14,
+          "seconds": 5.815
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0016",
+          "latenciesMs": [
+            332.92040000000003,
+            363.44300000000004,
+            334.758
+          ],
+          "referenceWords": 10,
+          "seconds": 3.54
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0017",
+          "latenciesMs": [
+            742.3781,
+            750.8304999999999,
+            704.1326
+          ],
+          "referenceWords": 24,
+          "seconds": 8.87
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0018",
+          "latenciesMs": [
+            1259.5794,
+            1355.7716,
+            1280.1442
+          ],
+          "referenceWords": 41,
+          "seconds": 15.72
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0019",
+          "latenciesMs": [
+            1081.1517,
+            1180.714,
+            1118.1726
+          ],
+          "referenceWords": 39,
+          "seconds": 13.895
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0020",
+          "latenciesMs": [
+            1366.9815999999998,
+            1388.5062,
+            1345.2431
+          ],
+          "referenceWords": 50,
+          "seconds": 16.79
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0021",
+          "latenciesMs": [
+            586.9007,
+            627.8183,
+            569.0187
+          ],
+          "referenceWords": 17,
+          "seconds": 6.55
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0022",
+          "latenciesMs": [
+            872.0339,
+            933.1011,
+            882.5399
+          ],
+          "referenceWords": 32,
+          "seconds": 11.175
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0023",
+          "latenciesMs": [
+            1069.4093,
+            1167.1182,
+            1086.4116
+          ],
+          "referenceWords": 36,
+          "seconds": 13.275
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0024",
+          "latenciesMs": [
+            960.9554999999999,
+            1016.5834,
+            961.6881999999999
+          ],
+          "referenceWords": 30,
+          "seconds": 11.655
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0025",
+          "latenciesMs": [
+            579.2357000000001,
+            573.5129,
+            562.9404999999999
+          ],
+          "referenceWords": 18,
+          "seconds": 6.61
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0026",
+          "latenciesMs": [
+            400.52070000000003,
+            392.8993,
+            372.4112
+          ],
+          "referenceWords": 13,
+          "seconds": 4.01
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0027",
+          "latenciesMs": [
+            292.77320000000003,
+            307.7531,
+            402.517
+          ],
+          "referenceWords": 9,
+          "seconds": 2.71
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0028",
+          "latenciesMs": [
+            711.808,
+            696.1958000000001,
+            659.7029
+          ],
+          "referenceWords": 18,
+          "seconds": 7.83
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0029",
+          "latenciesMs": [
+            403.4438,
+            418.7461,
+            421.6679
+          ],
+          "referenceWords": 11,
+          "seconds": 4.67
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0030",
+          "latenciesMs": [
+            304.5298,
+            313.5145,
+            317.80740000000003
+          ],
+          "referenceWords": 5,
+          "seconds": 2.715
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0031",
+          "latenciesMs": [
+            575.3622,
+            577.0132,
+            574.2923
+          ],
+          "referenceWords": 14,
+          "seconds": 6.615
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0032",
+          "latenciesMs": [
+            386.4892,
+            391.4796,
+            391.19739999999996
+          ],
+          "referenceWords": 11,
+          "seconds": 4.09
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0033",
+          "latenciesMs": [
+            357.3069,
+            334.0002,
+            623.0943
+          ],
+          "referenceWords": 6,
+          "seconds": 3.33
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0034",
+          "latenciesMs": [
+            547.5784,
+            529.4957,
+            683.1188000000001
+          ],
+          "referenceWords": 13,
+          "seconds": 5.81
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0035",
+          "latenciesMs": [
+            383.8563,
+            360.20799999999997,
+            448.0482
+          ],
+          "referenceWords": 9,
+          "seconds": 3.445
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0036",
+          "latenciesMs": [
+            345.4277,
+            363.1832,
+            359.1012
+          ],
+          "referenceWords": 6,
+          "seconds": 3.25
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0037",
+          "latenciesMs": [
+            518.4331,
+            576.7379999999999,
+            535.7905
+          ],
+          "referenceWords": 13,
+          "seconds": 5.21
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0000",
+          "latenciesMs": [
+            786.6990999999999,
+            852.3533,
+            840.0009
+          ],
+          "referenceWords": 27,
+          "seconds": 9.875
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0001",
+          "latenciesMs": [
+            444.12800000000004,
+            453.8412,
+            438.9236
+          ],
+          "referenceWords": 15,
+          "seconds": 5.025
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0002",
+          "latenciesMs": [
+            606.2157,
+            700.3527,
+            714.1591000000001
+          ],
+          "referenceWords": 27,
+          "seconds": 7.495
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0003",
+          "latenciesMs": [
+            648.6030000000001,
+            769.6707,
+            692.1046
+          ],
+          "referenceWords": 18,
+          "seconds": 7.725
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0004",
+          "latenciesMs": [
+            233.6025,
+            434.32460000000003,
+            271.8894
+          ],
+          "referenceWords": 3,
+          "seconds": 2.11
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0005",
+          "latenciesMs": [
+            558.1134,
+            710.9522000000001,
+            566.6863
+          ],
+          "referenceWords": 20,
+          "seconds": 5.82
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0006",
+          "latenciesMs": [
+            414.0327,
+            481.08459999999997,
+            441.57079999999996
+          ],
+          "referenceWords": 13,
+          "seconds": 4.725
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0007",
+          "latenciesMs": [
+            525.2416,
+            665.416,
+            517.7398
+          ],
+          "referenceWords": 15,
+          "seconds": 5.79
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0008",
+          "latenciesMs": [
+            327.2245,
+            336.3372,
+            303.52139999999997
+          ],
+          "referenceWords": 6,
+          "seconds": 2.76
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0009",
+          "latenciesMs": [
+            221.35930000000002,
+            234.7491,
+            215.9092
+          ],
+          "referenceWords": 7,
+          "seconds": 2.29
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0010",
+          "latenciesMs": [
+            321.2808,
+            332.07930000000005,
+            312.13570000000004
+          ],
+          "referenceWords": 10,
+          "seconds": 2.85
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0011",
+          "latenciesMs": [
+            564.6998,
+            562.9978,
+            533.0597
+          ],
+          "referenceWords": 20,
+          "seconds": 5.78
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0012",
+          "latenciesMs": [
+            424.1814,
+            446.1918,
+            415.32980000000003
+          ],
+          "referenceWords": 19,
+          "seconds": 4.83
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0013",
+          "latenciesMs": [
+            562.2846999999999,
+            599.6732999999999,
+            500.07259999999997
+          ],
+          "referenceWords": 20,
+          "seconds": 5.895
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0014",
+          "latenciesMs": [
+            215.41850000000002,
+            218.1274,
+            208.3091
+          ],
+          "referenceWords": 3,
+          "seconds": 2.255
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0015",
+          "latenciesMs": [
+            312.9029,
+            320.5806,
+            297.8353
+          ],
+          "referenceWords": 10,
+          "seconds": 2.96
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0016",
+          "latenciesMs": [
+            254.9691,
+            276.1731,
+            219.4639
+          ],
+          "referenceWords": 6,
+          "seconds": 2.03
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0017",
+          "latenciesMs": [
+            332.5264,
+            373.2899,
+            308.2659
+          ],
+          "referenceWords": 10,
+          "seconds": 2.695
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0018",
+          "latenciesMs": [
+            318.5674,
+            330.5224,
+            299.8444
+          ],
+          "referenceWords": 8,
+          "seconds": 2.77
+        },
+        {
+          "edits": 2,
+          "id": "121-127105-0019",
+          "latenciesMs": [
+            350.90680000000003,
+            347.0784,
+            319.8565
+          ],
+          "referenceWords": 11,
+          "seconds": 3.525
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0020",
+          "latenciesMs": [
+            1146.7774,
+            1196.5142,
+            1110.885
+          ],
+          "referenceWords": 41,
+          "seconds": 14.355
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0021",
+          "latenciesMs": [
+            243.7548,
+            232.2163,
+            214.8251
+          ],
+          "referenceWords": 4,
+          "seconds": 2.0
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0022",
+          "latenciesMs": [
+            431.7806,
+            417.1337,
+            436.9667
+          ],
+          "referenceWords": 16,
+          "seconds": 5.075
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0023",
+          "latenciesMs": [
+            885.1228,
+            889.1069,
+            882.1778999999999
+          ],
+          "referenceWords": 29,
+          "seconds": 10.91
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0024",
+          "latenciesMs": [
+            1143.4869,
+            1148.5947999999999,
+            1148.5476999999998
+          ],
+          "referenceWords": 48,
+          "seconds": 14.45
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0025",
+          "latenciesMs": [
+            1350.1125,
+            1465.2354,
+            1289.8627000000001
+          ],
+          "referenceWords": 42,
+          "seconds": 16.065
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0026",
+          "latenciesMs": [
+            645.6442,
+            647.2049,
+            586.1278
+          ],
+          "referenceWords": 24,
+          "seconds": 7.53
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0027",
+          "latenciesMs": [
+            1108.5392000000002,
+            1163.6352000000002,
+            1135.1743999999999
+          ],
+          "referenceWords": 42,
+          "seconds": 13.87
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0028",
+          "latenciesMs": [
+            594.807,
+            591.8896,
+            602.9765
+          ],
+          "referenceWords": 21,
+          "seconds": 6.75
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0029",
+          "latenciesMs": [
+            626.8809,
+            569.4164000000001,
+            612.3785
+          ],
+          "referenceWords": 24,
+          "seconds": 7.31
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0030",
+          "latenciesMs": [
+            223.61169999999998,
+            222.1252,
+            207.5968
+          ],
+          "referenceWords": 3,
+          "seconds": 2.175
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0031",
+          "latenciesMs": [
+            879.1206000000001,
+            825.5356,
+            860.2503
+          ],
+          "referenceWords": 19,
+          "seconds": 10.765
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0032",
+          "latenciesMs": [
+            339.79569999999995,
+            328.3861,
+            327.56410000000005
+          ],
+          "referenceWords": 9,
+          "seconds": 3.17
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0033",
+          "latenciesMs": [
+            233.2586,
+            211.1726,
+            215.8325
+          ],
+          "referenceWords": 6,
+          "seconds": 2.355
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0034",
+          "latenciesMs": [
+            640.7763,
+            588.7278,
+            617.9453
+          ],
+          "referenceWords": 18,
+          "seconds": 7.41
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0035",
+          "latenciesMs": [
+            1186.4678,
+            1113.974,
+            1157.3734
+          ],
+          "referenceWords": 30,
+          "seconds": 14.15
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0036",
+          "latenciesMs": [
+            450.7721,
+            371.328,
+            405.69739999999996
+          ],
+          "referenceWords": 11,
+          "seconds": 4.15
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0000",
+          "latenciesMs": [
+            283.86699999999996,
+            261.46750000000003,
+            284.2463
+          ],
+          "referenceWords": 3,
+          "seconds": 2.59
+        },
+        {
+          "edits": 2,
+          "id": "4507-16021-0001",
+          "latenciesMs": [
+            908.1320000000001,
+            997.8922,
+            931.6811
+          ],
+          "referenceWords": 20,
+          "seconds": 11.32
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0002",
+          "latenciesMs": [
+            315.3435,
+            354.26,
+            340.14119999999997
+          ],
+          "referenceWords": 5,
+          "seconds": 3.185
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0003",
+          "latenciesMs": [
+            432.3193,
+            409.4105,
+            418.38140000000004
+          ],
+          "referenceWords": 9,
+          "seconds": 4.895
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0004",
+          "latenciesMs": [
+            207.2478,
+            218.8556,
+            208.64759999999998
+          ],
+          "referenceWords": 3,
+          "seconds": 2.135
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0005",
+          "latenciesMs": [
+            422.6344,
+            370.4917,
+            376.4394
+          ],
+          "referenceWords": 8,
+          "seconds": 4.21
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0006",
+          "latenciesMs": [
+            220.8481,
+            200.7834,
+            229.043
+          ],
+          "referenceWords": 3,
+          "seconds": 2.11
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0007",
+          "latenciesMs": [
+            276.4209,
+            265.621,
+            290.368
+          ],
+          "referenceWords": 4,
+          "seconds": 2.63
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0008",
+          "latenciesMs": [
+            335.5939,
+            339.81129999999996,
+            350.2338
+          ],
+          "referenceWords": 7,
+          "seconds": 3.59
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0009",
+          "latenciesMs": [
+            892.2651000000001,
+            906.1968,
+            943.9748999999999
+          ],
+          "referenceWords": 29,
+          "seconds": 11.305
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0010",
+          "latenciesMs": [
+            1180.5387,
+            1146.5323999999998,
+            1090.4138
+          ],
+          "referenceWords": 30,
+          "seconds": 15.165
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0011",
+          "latenciesMs": [
+            537.7048,
+            533.4891,
+            492.07210000000003
+          ],
+          "referenceWords": 9,
+          "seconds": 5.615
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0012",
+          "latenciesMs": [
+            299.6206,
+            327.9723,
+            294.5239
+          ],
+          "referenceWords": 7,
+          "seconds": 2.735
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0013",
+          "latenciesMs": [
+            869.5023,
+            862.7909000000001,
+            820.5400999999999
+          ],
+          "referenceWords": 23,
+          "seconds": 10.44
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0014",
+          "latenciesMs": [
+            569.7726,
+            499.9699,
+            539.6727
+          ],
+          "referenceWords": 7,
+          "seconds": 6.115
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0015",
+          "latenciesMs": [
+            385.5971,
+            348.5846,
+            360.8228
+          ],
+          "referenceWords": 6,
+          "seconds": 3.86
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0016",
+          "latenciesMs": [
+            1422.1784,
+            1377.3813,
+            1320.8631
+          ],
+          "referenceWords": 34,
+          "seconds": 17.265
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0017",
+          "latenciesMs": [
+            884.048,
+            876.7246,
+            858.09
+          ],
+          "referenceWords": 22,
+          "seconds": 10.585
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0018",
+          "latenciesMs": [
+            335.4982,
+            311.2434,
+            323.3001
+          ],
+          "referenceWords": 5,
+          "seconds": 3.375
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0019",
+          "latenciesMs": [
+            324.39079999999996,
+            293.9451,
+            294.3223
+          ],
+          "referenceWords": 6,
+          "seconds": 2.93
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0020",
+          "latenciesMs": [
+            1837.3155,
+            1742.1328,
+            1741.3729
+          ],
+          "referenceWords": 49,
+          "seconds": 22.5
+        },
+        {
+          "edits": 3,
+          "id": "4507-16021-0021",
+          "latenciesMs": [
+            1182.7349,
+            1148.7043999999999,
+            1156.8976
+          ],
+          "referenceWords": 28,
+          "seconds": 14.48
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0022",
+          "latenciesMs": [
+            557.9417,
+            535.2024,
+            571.8811000000001
+          ],
+          "referenceWords": 14,
+          "seconds": 6.2
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0023",
+          "latenciesMs": [
+            963.7224,
+            1010.5538999999999,
+            1022.9137
+          ],
+          "referenceWords": 16,
+          "seconds": 12.07
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0024",
+          "latenciesMs": [
+            447.12809999999996,
+            479.6871,
+            444.9239
+          ],
+          "referenceWords": 7,
+          "seconds": 5.14
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0025",
+          "latenciesMs": [
+            718.101,
+            743.6344,
+            739.1888
+          ],
+          "referenceWords": 17,
+          "seconds": 9.215
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0026",
+          "latenciesMs": [
+            2579.2928,
+            3081.2941,
+            2507.8469
+          ],
+          "referenceWords": 65,
+          "seconds": 31.615
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0027",
+          "latenciesMs": [
+            230.8623,
+            329.4686,
+            236.7036
+          ],
+          "referenceWords": 3,
+          "seconds": 1.995
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0028",
+          "latenciesMs": [
+            337.5721,
+            350.7992,
+            332.2935
+          ],
+          "referenceWords": 5,
+          "seconds": 3.265
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0029",
+          "latenciesMs": [
+            370.0858,
+            383.84069999999997,
+            396.50059999999996
+          ],
+          "referenceWords": 8,
+          "seconds": 3.87
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0030",
+          "latenciesMs": [
+            1098.4285,
+            1206.0440999999998,
+            1152.4874
+          ],
+          "referenceWords": 33,
+          "seconds": 14.79
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0031",
+          "latenciesMs": [
+            1187.1456,
+            1164.5782,
+            1181.7060999999999
+          ],
+          "referenceWords": 34,
+          "seconds": 14.31
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0032",
+          "latenciesMs": [
+            2231.055,
+            2336.4465999999998,
+            2218.0931
+          ],
+          "referenceWords": 62,
+          "seconds": 28.09
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0033",
+          "latenciesMs": [
+            556.5506,
+            566.2872,
+            564.0201000000001
+          ],
+          "referenceWords": 15,
+          "seconds": 5.545
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0034",
+          "latenciesMs": [
+            919.9549000000001,
+            860.8968,
+            933.5604
+          ],
+          "referenceWords": 22,
+          "seconds": 11.27
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0035",
+          "latenciesMs": [
+            611.4188,
+            562.5322,
+            605.6477
+          ],
+          "referenceWords": 14,
+          "seconds": 7.535
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0036",
+          "latenciesMs": [
+            519.6133,
+            465.53929999999997,
+            484.9407
+          ],
+          "referenceWords": 9,
+          "seconds": 5.435
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0037",
+          "latenciesMs": [
+            530.7037,
+            484.6493,
+            499.60159999999996
+          ],
+          "referenceWords": 10,
+          "seconds": 5.35
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0038",
+          "latenciesMs": [
+            371.84499999999997,
+            352.2234,
+            355.3333
+          ],
+          "referenceWords": 6,
+          "seconds": 3.885
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0039",
+          "latenciesMs": [
+            1245.959,
+            1340.7617,
+            1258.969
+          ],
+          "referenceWords": 23,
+          "seconds": 15.42
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0040",
+          "latenciesMs": [
+            372.393,
+            381.6916,
+            379.3016
+          ],
+          "referenceWords": 6,
+          "seconds": 3.925
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0041",
+          "latenciesMs": [
+            358.0163,
+            333.9856,
+            303.0142
+          ],
+          "referenceWords": 6,
+          "seconds": 2.975
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0042",
+          "latenciesMs": [
+            817.4528,
+            840.8052,
+            832.9715
+          ],
+          "referenceWords": 17,
+          "seconds": 10.375
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0043",
+          "latenciesMs": [
+            381.3274,
+            362.8206,
+            362.38169999999997
+          ],
+          "referenceWords": 10,
+          "seconds": 3.99
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0044",
+          "latenciesMs": [
+            226.9394,
+            207.8449,
+            200.5394
+          ],
+          "referenceWords": 4,
+          "seconds": 2.19
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0045",
+          "latenciesMs": [
+            438.8511,
+            405.5516,
+            395.12039999999996
+          ],
+          "referenceWords": 12,
+          "seconds": 4.89
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0046",
+          "latenciesMs": [
+            405.7107,
+            371.9902,
+            376.4776
+          ],
+          "referenceWords": 11,
+          "seconds": 4.59
+        },
+        {
+          "edits": 6,
+          "id": "4507-16021-0047",
+          "latenciesMs": [
+            2676.0861,
+            2647.4057000000003,
+            2859.7266
+          ],
+          "referenceWords": 77,
+          "seconds": 34.955
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0048",
+          "latenciesMs": [
+            548.6616,
+            537.4947,
+            506.6621999999999
+          ],
+          "referenceWords": 14,
+          "seconds": 5.215
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0049",
+          "latenciesMs": [
+            553.7274,
+            490.0545,
+            523.4361
+          ],
+          "referenceWords": 15,
+          "seconds": 5.91
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0050",
+          "latenciesMs": [
+            375.64439999999996,
+            343.76030000000003,
+            346.508
+          ],
+          "referenceWords": 10,
+          "seconds": 3.895
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0051",
+          "latenciesMs": [
+            513.3695,
+            550.3195,
+            560.9064000000001
+          ],
+          "referenceWords": 12,
+          "seconds": 6.17
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0052",
+          "latenciesMs": [
+            510.7818,
+            565.6003,
+            565.5448
+          ],
+          "referenceWords": 11,
+          "seconds": 6.275
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0053",
+          "latenciesMs": [
+            688.1723,
+            636.9084,
+            741.2546
+          ],
+          "referenceWords": 18,
+          "seconds": 8.095
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0054",
+          "latenciesMs": [
+            359.21160000000003,
+            367.7575,
+            376.34319999999997
+          ],
+          "referenceWords": 7,
+          "seconds": 4.315
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0055",
+          "latenciesMs": [
+            642.986,
+            576.4506,
+            627.386
+          ],
+          "referenceWords": 13,
+          "seconds": 7.225
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0056",
+          "latenciesMs": [
+            498.6144,
+            522.3161,
+            575.4726999999999
+          ],
+          "referenceWords": 10,
+          "seconds": 6.345
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0057",
+          "latenciesMs": [
+            367.8857,
+            399.33590000000004,
+            411.90500000000003
+          ],
+          "referenceWords": 7,
+          "seconds": 4.61
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0058",
+          "latenciesMs": [
+            306.76419999999996,
+            318.2998,
+            323.578
+          ],
+          "referenceWords": 8,
+          "seconds": 3.11
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0059",
+          "latenciesMs": [
+            502.637,
+            530.6189999999999,
+            554.7532
+          ],
+          "referenceWords": 12,
+          "seconds": 6.205
+        },
+        {
+          "edits": 0,
+          "id": "jfk",
+          "latenciesMs": [
+            841.9043,
+            896.7422,
+            898.3358999999999
+          ],
+          "referenceWords": 22,
+          "seconds": 11.0
+        }
+      ],
+      "prepareMs": 532.7347,
+      "realTimeFactor": 0.08708844381391498,
+      "shortClipP50Ms": 335.4982,
+      "utterances": 136,
+      "werPercent": 0.9329940627650551
+    },
+    {
+      "afterIdleMs": 666.0299,
+      "audioSecondsProcessed": 3006.6001874999997,
+      "concurrentFailures": 0,
+      "concurrentWallMs": 1984.5689,
+      "config": "server:ggml-tiny.en-q5_1.bin:1:6",
+      "crashRecoveryMs": 855.6385,
+      "description": "whisper.cpp server, model kept loaded (ggml-tiny.en-q5_1.bin)",
+      "emptyOutputs": 0,
+      "errors": 0,
+      "firstRequestMs": 617.7388000000001,
+      "maxMs": 1102.0716,
+      "meanMs": 478.28477058823495,
+      "nonSpeechHallucinations": 2,
+      "nonSpeechProbes": 2,
+      "p50Ms": 458.6349,
+      "p95Ms": 600.0413,
+      "peakMemoryMb": 131.5390625,
+      "perUtterance": [
+        {
+          "edits": 2,
+          "id": "1089-134686-0000",
+          "latenciesMs": [
+            617.7388000000001,
+            535.2475,
+            648.045
+          ],
+          "referenceWords": 28,
+          "seconds": 10.435
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0001",
+          "latenciesMs": [
+            514.0444,
+            426.419,
+            491.54769999999996
+          ],
+          "referenceWords": 8,
+          "seconds": 3.275
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0002",
+          "latenciesMs": [
+            551.0189,
+            447.3889,
+            539.3999
+          ],
+          "referenceWords": 18,
+          "seconds": 6.625
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0003",
+          "latenciesMs": [
+            451.8655,
+            432.5612,
+            487.3528
+          ],
+          "referenceWords": 7,
+          "seconds": 2.68
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0004",
+          "latenciesMs": [
+            453.62370000000004,
+            424.56759999999997,
+            487.4212
+          ],
+          "referenceWords": 11,
+          "seconds": 5.2150625
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0005",
+          "latenciesMs": [
+            501.22659999999996,
+            488.66769999999997,
+            545.8191999999999
+          ],
+          "referenceWords": 22,
+          "seconds": 9.635
+        },
+        {
+          "edits": 3,
+          "id": "1089-134686-0006",
+          "latenciesMs": [
+            493.0976,
+            454.9448,
+            493.2161
+          ],
+          "referenceWords": 24,
+          "seconds": 10.555
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0007",
+          "latenciesMs": [
+            475.4828,
+            400.3645,
+            430.4547
+          ],
+          "referenceWords": 8,
+          "seconds": 4.275
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0008",
+          "latenciesMs": [
+            509.9861,
+            431.1407,
+            448.80310000000003
+          ],
+          "referenceWords": 15,
+          "seconds": 6.73
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0009",
+          "latenciesMs": [
+            650.9719,
+            485.8944,
+            509.9474000000001
+          ],
+          "referenceWords": 27,
+          "seconds": 10.575
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0010",
+          "latenciesMs": [
+            534.7382,
+            465.0308,
+            473.9896
+          ],
+          "referenceWords": 14,
+          "seconds": 4.405
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0011",
+          "latenciesMs": [
+            654.1827999999999,
+            523.6491,
+            570.3537
+          ],
+          "referenceWords": 39,
+          "seconds": 12.445
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0012",
+          "latenciesMs": [
+            610.45,
+            491.2329,
+            559.8931
+          ],
+          "referenceWords": 28,
+          "seconds": 11.64
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0013",
+          "latenciesMs": [
+            539.6071999999999,
+            475.19329999999997,
+            497.4781
+          ],
+          "referenceWords": 25,
+          "seconds": 7.915
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0014",
+          "latenciesMs": [
+            460.2593,
+            437.7121,
+            470.7814
+          ],
+          "referenceWords": 8,
+          "seconds": 2.225
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0015",
+          "latenciesMs": [
+            427.1925,
+            472.5637,
+            475.1948
+          ],
+          "referenceWords": 14,
+          "seconds": 5.815
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0016",
+          "latenciesMs": [
+            413.2058,
+            424.03220000000005,
+            459.0372
+          ],
+          "referenceWords": 10,
+          "seconds": 3.54
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0017",
+          "latenciesMs": [
+            501.97040000000004,
+            518.7587,
+            506.9916
+          ],
+          "referenceWords": 24,
+          "seconds": 8.87
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0018",
+          "latenciesMs": [
+            526.9121,
+            528.9411,
+            576.7636
+          ],
+          "referenceWords": 41,
+          "seconds": 15.72
+        },
+        {
+          "edits": 1,
+          "id": "1089-134686-0019",
+          "latenciesMs": [
+            523.4951,
+            549.5574,
+            625.8146999999999
+          ],
+          "referenceWords": 39,
+          "seconds": 13.895
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0020",
+          "latenciesMs": [
+            566.1112,
+            570.6149,
+            593.5052
+          ],
+          "referenceWords": 50,
+          "seconds": 16.79
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0021",
+          "latenciesMs": [
+            467.7259,
+            446.5791,
+            444.1358
+          ],
+          "referenceWords": 17,
+          "seconds": 6.55
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0022",
+          "latenciesMs": [
+            607.7920999999999,
+            557.8338,
+            529.9839
+          ],
+          "referenceWords": 32,
+          "seconds": 11.175
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0023",
+          "latenciesMs": [
+            556.9853,
+            539.3931,
+            553.2975
+          ],
+          "referenceWords": 36,
+          "seconds": 13.275
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0024",
+          "latenciesMs": [
+            474.4877,
+            506.86010000000005,
+            524.4166
+          ],
+          "referenceWords": 30,
+          "seconds": 11.655
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0025",
+          "latenciesMs": [
+            442.8614,
+            437.00879999999995,
+            485.3056
+          ],
+          "referenceWords": 18,
+          "seconds": 6.61
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0026",
+          "latenciesMs": [
+            409.7174,
+            444.0768,
+            434.3808
+          ],
+          "referenceWords": 13,
+          "seconds": 4.01
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0027",
+          "latenciesMs": [
+            391.8302,
+            385.7221,
+            424.0715
+          ],
+          "referenceWords": 9,
+          "seconds": 2.71
+        },
+        {
+          "edits": 2,
+          "id": "1089-134686-0028",
+          "latenciesMs": [
+            425.2267,
+            445.29600000000005,
+            465.5595
+          ],
+          "referenceWords": 18,
+          "seconds": 7.83
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0029",
+          "latenciesMs": [
+            419.9849,
+            401.9343,
+            441.7394
+          ],
+          "referenceWords": 11,
+          "seconds": 4.67
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0030",
+          "latenciesMs": [
+            388.2872,
+            387.3226,
+            426.42249999999996
+          ],
+          "referenceWords": 5,
+          "seconds": 2.715
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0031",
+          "latenciesMs": [
+            424.35519999999997,
+            479.164,
+            457.3586
+          ],
+          "referenceWords": 14,
+          "seconds": 6.615
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0032",
+          "latenciesMs": [
+            394.62510000000003,
+            447.529,
+            458.6516
+          ],
+          "referenceWords": 11,
+          "seconds": 4.09
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0033",
+          "latenciesMs": [
+            414.6352,
+            491.6604,
+            429.0928
+          ],
+          "referenceWords": 6,
+          "seconds": 3.33
+        },
+        {
+          "edits": 2,
+          "id": "1089-134686-0034",
+          "latenciesMs": [
+            425.1048,
+            502.8093,
+            443.6004
+          ],
+          "referenceWords": 13,
+          "seconds": 5.81
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0035",
+          "latenciesMs": [
+            390.30989999999997,
+            431.6944,
+            414.29949999999997
+          ],
+          "referenceWords": 9,
+          "seconds": 3.445
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0036",
+          "latenciesMs": [
+            478.0928,
+            504.33680000000004,
+            404.2324
+          ],
+          "referenceWords": 6,
+          "seconds": 3.25
+        },
+        {
+          "edits": 0,
+          "id": "1089-134686-0037",
+          "latenciesMs": [
+            439.7613,
+            439.046,
+            464.7016
+          ],
+          "referenceWords": 13,
+          "seconds": 5.21
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0000",
+          "latenciesMs": [
+            471.0137,
+            519.1395,
+            499.5038
+          ],
+          "referenceWords": 27,
+          "seconds": 9.875
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0001",
+          "latenciesMs": [
+            418.22520000000003,
+            436.2994,
+            466.25620000000004
+          ],
+          "referenceWords": 15,
+          "seconds": 5.025
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0002",
+          "latenciesMs": [
+            490.8554,
+            527.2892999999999,
+            490.274
+          ],
+          "referenceWords": 27,
+          "seconds": 7.495
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0003",
+          "latenciesMs": [
+            481.6652,
+            473.2232,
+            469.93489999999997
+          ],
+          "referenceWords": 18,
+          "seconds": 7.725
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0004",
+          "latenciesMs": [
+            407.833,
+            469.1954,
+            408.0802
+          ],
+          "referenceWords": 3,
+          "seconds": 2.11
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0005",
+          "latenciesMs": [
+            460.20329999999996,
+            469.53499999999997,
+            459.39029999999997
+          ],
+          "referenceWords": 20,
+          "seconds": 5.82
+        },
+        {
+          "edits": 6,
+          "id": "121-127105-0006",
+          "latenciesMs": [
+            449.582,
+            420.2697,
+            444.7135
+          ],
+          "referenceWords": 13,
+          "seconds": 4.725
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0007",
+          "latenciesMs": [
+            423.6064,
+            422.8839,
+            432.7944
+          ],
+          "referenceWords": 15,
+          "seconds": 5.79
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0008",
+          "latenciesMs": [
+            395.4556,
+            394.86969999999997,
+            405.9769
+          ],
+          "referenceWords": 6,
+          "seconds": 2.76
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0009",
+          "latenciesMs": [
+            395.17560000000003,
+            414.0228,
+            428.125
+          ],
+          "referenceWords": 7,
+          "seconds": 2.29
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0010",
+          "latenciesMs": [
+            386.1365,
+            419.085,
+            429.74620000000004
+          ],
+          "referenceWords": 10,
+          "seconds": 2.85
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0011",
+          "latenciesMs": [
+            447.6055,
+            446.8755,
+            457.04990000000004
+          ],
+          "referenceWords": 20,
+          "seconds": 5.78
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0012",
+          "latenciesMs": [
+            429.334,
+            438.7292,
+            470.7081
+          ],
+          "referenceWords": 19,
+          "seconds": 4.83
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0013",
+          "latenciesMs": [
+            454.22610000000003,
+            431.5887,
+            462.7547
+          ],
+          "referenceWords": 20,
+          "seconds": 5.895
+        },
+        {
+          "edits": 2,
+          "id": "121-127105-0014",
+          "latenciesMs": [
+            400.0721,
+            409.22839999999997,
+            400.9038
+          ],
+          "referenceWords": 3,
+          "seconds": 2.255
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0015",
+          "latenciesMs": [
+            396.9527,
+            460.7036,
+            426.85020000000003
+          ],
+          "referenceWords": 10,
+          "seconds": 2.96
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0016",
+          "latenciesMs": [
+            420.8587,
+            403.89000000000004,
+            402.9472
+          ],
+          "referenceWords": 6,
+          "seconds": 2.03
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0017",
+          "latenciesMs": [
+            459.2614,
+            422.93330000000003,
+            421.8148
+          ],
+          "referenceWords": 10,
+          "seconds": 2.695
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0018",
+          "latenciesMs": [
+            403.872,
+            453.20050000000003,
+            419.691
+          ],
+          "referenceWords": 8,
+          "seconds": 2.77
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0019",
+          "latenciesMs": [
+            429.74010000000004,
+            425.43170000000003,
+            444.47110000000004
+          ],
+          "referenceWords": 11,
+          "seconds": 3.525
+        },
+        {
+          "edits": 2,
+          "id": "121-127105-0020",
+          "latenciesMs": [
+            574.8144,
+            595.7139999999999,
+            599.4304000000001
+          ],
+          "referenceWords": 41,
+          "seconds": 14.355
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0021",
+          "latenciesMs": [
+            371.8539,
+            452.6992,
+            428.259
+          ],
+          "referenceWords": 4,
+          "seconds": 2.0
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0022",
+          "latenciesMs": [
+            422.09999999999997,
+            471.46860000000004,
+            471.4926
+          ],
+          "referenceWords": 16,
+          "seconds": 5.075
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0023",
+          "latenciesMs": [
+            476.38239999999996,
+            497.47839999999997,
+            506.151
+          ],
+          "referenceWords": 29,
+          "seconds": 10.91
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0024",
+          "latenciesMs": [
+            561.091,
+            588.1986,
+            590.3446
+          ],
+          "referenceWords": 48,
+          "seconds": 14.45
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0025",
+          "latenciesMs": [
+            525.7792999999999,
+            599.4129,
+            582.3319
+          ],
+          "referenceWords": 42,
+          "seconds": 16.065
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0026",
+          "latenciesMs": [
+            482.8709,
+            544.3093,
+            471.9421
+          ],
+          "referenceWords": 24,
+          "seconds": 7.53
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0027",
+          "latenciesMs": [
+            553.2455,
+            563.8711,
+            581.5729
+          ],
+          "referenceWords": 42,
+          "seconds": 13.87
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0028",
+          "latenciesMs": [
+            481.22389999999996,
+            520.99,
+            488.0756
+          ],
+          "referenceWords": 21,
+          "seconds": 6.75
+        },
+        {
+          "edits": 1,
+          "id": "121-127105-0029",
+          "latenciesMs": [
+            491.5372,
+            547.5128,
+            501.4556999999999
+          ],
+          "referenceWords": 24,
+          "seconds": 7.31
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0030",
+          "latenciesMs": [
+            397.6014,
+            436.27729999999997,
+            392.4104
+          ],
+          "referenceWords": 3,
+          "seconds": 2.175
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0031",
+          "latenciesMs": [
+            506.2103,
+            482.80830000000003,
+            492.5863
+          ],
+          "referenceWords": 19,
+          "seconds": 10.765
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0032",
+          "latenciesMs": [
+            429.2421,
+            421.9056,
+            434.9155
+          ],
+          "referenceWords": 9,
+          "seconds": 3.17
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0033",
+          "latenciesMs": [
+            419.5542,
+            408.2831,
+            403.0664
+          ],
+          "referenceWords": 6,
+          "seconds": 2.355
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0034",
+          "latenciesMs": [
+            453.8404,
+            475.0744,
+            468.9565
+          ],
+          "referenceWords": 18,
+          "seconds": 7.41
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0035",
+          "latenciesMs": [
+            527.3415,
+            522.0404,
+            554.2214
+          ],
+          "referenceWords": 30,
+          "seconds": 14.15
+        },
+        {
+          "edits": 0,
+          "id": "121-127105-0036",
+          "latenciesMs": [
+            434.6032,
+            423.2314,
+            417.3395
+          ],
+          "referenceWords": 11,
+          "seconds": 4.15
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0000",
+          "latenciesMs": [
+            409.6967,
+            388.0828,
+            384.4116
+          ],
+          "referenceWords": 3,
+          "seconds": 2.59
+        },
+        {
+          "edits": 4,
+          "id": "4507-16021-0001",
+          "latenciesMs": [
+            550.6837,
+            491.99219999999997,
+            511.3814
+          ],
+          "referenceWords": 20,
+          "seconds": 11.32
+        },
+        {
+          "edits": 3,
+          "id": "4507-16021-0002",
+          "latenciesMs": [
+            425.94169999999997,
+            430.92609999999996,
+            421.9884
+          ],
+          "referenceWords": 5,
+          "seconds": 3.185
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0003",
+          "latenciesMs": [
+            461.0286,
+            442.3898,
+            480.7982
+          ],
+          "referenceWords": 9,
+          "seconds": 4.895
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0004",
+          "latenciesMs": [
+            399.66839999999996,
+            396.461,
+            404.7367
+          ],
+          "referenceWords": 3,
+          "seconds": 2.135
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0005",
+          "latenciesMs": [
+            402.3832,
+            442.2996,
+            407.0881
+          ],
+          "referenceWords": 8,
+          "seconds": 4.21
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0006",
+          "latenciesMs": [
+            396.78380000000004,
+            410.2846,
+            396.2334
+          ],
+          "referenceWords": 3,
+          "seconds": 2.11
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0007",
+          "latenciesMs": [
+            403.5275,
+            412.7192,
+            429.3728
+          ],
+          "referenceWords": 4,
+          "seconds": 2.63
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0008",
+          "latenciesMs": [
+            419.6035,
+            440.3809,
+            417.0611
+          ],
+          "referenceWords": 7,
+          "seconds": 3.59
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0009",
+          "latenciesMs": [
+            503.4421,
+            516.5525,
+            513.6229
+          ],
+          "referenceWords": 29,
+          "seconds": 11.305
+        },
+        {
+          "edits": 2,
+          "id": "4507-16021-0010",
+          "latenciesMs": [
+            502.853,
+            520.5656,
+            521.3841
+          ],
+          "referenceWords": 30,
+          "seconds": 15.165
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0011",
+          "latenciesMs": [
+            416.2498,
+            411.3193,
+            409.1391
+          ],
+          "referenceWords": 9,
+          "seconds": 5.615
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0012",
+          "latenciesMs": [
+            407.9696,
+            429.0375,
+            426.619
+          ],
+          "referenceWords": 7,
+          "seconds": 2.735
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0013",
+          "latenciesMs": [
+            477.4703,
+            497.388,
+            494.5434
+          ],
+          "referenceWords": 23,
+          "seconds": 10.44
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0014",
+          "latenciesMs": [
+            437.0405,
+            461.7865,
+            406.899
+          ],
+          "referenceWords": 7,
+          "seconds": 6.115
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0015",
+          "latenciesMs": [
+            398.8646,
+            433.8993,
+            393.84839999999997
+          ],
+          "referenceWords": 6,
+          "seconds": 3.86
+        },
+        {
+          "edits": 2,
+          "id": "4507-16021-0016",
+          "latenciesMs": [
+            556.0943000000001,
+            555.156,
+            565.508
+          ],
+          "referenceWords": 34,
+          "seconds": 17.265
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0017",
+          "latenciesMs": [
+            466.966,
+            550.9089,
+            485.72700000000003
+          ],
+          "referenceWords": 22,
+          "seconds": 10.585
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0018",
+          "latenciesMs": [
+            400.9468,
+            420.4093,
+            407.32800000000003
+          ],
+          "referenceWords": 5,
+          "seconds": 3.375
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0019",
+          "latenciesMs": [
+            447.4179,
+            421.2602,
+            406.2464
+          ],
+          "referenceWords": 6,
+          "seconds": 2.93
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0020",
+          "latenciesMs": [
+            618.1672,
+            639.4149,
+            595.7213999999999
+          ],
+          "referenceWords": 49,
+          "seconds": 22.5
+        },
+        {
+          "edits": 2,
+          "id": "4507-16021-0021",
+          "latenciesMs": [
+            649.3362999999999,
+            600.0413,
+            544.4467
+          ],
+          "referenceWords": 28,
+          "seconds": 14.48
+        },
+        {
+          "edits": 2,
+          "id": "4507-16021-0022",
+          "latenciesMs": [
+            488.8989,
+            459.1517,
+            444.6831
+          ],
+          "referenceWords": 14,
+          "seconds": 6.2
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0023",
+          "latenciesMs": [
+            503.2704,
+            472.1751,
+            536.4039
+          ],
+          "referenceWords": 16,
+          "seconds": 12.07
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0024",
+          "latenciesMs": [
+            430.0967,
+            435.3067,
+            429.90479999999997
+          ],
+          "referenceWords": 7,
+          "seconds": 5.14
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0025",
+          "latenciesMs": [
+            476.4082,
+            456.9203,
+            478.1247
+          ],
+          "referenceWords": 17,
+          "seconds": 9.215
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0026",
+          "latenciesMs": [
+            1030.711,
+            1057.3748999999998,
+            1064.2752
+          ],
+          "referenceWords": 65,
+          "seconds": 31.615
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0027",
+          "latenciesMs": [
+            407.45799999999997,
+            430.65799999999996,
+            391.21479999999997
+          ],
+          "referenceWords": 3,
+          "seconds": 1.995
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0028",
+          "latenciesMs": [
+            458.6845,
+            434.8712,
+            395.2167
+          ],
+          "referenceWords": 5,
+          "seconds": 3.265
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0029",
+          "latenciesMs": [
+            473.2664,
+            487.8671,
+            411.5483
+          ],
+          "referenceWords": 8,
+          "seconds": 3.87
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0030",
+          "latenciesMs": [
+            517.6291,
+            635.6671,
+            539.6954000000001
+          ],
+          "referenceWords": 33,
+          "seconds": 14.79
+        },
+        {
+          "edits": 3,
+          "id": "4507-16021-0031",
+          "latenciesMs": [
+            500.9789,
+            565.724,
+            532.1447999999999
+          ],
+          "referenceWords": 34,
+          "seconds": 14.31
+        },
+        {
+          "edits": 3,
+          "id": "4507-16021-0032",
+          "latenciesMs": [
+            659.8187,
+            679.4377999999999,
+            674.6527
+          ],
+          "referenceWords": 62,
+          "seconds": 28.09
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0033",
+          "latenciesMs": [
+            472.4977,
+            459.67560000000003,
+            432.4408
+          ],
+          "referenceWords": 15,
+          "seconds": 5.545
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0034",
+          "latenciesMs": [
+            508.2525,
+            522.7294,
+            511.1346
+          ],
+          "referenceWords": 22,
+          "seconds": 11.27
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0035",
+          "latenciesMs": [
+            475.4115,
+            450.3182,
+            446.17679999999996
+          ],
+          "referenceWords": 14,
+          "seconds": 7.535
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0036",
+          "latenciesMs": [
+            471.5039,
+            419.9208,
+            412.5782
+          ],
+          "referenceWords": 9,
+          "seconds": 5.435
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0037",
+          "latenciesMs": [
+            458.6349,
+            439.6083,
+            417.0455
+          ],
+          "referenceWords": 10,
+          "seconds": 5.35
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0038",
+          "latenciesMs": [
+            436.17850000000004,
+            431.7296,
+            400.3974
+          ],
+          "referenceWords": 6,
+          "seconds": 3.885
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0039",
+          "latenciesMs": [
+            534.9232000000001,
+            511.71770000000004,
+            498.0161
+          ],
+          "referenceWords": 23,
+          "seconds": 15.42
+        },
+        {
+          "edits": 2,
+          "id": "4507-16021-0040",
+          "latenciesMs": [
+            456.5042,
+            418.8177,
+            414.84369999999996
+          ],
+          "referenceWords": 6,
+          "seconds": 3.925
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0041",
+          "latenciesMs": [
+            466.22580000000005,
+            425.4308,
+            408.56730000000005
+          ],
+          "referenceWords": 6,
+          "seconds": 2.975
+        },
+        {
+          "edits": 4,
+          "id": "4507-16021-0042",
+          "latenciesMs": [
+            501.8404,
+            509.6649,
+            477.8639
+          ],
+          "referenceWords": 17,
+          "seconds": 10.375
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0043",
+          "latenciesMs": [
+            465.9713,
+            428.67499999999995,
+            422.4579
+          ],
+          "referenceWords": 10,
+          "seconds": 3.99
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0044",
+          "latenciesMs": [
+            419.002,
+            420.3623,
+            397.3013
+          ],
+          "referenceWords": 4,
+          "seconds": 2.19
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0045",
+          "latenciesMs": [
+            424.4791,
+            430.2743,
+            447.25239999999997
+          ],
+          "referenceWords": 12,
+          "seconds": 4.89
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0046",
+          "latenciesMs": [
+            433.4463,
+            441.65070000000003,
+            428.50129999999996
+          ],
+          "referenceWords": 11,
+          "seconds": 4.59
+        },
+        {
+          "edits": 8,
+          "id": "4507-16021-0047",
+          "latenciesMs": [
+            1084.9844,
+            1095.5775,
+            1102.0716
+          ],
+          "referenceWords": 77,
+          "seconds": 34.955
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0048",
+          "latenciesMs": [
+            508.18980000000005,
+            439.2475,
+            453.1766
+          ],
+          "referenceWords": 14,
+          "seconds": 5.215
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0049",
+          "latenciesMs": [
+            464.8175,
+            448.69890000000004,
+            439.96299999999997
+          ],
+          "referenceWords": 15,
+          "seconds": 5.91
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0050",
+          "latenciesMs": [
+            402.45750000000004,
+            431.27369999999996,
+            407.22049999999996
+          ],
+          "referenceWords": 10,
+          "seconds": 3.895
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0051",
+          "latenciesMs": [
+            469.5028,
+            485.9165,
+            434.35400000000004
+          ],
+          "referenceWords": 12,
+          "seconds": 6.17
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0052",
+          "latenciesMs": [
+            440.38349999999997,
+            537.4691,
+            430.0635
+          ],
+          "referenceWords": 11,
+          "seconds": 6.275
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0053",
+          "latenciesMs": [
+            484.5484,
+            497.3042,
+            511.66370000000006
+          ],
+          "referenceWords": 18,
+          "seconds": 8.095
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0054",
+          "latenciesMs": [
+            459.7643,
+            491.09380000000004,
+            409.2262
+          ],
+          "referenceWords": 7,
+          "seconds": 4.315
+        },
+        {
+          "edits": 1,
+          "id": "4507-16021-0055",
+          "latenciesMs": [
+            428.7232,
+            489.0162,
+            437.02410000000003
+          ],
+          "referenceWords": 13,
+          "seconds": 7.225
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0056",
+          "latenciesMs": [
+            453.61289999999997,
+            462.7622,
+            429.6182
+          ],
+          "referenceWords": 10,
+          "seconds": 6.345
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0057",
+          "latenciesMs": [
+            441.4423,
+            454.61859999999996,
+            433.7181
+          ],
+          "referenceWords": 7,
+          "seconds": 4.61
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0058",
+          "latenciesMs": [
+            452.9749,
+            426.5409,
+            433.632
+          ],
+          "referenceWords": 8,
+          "seconds": 3.11
+        },
+        {
+          "edits": 0,
+          "id": "4507-16021-0059",
+          "latenciesMs": [
+            476.6607,
+            534.7148000000001,
+            456.6367
+          ],
+          "referenceWords": 12,
+          "seconds": 6.205
+        },
+        {
+          "edits": 0,
+          "id": "jfk",
+          "latenciesMs": [
+            522.3898,
+            587.6611,
+            467.7457
+          ],
+          "referenceWords": 22,
+          "seconds": 11.0
+        }
+      ],
+      "prepareMs": 236.18030000000002,
+      "realTimeFactor": 0.06490393608411894,
+      "shortClipP50Ms": 424.4791,
+      "utterances": 136,
+      "werPercent": 3.3078880407124682
+    }
+  ],
+  "corpus": {
+    "audioSeconds": 1002.2000625000001,
+    "utterances": 136
+  },
+  "dynamicAudioContext": "audio frames + 500, floor 750, full window 1500",
+  "logicalCpus": 22,
+  "passes": 3
+}

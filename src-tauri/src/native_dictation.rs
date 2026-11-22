@@ -1,8 +1,7 @@
 use std::{
     collections::VecDeque,
-    env, fs,
+    env,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -27,8 +26,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use crate::{
+    asr::{
+        model_label,
+        provider::{FallbackProvider, SpeechToTextProvider, TranscriptionRequest},
+        transcribe_cpp::{is_transcribe_cpp_model, TranscribeCppConfig, TranscribeCppProvider},
+        whisper_cli::{WhisperCliConfig, WhisperCliProvider},
+        whisper_server::{WhisperServerConfig, WhisperServerProvider},
+        whisper_text::{build_whisper_prompt, is_blank_transcript},
+        WhisperDecodeOptions,
+    },
+    audio::resample::resample_to_16khz,
+};
 
 pub struct NativeDictationRuntime {
     command_tx: Mutex<mpsc::Sender<RecorderCommand>>,
@@ -36,6 +45,58 @@ pub struct NativeDictationRuntime {
     sessions: Mutex<SessionRegistry>,
     last_transcript: Mutex<Option<String>>,
     latency_snapshots: Mutex<VecDeque<NativeLatencySnapshot>>,
+    asr: Mutex<Option<AsrEngineSlot>>,
+}
+
+/// Which engine chain to run for one configuration. The engine is rebuilt (and the old one
+/// stopped) only when the plan changes, for example after the user picks another model or
+/// toggles low-resource mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AsrEnginePlan {
+    /// A GGUF model (Parakeet) kept loaded in-process through transcribe.cpp, with the
+    /// one-shot Whisper CLI as a local fallback when a Whisper model is installed.
+    InProcess {
+        model_path: PathBuf,
+        whisper_fallback: Option<WhisperFiles>,
+    },
+    /// A Whisper model kept loaded in the persistent whisper.cpp server, falling back to the
+    /// one-shot CLI with the same model.
+    WhisperServer {
+        server_path: PathBuf,
+        whisper: WhisperFiles,
+    },
+    /// One whisper.cpp process per utterance: nothing stays in memory between dictations.
+    WhisperCli { whisper: WhisperFiles },
+}
+
+/// The whisper.cpp CLI and a Whisper model for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WhisperFiles {
+    cli_path: PathBuf,
+    model_path: PathBuf,
+}
+
+impl AsrEnginePlan {
+    /// The model that will normally produce the transcript.
+    fn model_path(&self) -> &Path {
+        match self {
+            Self::InProcess { model_path, .. } => model_path,
+            Self::WhisperServer { whisper, .. } | Self::WhisperCli { whisper } => {
+                &whisper.model_path
+            }
+        }
+    }
+}
+
+struct AsrEngineSlot {
+    plan: AsrEnginePlan,
+    provider: Arc<dyn SpeechToTextProvider>,
+}
+
+/// The engine to use for one dictation plus the facts diagnostics need about it.
+struct ResolvedAsr {
+    provider: Arc<dyn SpeechToTextProvider>,
+    model_path: PathBuf,
 }
 
 /// Tracks which dictation session is currently authorized to insert text.
@@ -163,12 +224,17 @@ struct NativeLatencySnapshot {
     session_id: u64,
     ollama_model: String,
     low_resource_mode: bool,
+    /// Engine that produced the transcript, for example `whisper-server`.
+    asr_provider: String,
+    /// File name of the ASR model (never the full path).
+    asr_model: String,
+    /// Whether the primary engine failed and the local fallback produced the transcript.
+    asr_fallback_used: bool,
     audio_duration_ms: u128,
     hotkey_to_recording_start_ms: Option<u128>,
     vad_tail_ms: Option<u128>,
     capture_stop_ms: Option<u128>,
     resample_ms: Option<u128>,
-    wav_write_ms: Option<u128>,
     whisper_ms: Option<u128>,
     deterministic_ms: Option<u128>,
     paste_set_clipboard_ms: Option<u128>,
@@ -235,6 +301,11 @@ struct OllamaGenerateRequest<'a> {
 #[derive(Debug, Serialize)]
 struct OllamaOptions {
     temperature: f32,
+    /// Fixed context window. Keeping it constant between the warm-up and every cleanup
+    /// request means Ollama never reloads the model to resize it, and bounds memory.
+    num_ctx: u32,
+    /// Upper bound on generated tokens so a confused model cannot run on until the timeout.
+    num_predict: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +332,10 @@ const QUICK_TAP_RELEASE_MS: u64 = 700;
 const NO_SPEECH_TIMEOUT_MS: u64 = 2_500;
 const MAX_RECORDING_SECS: u64 = 120;
 const OLLAMA_KEEP_ALIVE: &str = "30m";
+/// Enough for the longest dictation (120 s is roughly 400 words) sent twice in the cleanup
+/// prompt, the rules, and the reply.
+const OLLAMA_NUM_CTX: u32 = 4096;
+const OLLAMA_NUM_PREDICT: u32 = 1024;
 const OVERLAY_WIDTH: i32 = 593;
 const OVERLAY_HEIGHT: i32 = 91;
 const OVERLAY_BOTTOM_GAP: i32 = 20;
@@ -268,8 +343,18 @@ const MAX_LATENCY_SNAPSHOTS: usize = 5;
 const TARGET_VISIBLE_TEXT_MS: u128 = 1_000;
 const SLOW_VISIBLE_TEXT_MS: u128 = 2_000;
 const WHISPER_BOTTLENECK_MS: u128 = 700;
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Speech models looked for in the runtime `models` folder, in order. The first one that
+/// exists is used unless the user configured an explicit model path. Parakeet TDT 0.6B v3
+/// kept loaded in-process is both far more accurate than tiny.en and fast enough on CPU (see
+/// `docs/benchmarks/ASR_BENCHMARK.md`), so it comes first; tiny.en is the small model the
+/// installer bundles and the fallback when Parakeet is not installed.
+const PREFERRED_SPEECH_MODELS: &[&str] =
+    &["parakeet-tdt-0.6b-v3-Q5_K_M.gguf", "ggml-tiny.en-q5_1.bin"];
+/// Whisper models usable by the whisper.cpp sidecars, for the local fallback.
+const FALLBACK_WHISPER_MODELS: &[&str] = &["ggml-tiny.en-q5_1.bin"];
+/// Channel energy (mean square) above which the capture channel choice is locked for the rest
+/// of the recording. Roughly -50 dBFS: above room noise, below quiet speech.
+const CHANNEL_LOCK_MEAN_SQUARE: f64 = 0.003 * 0.003;
 
 impl Default for NativeDictationRuntime {
     fn default() -> Self {
@@ -282,6 +367,7 @@ impl Default for NativeDictationRuntime {
             sessions: Mutex::new(SessionRegistry::default()),
             last_transcript: Mutex::new(None),
             latency_snapshots: Mutex::new(VecDeque::new()),
+            asr: Mutex::new(None),
         }
     }
 }
@@ -381,7 +467,7 @@ fn store_last_transcript(app: &AppHandle, text: &str) {
 }
 
 /// The most recent finalized transcript, if any.
-fn last_transcript(app: &AppHandle) -> Option<String> {
+pub(crate) fn last_transcript(app: &AppHandle) -> Option<String> {
     let runtime = app.state::<NativeDictationRuntime>();
     let guard = runtime
         .last_transcript
@@ -493,9 +579,22 @@ fn latency_diagnostics_for(
             optional_ms_status(snapshot.resample_ms),
         ),
         diagnostic_metric(
-            "Latency: WAV write",
-            format_optional_ms(snapshot.wav_write_ms),
-            optional_ms_status(snapshot.wav_write_ms),
+            "ASR engine",
+            format!(
+                "{} / {}{}",
+                snapshot.asr_provider,
+                snapshot.asr_model,
+                if snapshot.asr_fallback_used {
+                    " / fallback engine used"
+                } else {
+                    ""
+                }
+            ),
+            if snapshot.asr_fallback_used {
+                "warning"
+            } else {
+                "ok"
+            },
         ),
         diagnostic_metric(
             "Latency: Whisper sidecar",
@@ -800,6 +899,7 @@ fn start_recording(
         }
     };
     warm_ollama_in_background(warm_model);
+    prepare_asr_in_background(app.clone());
     tracing::info!(
         device = %device_name,
         sample_rate,
@@ -942,27 +1042,29 @@ fn process_session(
         settings.models.ollama_model.trim().to_string()
     };
 
-    let output_dir = env::temp_dir().join("localflow");
-    fs::create_dir_all(&output_dir)
-        .map_err(|error| format!("Could not create temporary audio directory: {error}"))?;
-    let stamp = chrono::Utc::now().timestamp_millis();
-    let wav_path = output_dir.join(format!("dictation-{stamp}.wav"));
-    let output_base = output_dir.join(format!("dictation-{stamp}"));
-
     let resample_started_at = Instant::now();
     let mono_16k = resample_to_16khz(captured, sample_rate);
     let resample_ms = resample_started_at.elapsed().as_millis();
 
-    let wav_write_started_at = Instant::now();
-    write_wav(&wav_path, &mono_16k)?;
-    let wav_write_ms = wav_write_started_at.elapsed().as_millis();
-
+    // The engine is chosen from settings (model, low-resource mode) and reused between
+    // dictations. It enforces its own deadline, so a hung sidecar can never leave the overlay
+    // stuck on "processing".
+    let asr = resolve_asr(app, &settings)?;
+    let whisper_prompt = build_whisper_prompt(&dictionary_terms);
+    let language = asr_language(&settings.models.language, &asr.model_path);
     let whisper_started_at = Instant::now();
-    let transcribe_result = run_whisper(app, &wav_path, &output_base, &dictionary_terms);
+    let transcription = asr
+        .provider
+        .transcribe(&TranscriptionRequest {
+            samples: &mono_16k,
+            language: &language,
+            initial_prompt: whisper_prompt.as_deref(),
+        })
+        .map_err(|error| format!("Local transcription failed: {error}"))?;
     let whisper_ms = whisper_started_at.elapsed().as_millis();
-    let _ = fs::remove_file(&wav_path);
-    let _ = fs::remove_file(output_base.with_extension("json"));
-    let transcript = transcribe_result?;
+    let asr_provider = transcription.provider.to_string();
+    let asr_fallback_used = transcription.fallback_reason.is_some();
+    let transcript = transcription.text;
 
     if transcript.trim().is_empty() || is_blank_transcript(&transcript) {
         return Err("Local whisper.cpp did not return any transcript text.".to_string());
@@ -1053,13 +1155,15 @@ fn process_session(
             session_id,
             ollama_model: ollama_model.clone(),
             low_resource_mode: settings.models.low_resource_mode,
+            asr_provider: asr_provider.clone(),
+            asr_model: model_label(&asr.model_path),
+            asr_fallback_used,
             audio_duration_ms: audio_duration_ms(captured.len(), sample_rate),
             hotkey_to_recording_start_ms: Some(duration_ms_between(hotkey_received_at, started_at)),
             vad_tail_ms: speech_ended_at
                 .map(|speech_ended_at| duration_ms_between(speech_ended_at, stop_requested_at)),
             capture_stop_ms: Some(capture_stop_ms),
             resample_ms: Some(resample_ms),
-            wav_write_ms: Some(wav_write_ms),
             whisper_ms: Some(whisper_ms),
             deterministic_ms: Some(deterministic_ms),
             paste_set_clipboard_ms: Some(paste.timings.set_clipboard_ms),
@@ -1089,6 +1193,8 @@ fn process_session(
         elapsed_ms = duration_ms_between(started_at, visible_at),
         speech_end_to_visible_ms = duration_ms_between(speech_end_reference, visible_at),
         whisper_ms,
+        asr_provider = %asr_provider,
+        asr_fallback_used,
         chars = deterministic.chars().count(),
         sample_rate,
         channels,
@@ -1178,15 +1284,21 @@ fn start_level_meter(
                 Err(_) => Vec::new(),
             };
 
-            if chunk.is_empty() {
-                continue;
-            }
+            // A device that stops delivering audio (unplugged, disabled) produces empty
+            // polls. The end-of-speech, no-speech, and maximum-length timeouts still run on
+            // them so a session can never listen forever, but an empty poll is not evidence
+            // of silence (the device may simply deliver buffers longer than the poll
+            // interval), so it does not reset speech confirmation.
+            let finished = if chunk.is_empty() {
+                detector.timed_out(Instant::now())
+            } else {
+                let rms = rms_level(&chunk);
+                let features = overlay_audio_features(&chunk, sample_rate, rms);
+                emit_audio_features(&app, features);
+                detector.observe(Instant::now(), rms)
+            };
 
-            let rms = rms_level(&chunk);
-            let features = overlay_audio_features(&chunk, sample_rate, rms);
-            emit_audio_features(&app, features);
-
-            if detector.observe(Instant::now(), rms) {
+            if finished {
                 if let Ok(mut last_voice) = last_voice_at.lock() {
                     *last_voice = detector.last_voice_at;
                 }
@@ -1230,6 +1342,27 @@ impl EndOfSpeechDetector {
             last_voice_at: None,
             speech_seen: false,
         }
+    }
+
+    /// Whether the recording should end at `now` given what has been heard so far, without
+    /// feeding in any new audio: maximum length, no speech at all, or enough silence after
+    /// speech.
+    fn timed_out(&self, now: Instant) -> bool {
+        let elapsed = now.duration_since(self.started_at);
+
+        if elapsed >= Duration::from_secs(MAX_RECORDING_SECS) {
+            return true;
+        }
+
+        if !self.speech_seen && elapsed >= Duration::from_millis(NO_SPEECH_TIMEOUT_MS) {
+            return true;
+        }
+
+        self.speech_seen
+            && elapsed >= Duration::from_millis(MIN_AUTO_STOP_RECORDING_MS)
+            && self.last_voice_at.is_some_and(|last_voice_at| {
+                now.duration_since(last_voice_at) >= Duration::from_millis(END_OF_SPEECH_TIMEOUT_MS)
+            })
     }
 
     fn observe(&mut self, now: Instant, rms: f32) -> bool {
@@ -1376,12 +1509,14 @@ fn build_stream(
 ) -> Result<Stream, String> {
     let channels = config.channels as usize;
     let error_callback = |error| tracing::warn!(error = %error, "microphone stream error");
+    // Only one match arm below ever runs, so each can move the selector into its callback.
+    let mut selector = ChannelSelector::default();
 
     match sample_format {
         SampleFormat::F32 => device
             .build_input_stream(
                 config,
-                move |data: &[f32], _| push_mono_samples(data, channels, &samples),
+                move |data: &[f32], _| push_mono_samples(data, channels, &samples, &mut selector),
                 error_callback,
                 None,
             )
@@ -1394,7 +1529,7 @@ fn build_stream(
                         .iter()
                         .map(|sample| *sample as f32 / i16::MAX as f32)
                         .collect();
-                    push_mono_samples(&converted, channels, &samples);
+                    push_mono_samples(&converted, channels, &samples, &mut selector);
                 },
                 error_callback,
                 None,
@@ -1408,7 +1543,7 @@ fn build_stream(
                         .iter()
                         .map(|sample| (*sample as f32 - 32768.0) / 32768.0)
                         .collect();
-                    push_mono_samples(&converted, channels, &samples);
+                    push_mono_samples(&converted, channels, &samples, &mut selector);
                 },
                 error_callback,
                 None,
@@ -1418,37 +1553,74 @@ fn build_stream(
     }
 }
 
-fn push_mono_samples(data: &[f32], channels: usize, samples: &Arc<Mutex<Vec<f32>>>) {
+fn push_mono_samples(
+    data: &[f32],
+    channels: usize,
+    samples: &Arc<Mutex<Vec<f32>>>,
+    selector: &mut ChannelSelector,
+) {
     if channels == 0 {
         return;
     }
 
+    let mono = selector.downmix(data, channels);
     if let Ok(mut output) = samples.lock() {
-        output.extend(downmix_input_callback(data, channels));
+        output.extend(mono);
     }
 }
 
-fn downmix_input_callback(data: &[f32], channels: usize) -> Vec<f32> {
-    if channels == 0 {
-        return Vec::new();
-    }
+/// Picks which channel of a multi-channel microphone becomes the mono signal.
+///
+/// Channels are never averaged, because array microphones can deliver phase-inverted channels
+/// that cancel to silence. While only room noise has been heard the loudest channel of each
+/// callback is used; once a channel carries real signal the choice is locked for the rest of
+/// the recording. Without the lock the choice could flip between callbacks mid-word and
+/// splice two slightly different signals together.
+#[derive(Debug, Default)]
+struct ChannelSelector {
+    locked: Option<usize>,
+}
 
-    if channels == 1 {
-        return data
-            .iter()
-            .copied()
+impl ChannelSelector {
+    fn downmix(&mut self, data: &[f32], channels: usize) -> Vec<f32> {
+        if channels == 0 {
+            return Vec::new();
+        }
+
+        if channels == 1 {
+            return data
+                .iter()
+                .copied()
+                .map(|sample| sample.clamp(-1.0, 1.0))
+                .collect();
+        }
+
+        let selected_channel = match self.locked {
+            Some(channel) if channel < channels => channel,
+            _ => {
+                let (channel, mean_square) = loudest_channel_with_energy(data, channels);
+                if mean_square >= CHANNEL_LOCK_MEAN_SQUARE {
+                    self.locked = Some(channel);
+                }
+                channel
+            }
+        };
+
+        data.chunks(channels)
+            .filter_map(|frame| frame.get(selected_channel).copied())
             .map(|sample| sample.clamp(-1.0, 1.0))
-            .collect();
+            .collect()
     }
-
-    let selected_channel = loudest_channel(data, channels);
-    data.chunks(channels)
-        .filter_map(|frame| frame.get(selected_channel).copied())
-        .map(|sample| sample.clamp(-1.0, 1.0))
-        .collect()
 }
 
-fn loudest_channel(data: &[f32], channels: usize) -> usize {
+/// Stateless downmix of one callback: the loudest channel wins.
+#[cfg(test)]
+fn downmix_input_callback(data: &[f32], channels: usize) -> Vec<f32> {
+    ChannelSelector::default().downmix(data, channels)
+}
+
+/// The channel with the highest mean-square energy in `data`, and that energy.
+fn loudest_channel_with_energy(data: &[f32], channels: usize) -> (usize, f64) {
     let mut energy = vec![0.0f64; channels];
     let mut counts = vec![0usize; channels];
 
@@ -1475,7 +1647,7 @@ fn loudest_channel(data: &[f32], channels: usize) -> usize {
         }
     }
 
-    selected
+    (selected, selected_energy)
 }
 
 fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioStats {
@@ -1513,186 +1685,201 @@ fn is_near_silent(stats: AudioStats) -> bool {
     stats.peak < SILENCE_PEAK_THRESHOLD && stats.rms < SILENCE_RMS_THRESHOLD
 }
 
-fn resample_to_16khz(input: &[f32], input_rate: u32) -> Vec<f32> {
-    const TARGET_RATE: u32 = 16_000;
-    if input_rate == TARGET_RATE {
-        return input.to_vec();
-    }
-
-    let output_len = ((input.len() as f64 / input_rate as f64) * TARGET_RATE as f64)
-        .round()
-        .max(1.0) as usize;
-    let ratio = input_rate as f64 / TARGET_RATE as f64;
-
-    (0..output_len)
-        .map(|index| {
-            let source = index as f64 * ratio;
-            let lower = source.floor() as usize;
-            let upper = (lower + 1).min(input.len().saturating_sub(1));
-            let fraction = (source - lower as f64) as f32;
-            let a = input.get(lower).copied().unwrap_or(0.0);
-            let b = input.get(upper).copied().unwrap_or(a);
-            a + (b - a) * fraction
-        })
-        .collect()
-}
-
-fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 16_000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(path, spec)
-        .map_err(|error| format!("WAV write failed: {error}"))?;
-
-    for sample in samples {
-        let pcm = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
-        writer
-            .write_sample(pcm)
-            .map_err(|error| format!("WAV sample write failed: {error}"))?;
-    }
-
-    writer
-        .finalize()
-        .map_err(|error| format!("WAV finalize failed: {error}"))
-}
-
-fn run_whisper(
-    app: &AppHandle,
-    wav_path: &Path,
-    output_base: &Path,
-    dictionary_terms: &[String],
-) -> Result<String, String> {
-    let cli = whisper_cli_path(app)?;
-    let model = whisper_model_path(app)?;
-    let thread_count = whisper_thread_count().to_string();
-    let whisper_dir = cli
-        .parent()
-        .ok_or_else(|| "Could not resolve whisper.cpp runtime directory.".to_string())?;
-
-    let mut command = hidden_sidecar_command(&cli);
-    command
-        .current_dir(whisper_dir)
-        .stdin(Stdio::null())
-        .arg("-m")
-        .arg(&model)
-        .arg("-f")
-        .arg(wav_path)
-        .arg("-oj")
-        .arg("-of")
-        .arg(output_base)
-        .arg("-np")
-        .arg("-nt")
-        .arg("-l")
-        .arg("en")
-        .arg("-t")
-        .arg(&thread_count);
-
-    // Bias recognition toward the user's dictionary terms via whisper's initial prompt.
-    if let Some(prompt) = build_whisper_prompt(dictionary_terms) {
-        command.arg("--prompt").arg(prompt);
-    }
-
-    let output = command
-        .output()
-        .map_err(|error| format!("Could not start whisper.cpp: {error}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "whisper.cpp failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-
-    parse_whisper_json(&output_base.with_extension("json"))
-}
-
-/// Build a bounded whisper initial prompt from the user's dictionary terms. Whisper's
-/// prompt window is small, so we cap the joined length.
-fn build_whisper_prompt(terms: &[String]) -> Option<String> {
-    const MAX_PROMPT_CHARS: usize = 800;
-
-    let mut joined = String::new();
-    for term in terms
-        .iter()
-        .map(|term| term.trim())
-        .filter(|term| !term.is_empty())
-    {
-        let addition = if joined.is_empty() {
-            term.to_string()
-        } else {
-            format!(", {term}")
+/// Decide which engine chain to run. Pure, so every rule is unit-tested.
+///
+/// - A GGUF model runs in-process and stays loaded, unless low-resource mode is on and a
+///   Whisper fallback exists, in which case the one-shot CLI is used so nothing stays loaded.
+/// - A whisper.cpp model runs in the persistent server when it is available and low-resource
+///   mode is off, otherwise in the one-shot CLI.
+fn plan_asr_engine(
+    model_path: PathBuf,
+    low_resource_mode: bool,
+    whisper_cli: Option<PathBuf>,
+    whisper_server: Option<PathBuf>,
+    whisper_fallback_model: Option<PathBuf>,
+) -> Result<AsrEnginePlan, String> {
+    if is_transcribe_cpp_model(&model_path) {
+        let whisper_fallback = match (whisper_cli, whisper_fallback_model) {
+            (Some(cli_path), Some(model_path)) => Some(WhisperFiles {
+                cli_path,
+                model_path,
+            }),
+            _ => None,
         };
-        if joined.len() + addition.len() > MAX_PROMPT_CHARS {
-            break;
-        }
-        joined.push_str(&addition);
+        return Ok(match (low_resource_mode, whisper_fallback) {
+            (true, Some(whisper)) => AsrEnginePlan::WhisperCli { whisper },
+            (_, whisper_fallback) => AsrEnginePlan::InProcess {
+                model_path,
+                whisper_fallback,
+            },
+        });
     }
 
-    if joined.is_empty() {
-        None
-    } else {
-        Some(format!("Glossary: {joined}."))
-    }
+    let cli_path = whisper_cli.ok_or_else(|| {
+        "Missing whisper.cpp executable (whisper-cli.exe) for the configured Whisper model."
+            .to_string()
+    })?;
+    let whisper = WhisperFiles {
+        cli_path,
+        model_path,
+    };
+    Ok(match whisper_server {
+        Some(server_path) if !low_resource_mode => AsrEnginePlan::WhisperServer {
+            server_path,
+            whisper,
+        },
+        _ => AsrEnginePlan::WhisperCli { whisper },
+    })
 }
 
-fn hidden_sidecar_command(program: &Path) -> Command {
-    let mut command = Command::new(program);
-
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-
-    command
-}
-
-fn whisper_thread_count() -> usize {
-    thread::available_parallelism()
-        .map(|available| available.get().saturating_sub(1).max(2))
-        .unwrap_or(4)
-        .clamp(2, 8)
-}
-
-fn parse_whisper_json(path: &Path) -> Result<String, String> {
-    let payload = fs::read_to_string(path)
-        .map_err(|error| format!("Could not read whisper.cpp JSON output: {error}"))?;
-    let value: serde_json::Value = serde_json::from_str(&payload)
-        .map_err(|error| format!("Could not parse whisper.cpp JSON output: {error}"))?;
-
-    if let Some(text) = value.get("text").and_then(|item| item.as_str()) {
-        return Ok(text.trim().to_string());
-    }
-
-    if let Some(segments) = value.get("transcription").and_then(|item| item.as_array()) {
-        let text = segments
-            .iter()
-            .filter_map(|segment| segment.get("text").and_then(|item| item.as_str()))
-            .collect::<Vec<_>>()
-            .join(" ");
-        return Ok(text.split_whitespace().collect::<Vec<_>>().join(" "));
-    }
-
-    Err("whisper.cpp JSON output did not include transcript text.".to_string())
-}
-
-fn is_blank_transcript(transcript: &str) -> bool {
-    let normalized = transcript
-        .trim()
-        .trim_matches(|character: char| {
-            character.is_whitespace()
-                || matches!(
-                    character,
-                    '[' | ']' | '(' | ')' | '{' | '}' | '.' | '!' | '?'
-                )
-        })
-        .to_ascii_lowercase()
-        .replace(['_', '-'], " ");
-
-    matches!(
-        normalized.as_str(),
-        "" | "blank audio" | "silence" | "no speech" | "inaudible"
+/// Resolve (building or reusing) the ASR engine for the current settings.
+fn resolve_asr(
+    app: &AppHandle,
+    settings: &crate::app_state::SettingsSnapshot,
+) -> Result<ResolvedAsr, String> {
+    let model_path = speech_model_path(app, &settings.models.whisper_model_path)?;
+    let whisper_cli = whisper_cli_path(app).ok();
+    let whisper_server = whisper_cli
+        .as_ref()
+        .map(|cli| cli.with_file_name("whisper-server.exe"))
+        .filter(|server| server.is_file());
+    let whisper_fallback_model = find_file(
+        "Whisper model",
+        preferred_model_candidates(&runtime_candidates(app), FALLBACK_WHISPER_MODELS),
     )
+    .ok();
+    let plan = plan_asr_engine(
+        model_path,
+        settings.models.low_resource_mode,
+        whisper_cli,
+        whisper_server,
+        whisper_fallback_model,
+    )?;
+    let model_path = plan.model_path().to_path_buf();
+
+    let runtime = app.state::<NativeDictationRuntime>();
+    let mut slot = runtime
+        .asr
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(existing) = slot.as_ref() {
+        if existing.plan == plan {
+            return Ok(ResolvedAsr {
+                provider: existing.provider.clone(),
+                model_path,
+            });
+        }
+    }
+    if let Some(previous) = slot.take() {
+        previous.provider.shutdown();
+    }
+
+    let provider = build_asr_provider(&plan);
+    tracing::info!(engine = %provider.describe(), "ASR engine selected");
+    *slot = Some(AsrEngineSlot {
+        plan,
+        provider: provider.clone(),
+    });
+
+    Ok(ResolvedAsr {
+        provider,
+        model_path,
+    })
+}
+
+/// Build the engine chain for `plan`. Every engine here is local; there is no remote
+/// fallback.
+fn build_asr_provider(plan: &AsrEnginePlan) -> Arc<dyn SpeechToTextProvider> {
+    let decode = WhisperDecodeOptions::default();
+    let whisper_cli = |whisper: &WhisperFiles| {
+        WhisperCliProvider::new(WhisperCliConfig {
+            cli_path: whisper.cli_path.clone(),
+            model_path: whisper.model_path.clone(),
+            decode,
+            temp_dir: env::temp_dir().join("localflow"),
+        })
+    };
+
+    match plan {
+        AsrEnginePlan::InProcess {
+            model_path,
+            whisper_fallback,
+        } => {
+            let in_process = TranscribeCppProvider::new(TranscribeCppConfig {
+                model_path: model_path.clone(),
+            });
+            match whisper_fallback {
+                Some(whisper) => Arc::new(FallbackProvider::new(
+                    Box::new(in_process),
+                    Box::new(whisper_cli(whisper)),
+                )),
+                None => Arc::new(in_process),
+            }
+        }
+        AsrEnginePlan::WhisperServer {
+            server_path,
+            whisper,
+        } => match WhisperServerProvider::new(WhisperServerConfig::new(
+            server_path.clone(),
+            whisper.model_path.clone(),
+            decode,
+        )) {
+            Ok(server) => Arc::new(FallbackProvider::new(
+                Box::new(server),
+                Box::new(whisper_cli(whisper)),
+            )),
+            Err(error) => {
+                tracing::warn!(error = %error, "persistent ASR engine unavailable; using the CLI");
+                Arc::new(whisper_cli(whisper))
+            }
+        },
+        AsrEnginePlan::WhisperCli { whisper } => Arc::new(whisper_cli(whisper)),
+    }
+}
+
+/// Start loading the ASR model while the user is still speaking, so it is warm by the time
+/// the recording ends.
+fn prepare_asr_in_background(app: AppHandle) {
+    thread::spawn(move || {
+        let settings = app
+            .state::<crate::app_state::LocalFlowRuntime>()
+            .current_settings();
+        match resolve_asr(&app, &settings) {
+            Ok(asr) => {
+                if let Err(error) = asr.provider.prepare() {
+                    tracing::warn!(error = %error, "ASR engine warm-up failed");
+                }
+            }
+            Err(error) => tracing::warn!(error = %error, "ASR engine could not be resolved"),
+        }
+    });
+}
+
+/// Stop any ASR sidecar. Called when the app exits.
+pub fn shutdown(app: &AppHandle) {
+    let runtime = app.state::<NativeDictationRuntime>();
+    let slot = runtime
+        .asr
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(slot) = slot {
+        slot.provider.shutdown();
+    }
+}
+
+/// Language code to pass to whisper. English-only models (`*.en*`) always get `en`; otherwise
+/// the user's setting is used, defaulting to English when it is empty.
+fn asr_language(configured: &str, model_path: &Path) -> String {
+    let english_only = model_label(model_path).contains(".en");
+    let configured = configured.trim();
+
+    if english_only || configured.is_empty() {
+        "en".to_string()
+    } else {
+        configured.to_ascii_lowercase()
+    }
 }
 
 fn refine_with_pinned_ollama(
@@ -1729,8 +1916,18 @@ fn request_ollama_generate(
     temperature: f32,
     model: &str,
 ) -> Result<String, String> {
+    if is_cloud_model_tag(model) {
+        return Err(format!(
+            "Ollama model \"{model}\" is a cloud-hosted tag. LocalFlow only uses local models."
+        ));
+    }
+
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
+        // Dictated text must only ever reach the loopback Ollama server: ignore system and
+        // environment proxies and never follow a redirect to another host.
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("Could not create local Ollama client: {error}"))?;
 
@@ -1742,7 +1939,11 @@ fn request_ollama_generate(
             stream: false,
             format: "json",
             keep_alive: OLLAMA_KEEP_ALIVE,
-            options: OllamaOptions { temperature },
+            options: OllamaOptions {
+                temperature,
+                num_ctx: OLLAMA_NUM_CTX,
+                num_predict: OLLAMA_NUM_PREDICT,
+            },
         })
         .send()
         .map_err(|error| {
@@ -1767,6 +1968,18 @@ fn request_ollama_generate(
     Ok(payload.response)
 }
 
+/// Whether an Ollama model name refers to a cloud-hosted model (for example
+/// `gemma4:cloud` or `qwen3:480b-cloud`). Those run on Ollama's servers, so they are refused.
+fn is_cloud_model_tag(model: &str) -> bool {
+    let tag = model
+        .trim()
+        .rsplit_once(':')
+        .map(|(_, tag)| tag)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    tag == "cloud" || tag.ends_with("-cloud")
+}
+
 fn warm_ollama_in_background(model: String) {
     thread::spawn(move || {
         let prompt = serde_json::json!({
@@ -1789,8 +2002,14 @@ fn warm_ollama_in_background(model: String) {
 
 fn parse_cleanup_text(payload: &str) -> Result<String, String> {
     let value = parse_json_value(payload)?;
-    let cleanup: CleanupModelResponse = serde_json::from_value(value)
-        .map_err(|error| format!("Cleanup payload did not match the strict contract: {error}"))?;
+    // The serde message can quote values from the payload, which is model output derived
+    // from dictated text, and this error is logged. Report only the kind of mismatch.
+    let cleanup: CleanupModelResponse = serde_json::from_value(value).map_err(|error| {
+        format!(
+            "Cleanup payload did not match the strict contract ({:?} error).",
+            error.classify()
+        )
+    })?;
     let text = cleanup.text.trim();
 
     if text.is_empty() {
@@ -1860,8 +2079,7 @@ fn paste_text_for_visible_insert(text: &str) -> Result<PasteStart, String> {
         Clipboard::new().map_err(|error| format!("Could not open clipboard: {error}"))?;
     let previous_text = clipboard.get_text().ok();
     let set_clipboard_started_at = Instant::now();
-    clipboard
-        .set_text(text.to_string())
+    set_transient_clipboard_text(&mut clipboard, text)
         .map_err(|error| format!("Could not set clipboard text: {error}"))?;
     let set_clipboard_ms = set_clipboard_started_at.elapsed().as_millis();
 
@@ -1878,6 +2096,31 @@ fn paste_text_for_visible_insert(text: &str) -> Result<PasteStart, String> {
             visible_at,
         },
     })
+}
+
+/// Put dictated text on the clipboard for the paste, asking Windows to keep it out of
+/// clipboard history (Win+V) and out of cloud clipboard sync. The text is only there for the
+/// fraction of a second the paste needs.
+#[cfg(windows)]
+fn set_transient_clipboard_text(
+    clipboard: &mut Clipboard,
+    text: &str,
+) -> Result<(), arboard::Error> {
+    use arboard::SetExtWindows;
+
+    clipboard
+        .set()
+        .exclude_from_history()
+        .exclude_from_cloud()
+        .text(text.to_string())
+}
+
+#[cfg(not(windows))]
+fn set_transient_clipboard_text(
+    clipboard: &mut Clipboard,
+    text: &str,
+) -> Result<(), arboard::Error> {
+    clipboard.set_text(text.to_string())
 }
 
 fn schedule_clipboard_restore(app: AppHandle, session_id: u64, previous_text: Option<String>) {
@@ -1958,20 +2201,44 @@ fn whisper_cli_path(app: &AppHandle) -> Result<PathBuf, String> {
     )
 }
 
-fn whisper_model_path(app: &AppHandle) -> Result<PathBuf, String> {
+/// Resolve the speech model: an explicit environment override, then the path from settings,
+/// then the best installed model.
+fn speech_model_path(app: &AppHandle, configured: &str) -> Result<PathBuf, String> {
     if let Ok(path) = env::var("LOCALFLOW_WHISPER_MODEL") {
-        return require_file(PathBuf::from(path), "Whisper model");
+        return require_file(PathBuf::from(path), "speech model");
     }
 
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        let path = PathBuf::from(configured);
+        if path.is_file() {
+            return Ok(path);
+        }
+        // A stale path must not break dictation; fall through to the bundled models.
+        tracing::warn!("configured speech model path does not exist; using an installed model");
+    }
+
+    let runtimes = runtime_candidates(app);
     find_file(
-        "Whisper model",
-        runtime_candidates(app)
-            .into_iter()
-            .map(|runtime| runtime.join("models").join("ggml-tiny.en-q5_1.bin")),
+        "speech model",
+        preferred_model_candidates(&runtimes, PREFERRED_SPEECH_MODELS),
     )
 }
 
-fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
+/// Candidate model paths ordered by model preference first, runtime folder second, so the
+/// preferred model is used wherever it is installed.
+fn preferred_model_candidates(runtimes: &[PathBuf], preferred: &[&str]) -> Vec<PathBuf> {
+    preferred
+        .iter()
+        .flat_map(|name| {
+            runtimes
+                .iter()
+                .map(move |runtime| runtime.join("models").join(name))
+        })
+        .collect()
+}
+
+pub(crate) fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -2041,7 +2308,11 @@ fn emit_native_event(
         _ => hide_overlay(app),
     }
 
-    crate::desktop_health::record_overlay_event(app, phase, message);
+    // Audio-feature events arrive about 18 times a second. Only real phase changes are
+    // written to the health file, so the level meter never does disk I/O.
+    if features.is_none() {
+        crate::desktop_health::record_overlay_event(app, phase, message);
+    }
 
     let _ = app.emit(
         "localflow://native-dictation",
@@ -2385,6 +2656,236 @@ mod tests {
     }
 
     #[test]
+    fn channel_choice_locks_once_a_channel_carries_signal() {
+        let mut selector = ChannelSelector::default();
+
+        // Speech arrives on channel 1; the choice locks there.
+        assert_eq!(selector.downmix(&[0.0, 0.25, 0.0, 0.5], 2), vec![0.25, 0.5]);
+        // A later callback where channel 0 is briefly louder must not flip the channel.
+        assert_eq!(selector.downmix(&[0.9, 0.1, 0.9, 0.2], 2), vec![0.1, 0.2]);
+    }
+
+    #[test]
+    fn channel_choice_stays_open_while_only_noise_is_heard() {
+        let mut selector = ChannelSelector::default();
+
+        // Both callbacks are far below the lock threshold, so each picks its own loudest.
+        assert_eq!(
+            selector.downmix(&[0.001, 0.0, 0.001, 0.0], 2),
+            vec![0.001, 0.001]
+        );
+        assert_eq!(
+            selector.downmix(&[0.0, 0.001, 0.0, 0.001], 2),
+            vec![0.001, 0.001]
+        );
+        assert_eq!(selector.locked, None);
+    }
+
+    #[test]
+    fn english_only_models_always_use_english() {
+        let english = Path::new("models/ggml-base.en-q5_1.bin");
+        let multilingual = Path::new("models/ggml-large-v3-turbo-q5_0.bin");
+
+        assert_eq!(asr_language("de", english), "en");
+        assert_eq!(asr_language("", multilingual), "en");
+        assert_eq!(asr_language(" DE ", multilingual), "de");
+        assert_eq!(asr_language("auto", multilingual), "auto");
+    }
+
+    #[test]
+    fn preferred_models_are_ordered_by_model_before_runtime_folder() {
+        let runtimes = vec![PathBuf::from("bundled"), PathBuf::from("dev")];
+
+        let candidates = preferred_model_candidates(&runtimes, &["best.bin", "small.bin"]);
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("bundled").join("models").join("best.bin"),
+                PathBuf::from("dev").join("models").join("best.bin"),
+                PathBuf::from("bundled").join("models").join("small.bin"),
+                PathBuf::from("dev").join("models").join("small.bin"),
+            ]
+        );
+    }
+
+    fn whisper_files() -> (PathBuf, PathBuf, PathBuf) {
+        (
+            PathBuf::from("rt/whisper/Release/whisper-cli.exe"),
+            PathBuf::from("rt/whisper/Release/whisper-server.exe"),
+            PathBuf::from("rt/models/ggml-tiny.en-q5_1.bin"),
+        )
+    }
+
+    #[test]
+    fn a_gguf_model_runs_in_process_with_the_whisper_cli_as_fallback() {
+        let (cli, server, tiny) = whisper_files();
+        let parakeet = PathBuf::from("rt/models/parakeet-tdt-0.6b-v3-Q5_K_M.gguf");
+
+        let plan = plan_asr_engine(
+            parakeet.clone(),
+            false,
+            Some(cli.clone()),
+            Some(server),
+            Some(tiny.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan,
+            AsrEnginePlan::InProcess {
+                model_path: parakeet.clone(),
+                whisper_fallback: Some(WhisperFiles {
+                    cli_path: cli,
+                    model_path: tiny,
+                }),
+            }
+        );
+        assert_eq!(plan.model_path(), parakeet.as_path());
+    }
+
+    #[test]
+    fn a_gguf_model_needs_no_whisper_runtime_at_all() {
+        let parakeet = PathBuf::from("rt/models/parakeet.gguf");
+
+        let plan = plan_asr_engine(parakeet.clone(), false, None, None, None).unwrap();
+
+        assert_eq!(
+            plan,
+            AsrEnginePlan::InProcess {
+                model_path: parakeet,
+                whisper_fallback: None,
+            }
+        );
+    }
+
+    #[test]
+    fn low_resource_mode_keeps_nothing_loaded_when_a_whisper_fallback_exists() {
+        let (cli, server, tiny) = whisper_files();
+        let parakeet = PathBuf::from("rt/models/parakeet.gguf");
+
+        let with_fallback = plan_asr_engine(
+            parakeet.clone(),
+            true,
+            Some(cli.clone()),
+            Some(server),
+            Some(tiny.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            with_fallback,
+            AsrEnginePlan::WhisperCli {
+                whisper: WhisperFiles {
+                    cli_path: cli,
+                    model_path: tiny,
+                },
+            }
+        );
+
+        // Without a Whisper model the only engine is the in-process one.
+        let without = plan_asr_engine(parakeet, true, None, None, None).unwrap();
+        assert!(matches!(without, AsrEnginePlan::InProcess { .. }));
+    }
+
+    #[test]
+    fn a_whisper_model_uses_the_server_unless_low_resource_or_missing() {
+        let (cli, server, tiny) = whisper_files();
+        let whisper = WhisperFiles {
+            cli_path: cli.clone(),
+            model_path: tiny.clone(),
+        };
+
+        assert_eq!(
+            plan_asr_engine(
+                tiny.clone(),
+                false,
+                Some(cli.clone()),
+                Some(server.clone()),
+                None
+            )
+            .unwrap(),
+            AsrEnginePlan::WhisperServer {
+                server_path: server.clone(),
+                whisper: whisper.clone(),
+            }
+        );
+        assert_eq!(
+            plan_asr_engine(tiny.clone(), true, Some(cli.clone()), Some(server), None).unwrap(),
+            AsrEnginePlan::WhisperCli {
+                whisper: whisper.clone(),
+            }
+        );
+        assert_eq!(
+            plan_asr_engine(tiny.clone(), false, Some(cli), None, None).unwrap(),
+            AsrEnginePlan::WhisperCli { whisper }
+        );
+        assert!(plan_asr_engine(tiny, false, None, None, None)
+            .unwrap_err()
+            .contains("whisper-cli.exe"));
+    }
+
+    #[test]
+    fn cloud_hosted_ollama_tags_are_refused() {
+        assert!(is_cloud_model_tag("gemma4:cloud"));
+        assert!(is_cloud_model_tag("qwen3-coder:480b-cloud"));
+        assert!(is_cloud_model_tag(" Gemma4:Cloud "));
+        assert!(!is_cloud_model_tag("llama3.2:3b"));
+        assert!(!is_cloud_model_tag("cloudy-model:latest"));
+        assert!(!is_cloud_model_tag("llama3.2"));
+
+        let error =
+            request_ollama_generate("{}", Duration::from_secs(1), 0.0, "gemma4:cloud").unwrap_err();
+        assert!(error.contains("cloud-hosted"));
+    }
+
+    #[test]
+    fn timeouts_fire_without_new_audio_when_the_device_stops_delivering() {
+        // A disconnected device yields empty polls, which only check the timeouts.
+        let started_at = Instant::now();
+
+        // After speech: the end-of-speech timeout ends the recording.
+        let mut detector = EndOfSpeechDetector::new(started_at);
+        assert!(!detector.observe(started_at + Duration::from_millis(100), 0.05));
+        assert!(!detector.observe(started_at + Duration::from_millis(400), 0.05));
+        assert!(!detector.timed_out(started_at + Duration::from_millis(500)));
+        assert!(detector
+            .timed_out(started_at + Duration::from_millis(400 + END_OF_SPEECH_TIMEOUT_MS + 10)));
+
+        // Never any speech: the no-speech timeout ends it.
+        let silent = EndOfSpeechDetector::new(started_at);
+        assert!(!silent.timed_out(started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS - 10)));
+        assert!(silent.timed_out(started_at + Duration::from_millis(NO_SPEECH_TIMEOUT_MS + 10)));
+
+        // And nothing outlives the maximum recording length.
+        assert!(silent.timed_out(started_at + Duration::from_secs(MAX_RECORDING_SECS + 1)));
+    }
+
+    #[test]
+    fn an_empty_poll_does_not_reset_speech_confirmation() {
+        // Quiet speech is confirmed only after 120 ms above the start threshold. An empty
+        // poll between two quiet chunks must not restart that clock.
+        let started_at = Instant::now();
+        let mut detector = EndOfSpeechDetector::new(started_at);
+        let quiet = VAD_START_RMS_THRESHOLD * 1.1;
+
+        assert!(!detector.observe(started_at + Duration::from_millis(60), quiet));
+        assert!(!detector.timed_out(started_at + Duration::from_millis(115)));
+        detector.observe(started_at + Duration::from_millis(190), quiet);
+
+        assert!(detector.speech_seen);
+    }
+
+    #[test]
+    fn cleanup_contract_errors_do_not_echo_model_output() {
+        let error =
+            parse_cleanup_text(r#"{"text": 12345, "secret": "dictated words"}"#).unwrap_err();
+
+        assert!(error.contains("strict contract"));
+        assert!(!error.contains("12345"));
+        assert!(!error.contains("dictated"));
+    }
+
+    #[test]
     fn cleanup_prompt_preserves_seeded_casing_and_punctuation_contract() {
         let deterministic_text = "Email Sarah about PyTorch at 3.14 p.m.\n- Ship LocalFlow.";
         let prompt = build_cleanup_prompt(
@@ -2528,8 +3029,10 @@ mod tests {
             hotkey_to_recording_start_ms: Some(30),
             vad_tail_ms: Some(550),
             capture_stop_ms: Some(5),
+            asr_provider: "whisper-server".to_string(),
+            asr_model: "ggml-base.en-q5_1.bin".to_string(),
+            asr_fallback_used: false,
             resample_ms: Some(2),
-            wav_write_ms: Some(3),
             whisper_ms: Some(600),
             deterministic_ms: Some(1),
             paste_set_clipboard_ms: Some(2),

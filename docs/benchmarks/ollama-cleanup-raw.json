@@ -1,0 +1,26 @@
+﻿[
+    {
+        "Variant":  "before (temperature only)",
+        "Requests":  9,
+        "Failed":  9,
+        "MedianWallMs":  null,
+        "MaxWallMs":  null,
+        "MedianPromptEvalMs":  null,
+        "MedianEvalMs":  null,
+        "MedianOutputTokens":  null,
+        "InvalidJson":  0,
+        "FirstError":  "{\"error\":\"llama-server reported out-of-memory during startup: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 10737418240\\nggml_backend_buft_alloc_buffer_n_default: failed"
+    },
+    {
+        "Variant":  "after (num_ctx 4096, num_predict 1024)",
+        "Requests":  9,
+        "Failed":  0,
+        "MedianWallMs":  3363,
+        "MaxWallMs":  4127,
+        "MedianPromptEvalMs":  46,
+        "MedianEvalMs":  3239,
+        "MedianOutputTokens":  221,
+        "InvalidJson":  0,
+        "FirstError":  ""
+    }
+]

@@ -1,0 +1,467 @@
+# Speech model benchmarks, licences and costs: independent verification
+
+> Research appendix produced on 2026-11-22 by an independent research agent for the voice pipeline review. It is kept as written, apart from removing machine-specific paths. Line references to `native_dictation.rs` describe the code before the changes in `../VOICE_PIPELINE_REVIEW.md`. Figures are labelled by the author as vendor, third-party, reproduced, or unverified; treat unlabelled numbers as unverified.
+
+Prepared 2026-11-22 for LocalFlow (offline Windows dictation; reference hardware Intel Core Ultra 7 165H, 32 GB RAM, RTX 4070 Laptop 8 GB).
+Every figure below was fetched live on 2026-11-22; bracketed numbers refer to the source list at the end. Nothing here was measured on the reference laptop.
+
+## How to read the verification column
+
+| Tag | Meaning |
+|---|---|
+| **V** | Vendor-published only (model card, README, blog, pricing page). A claim, not a measurement I could confirm. |
+| **L** | Independent leaderboard run: Hugging Face Open ASR Leaderboard, Hugging Face Open TTS Leaderboard, Artificial Analysis. Run by the leaderboard maintainers on their hardware, unless the changelog says a row is contributor-reported. |
+| **T** | Third-party measurement by someone other than the model's author (e.g. onnx-asr, faster-whisper benchmarks). |
+| **M** | Repository or Hugging Face metadata read directly through the API (parameter counts, file sizes, licence tags, dates, stars). |
+| **U** | Unverified: I could not trace it to a primary source today. |
+
+Three things changed in 2026 that invalidate most numbers quoted in blogs:
+
+1. **The Open ASR Leaderboard no longer measures what it measured in 2025.** It moved to H200 GPUs and a new English normaliser on 24 June 2026, replaced AMI, GigaSpeech, VoxPopuli and Earnings22 with cleaned variants in July and August, added private test sets to the default average on 24 July, added URGENT24 (noisy speech) on 9 October, and removed LibriSpeech from the default average on 2 November [1]. Averages from before and after these dates are not comparable. A "6.05% average WER" for Parakeet v2 and a "6.93%" for the same model are both correct for their date.
+2. **The top of the board is now proprietary APIs.** The best open-weights model is ranked 6th [1].
+3. **A Hugging Face Open TTS Leaderboard now exists** and measures WER, RTFx and time-to-first-audio on fixed hardware, including a CPU track [2]. It gives independent numbers for several vendor latency claims.
+
+---
+
+## Part 1. ASR
+
+### 1.1 Open ASR Leaderboard, English short-form, version 1.16.2 (20 November 2026) [1]
+
+Default average = macro-average over AMI-Cleaned, Earnings22-Cleaned-AA-chunked, Gigaspeech-Cleaned, SPGISpeech, URGENT24, Voice Arena Monsoon, Voxpopuli-AA-Cleaned, plus two private sets. RTFx is batch throughput on an H200, not single-stream latency. LibriSpeech columns are still published but no longer count toward the average.
+
+| Rank | Model | Open weights | Avg WER | RTFx (H200) | LS clean | LS other | Licence (leaderboard column) |
+|---|---|---|---|---|---|---|---|
+| 1 | zoom/scribe_v2.1_pro | no | 4.87 | n/a | n/a | n/a | proprietary |
+| 2 | OtterAI/speech-v3.1 | no | 5.21 | n/a | n/a | n/a | proprietary (public-set WER is contributor-reported) |
+| 4 | microsoft/azure-speech-09-2026 | no | 5.50 | n/a | n/a | n/a | proprietary |
+| 6 | Musci-research/Musci-ASR-qwen-1019-hf | yes | 5.70 | 775 | 1.03 | 2.18 | apache-2.0 |
+| 8 | elevenlabs/scribe_v2 | no | 5.93 | n/a | n/a | n/a | proprietary |
+| 10 | salesforce-sovereign-intelligence/SOV-Transcribe-1 (26.6B) | yes | 5.96 | 601 | n/a | n/a | apache-2.0 |
+| 13 | FluidVoice-Labs/fluid-speech-pro (627M, Parakeet-class) | yes | 6.06 | 3,690 | n/a | n/a | cc-by-4.0 |
+| 17 | Qwen/Qwen3-ASR-1.7B-hf | yes | 6.15 | 836 | 1.26 | 2.94 | apache-2.0 |
+| 18 | assemblyai/universal-3-5-pro | no | 6.21 | n/a | n/a | n/a | proprietary |
+| 20 | Banafo/Kroko-ASR-XL-EN-Offline | yes (gated) | 6.59 | 27,988 | 1.29 | 3.11 | kroko-community-model-license-2.1 |
+| 21 | Reson8/Rumble-2-Flash (509M) | yes | 6.60 | 6,338 | n/a | n/a | apache-2.0 |
+| 22 | ibm-granite/granite-speech-5.0-2b | yes | 6.68 | 548 | 0.99 | 2.21 | apache-2.0 |
+| 23 | CohereLabs/cohere-transcribe-03-2026 | yes (gated) | 6.72 | 924 | 0.97 | 2.05 | apache-2.0 |
+| 25 | TheStageAI/thewhisper-large-v3-turbo | yes | 6.74 | 1,184 | 1.41 | 3.20 | cc-by-4.0 |
+| 27 | openai/gpt-transcribe | no | 6.80 | n/a | n/a | n/a | proprietary |
+| 32 | nvidia/canary-qwen-2.5b | yes | 6.92 | 882 | 1.23 | 2.63 | cc-by-4.0 |
+| 34 | nvidia/parakeet-tdt-0.6b-v2 | yes | 6.93 | 6,148 | 1.28 | 2.73 | cc-by-4.0 |
+| 37 | ibm-granite/granite-speech-5.0-470m-turboctc-nc | yes | 6.98 | 21,082 | 1.45 | 2.67 | **cc-by-nc-sa-4.0** |
+| 40 | nvidia/parakeet-tdt-0.6b-v3 | yes | 7.04 | 6,322 | 1.52 | 3.13 | cc-by-4.0 |
+| 46 | ibm-granite/granite-speech-5.0-470m-turboctc | yes | 7.41 | 21,435 | 1.48 | 2.71 | apache-2.0 |
+| 47 | mistralai/Voxtral-Small-24B-2507 | yes | 7.44 | 101 | 1.23 | 2.80 | apache-2.0 |
+| 48 | nvidia/nemotron-speech-streaming-en-0.6b | yes | 7.47 | 1,116 | 1.89 | 4.35 | nvidia-open-model-license |
+| 51 | openai/whisper-large-v3 | yes | 8.24 | 471 | 1.56 | 3.52 | apache-2.0 |
+| 52 | mistralai/Voxtral-Mini-3B-2507 | yes | 8.32 | 180 | 1.48 | 3.63 | apache-2.0 |
+| 53 | nvidia/canary-1b-v2 | yes | 8.43 | 1,854 | 1.76 | 3.07 | cc-by-4.0 |
+| 56 | openai/whisper-large-v3-turbo | yes | 8.75 | 809 | 2.13 | 3.71 | mit |
+| 61 | mistralai/Voxtral-Mini-4B-Realtime-2602 | yes | 9.72 | 103 | 1.62 | 4.94 | apache-2.0 |
+| 66 | nvidia/nemotron-3.5-asr-streaming-0.6b | yes | 11.09 | 1,353 | 2.83 | 6.79 | OpenMDW-1.1 |
+
+Notes:
+- LibriSpeech values come from the same leaderboard with the LS columns switched on [1]; proprietary rows and three new open rows were not pulled for those columns.
+- No Whisper tiny/base/small/medium, no distil-whisper, no Moonshine and no Kyutai row is in the 20 November table. distil-large-v3.5 was removed on 20 November 2026; moonshine-base and older models were removed on 31 July 2026 [1].
+- Long-form tab (Earnings21, Earnings22, CORAAL) [1]: parakeet-tdt-0.6b-v3 12.60, whisper-large-v3-turbo 12.82, parakeet-tdt-0.6b-v2 13.08, whisper-large-v3 13.10, distil-large-v3.5 13.31. The five are within 0.7 points of each other.
+
+Older snapshot used for models that have since been removed (version 24 July 2026, H200, average over AMI-Cleaned, Gigaspeech-Cleaned, LS clean, LS other, SPGISpeech, Voxpopuli-AA-Cleaned; **not comparable with the table above**) [1]:
+
+| Model | Avg WER (6 sets) | RTFx (H200) | LS clean | LS other |
+|---|---|---|---|---|
+| nvidia/parakeet-tdt-0.6b-v2 | 4.50 | 6,038 | 1.27 | 2.73 |
+| nvidia/parakeet-tdt-0.6b-v3 | 4.81 | 6,098 | 1.51 | 3.12 |
+| usefulsensors/moonshine-streaming-medium | 4.82 | 2,681 | 1.67 | 4.60 |
+| kyutai/stt-2.6b-en | 4.92 | 133 | 1.37 | 3.99 |
+| distil-whisper/distil-large-v3.5 | 5.31 | 874 | 1.93 | 4.50 |
+| openai/whisper-large-v3 | 5.72 | 462 | 1.55 | 3.52 |
+| usefulsensors/moonshine-streaming-small | 5.81 | 3,206 | 2.07 | 6.37 |
+| openai/whisper-large-v3-turbo | 6.33 | 783 | 2.13 | 3.70 |
+| usefulsensors/moonshine-base | 7.36 | 2,767 | 2.90 | 7.62 |
+| usefulsensors/moonshine-streaming-tiny | 9.79 | 4,375 | 3.98 | 11.54 |
+| usefulsensors/moonshine-tiny | 9.99 | 3,733 | 4.08 | 11.06 |
+
+### 1.2 Requested models: verified table
+
+Parameter counts and file sizes are read from Hugging Face safetensors metadata and file listings [3]. "ggml" = whisper.cpp files [4]; "CT2" = faster-whisper CTranslate2 files [5]; ONNX int8 Parakeet from [6]. CPU feasibility is my judgement from the cited measurements, not a test on the 165H.
+
+| Model | Params (M) | On-disk size | Licence (weights) | English WER | RTFx and hardware | CPU feasibility (165H) | Maintenance | Status |
+|---|---|---|---|---|---|---|---|---|
+| Whisper tiny.en | 37.8 | fp32 151 MB; ggml fp16 78 MB, q8 44 MB, q5_1 32 MB; CT2 76 MB | apache-2.0 (HF tag) | LS clean 5.6 / other 14.6, greedy, Whisper paper [7] | none on current leaderboard | Yes, trivially | HF repo last changed 2024-01-22; openai/whisper last commit 2026-08-31, last release v20250625 [8] | WER **V**; not on leaderboard |
+| Whisper base.en | 72.6 | fp32 290 MB; ggml 148 MB, q8 82 MB, q5_1 60 MB; CT2 145 MB | apache-2.0 | LS 4.2 / 10.2 [7] | Whisper base (multilingual) ONNX on Ryzen 7 9800X3D: 31.4 RTFx fp32, 61.8 int8; T4: 88.9 [9] | Yes | as above | WER **V**; speed **T** (multilingual base, not .en) |
+| Whisper small.en | 241.7 | fp32 967 MB; ggml 488 MB, q8 264 MB, q5_1 190 MB; CT2 484 MB | apache-2.0 | LS 3.1 / 7.4 [7] | Whisper small on i7-12700K, 8 threads, 13 min audio, beam 5: faster-whisper int8 1m42s (about 7.6x real time), whisper.cpp 2m05s (about 6.2x) [5] | Yes | as above | WER **V**; speed **T** |
+| Whisper medium.en | 763.9 | fp32 3,056 MB; ggml 1,534 MB, q8 823 MB, q5_0 539 MB; CT2 1,528 MB | apache-2.0 | LS 3.1 / 6.3 [7] | no current independent figure found | Marginal for interactive use; no measurement | as above | WER **V**; speed **U** |
+| Whisper large-v3 | 1,543.5 | fp16 3,087 MB; ggml 3,095 MB, q5_0 1,081 MB; CT2 3,087 MB | apache-2.0 | Leaderboard avg 8.24; LS 1.56 / 3.52 [1] | 471 RTFx on H200 [1]; large-v2 on RTX 3070 Ti 8 GB: faster-whisper fp16 1m03s for 13 min (about 12x), 4.5 GB VRAM [5] | No (GPU only in practice) | as above | **L**, **T** |
+| Whisper large-v3-turbo | 808.9 | fp16 1,618 MB; ggml 1,625 MB, q8 874 MB, q5_0 574 MB; CT2 1,618 MB | mit | Leaderboard avg 8.75; LS 2.13 / 3.71 [1] | 809 RTFx on H200 [1]; ONNX on 9800X3D CPU 3.9 (fp32) to 5.4 (int8); T4 9.2 fp32 / 25.9 fp16; RTX 5070 Ti 54.8 / 76.0 [9] | Marginal: 4 to 5x real time on a fast desktop CPU [9], lower on a laptop | HF repo unchanged since 2024-10-04 | **L**, **T** |
+| distil-large-v3 | 756.4 | fp16 1,513 MB; ggml 1,520 MB; CT2 1,513 MB; ONNX quantised encoder 645 MB + decoder 122 MB | mit | Vendor: 7.41 avg (7 sets), LS 2.54 / 5.19 [10] | Vendor relative speed only | Similar to turbo; no measurement | huggingface/distil-whisper last commit 2025-01-08 [8] | **V** |
+| distil-large-v3.5 | 756.4 | fp32 3,026 MB; ggml 1,520 MB | mit | Vendor: 7.10 avg, LS 2.37 / 5.04 [10]; leaderboard July 2026: 5.31 (6 sets), LS 1.93 / 4.50; long-form 13.31 [1] | 874 RTFx H200 (July 2026) [1]; vendor "1.46x turbo" [10] | Similar to turbo | Removed from leaderboard short-form 2026-11-20 [1] | **V** + **L** (old snapshot) |
+| distil-small.en | 166.1 | fp16 332 MB; ggml 336 MB; ONNX quantised 92 + 80 MB | mit | Vendor: short-form 12.1, long-form 12.8 (large-v3: 8.4 / 11.0) [11] | Vendor "5.6x" relative latency, hardware not stated [11] | Yes | as distil above | **V** only |
+| Parakeet TDT 0.6B v2 (English) | 600 (card) | .nemo 2,472 MB; ONNX fp32 about 2.4 GB; ONNX int8 652 MB + 36 MB decoder | cc-by-4.0 | Leaderboard avg 6.93; LS 1.28 / 2.73 [1]. Vendor card: 6.05 avg, LS 1.69 / 3.19 (2025 methodology) [12] | 6,148 RTFx H200 [1]; vendor 3,386 (batch 128) [12]. ONNX on 9800X3D CPU 36.8 fp32 / 30.5 int8; T4 CUDA 57.6, T4 TensorRT fp16 237; Cortex-A53 1.1 [9] | **Yes**: 30x real time on a desktop CPU [9] | HF repo updated 2026-11-19; NVIDIA-NeMo/Speech v3.0.0 2026-08-07, commits 2026-11-22 [8] | **L**, **T**, **V** |
+| Parakeet TDT 0.6B v3 (25 languages) | 627.1 | .nemo 2,509 MB; safetensors 2,508 MB; GGUF q8 714 MB; ONNX int8 652 + 73 MB | cc-by-4.0 | Leaderboard avg 7.04; LS 1.52 / 3.13 [1]. Vendor: 6.34 in table, 6.32 in metadata; LS 1.93 / 3.59 [13] | 6,322 RTFx H200 [1]; 9800X3D CPU 35.4 / 31.4 int8; T4 57.5 [9] | **Yes** | HF repo updated 2026-08-05 | **L**, **T**, **V** |
+| Newer NVIDIA: canary-qwen-2.5b | 2,559.4 | bf16 5,119 MB | cc-by-4.0 | 6.92; LS 1.23 / 2.63 [1] | 882 H200 [1] | No | 2026-04-21 | **L** |
+| Newer NVIDIA: canary-1b-v2 | 979.0 | safetensors 3,916 MB | cc-by-4.0 | 8.43; LS 1.76 / 3.07 [1] | 1,854 H200; 9800X3D CPU 8.3 [9] | Marginal | 2026-08-31 | **L**, **T** |
+| Newer NVIDIA: nemotron-speech-streaming-en-0.6b | 618.1 | 2,472 MB; GGUF q8 700 MB | nvidia-open-model-license | 7.47; LS 1.89 / 4.35 [1] | 1,116 H200 [1] | Likely (Parakeet-size), not measured | 2026-08-05 | **L** |
+| Newer NVIDIA: Nemotron-3.5-Transcribe-30B-A4B | 33,690 (leaderboard) | not pulled | OpenMDW-1.1 | 6.13 [1] | 473 H200 [1] | No | Oct 2026 | **L** |
+| No Parakeet TDT 0.6B v4 exists on NVIDIA's Hugging Face org as of today [3] | | | | | | | | **M** |
+| Moonshine tiny (English, non-streaming) | 27.1 | fp32 108 MB | mit | 9.99 (6 sets, July 2026), LS 4.08 / 11.06 [1] | 3,733 H200 [1] | Yes | moonshine-ai/moonshine v0.1.6 2026-11-06, last push 2026-11-10 [8] | **L** (old snapshot) |
+| Moonshine base | 61.5 | fp32 246 MB | mit | 7.36, LS 2.90 / 7.62 [1] | 2,767 H200 [1] | Yes | as above | **L** (old snapshot) |
+| Moonshine second generation = streaming tiny / small / medium (2026) | medium 265.9 (leaderboard lists 0.24B) | medium fp32 1,064 MB | mit | medium 4.82, LS 1.67 / 4.60; small 5.81; tiny 9.79 [1] | medium 2,681 H200 [1] | Designed for CPU; no CPU figure verified | as above | **L** (old snapshot); CPU latency **U** |
+| Kyutai STT stt-2.6b-en | 2,617.1 | bf16 5,234 MB + 385 MB Mimi codec | cc-by-4.0 | 4.92 (6 sets, July 2026), LS 1.37 / 3.99 [1]; card quotes 6.4 (2025) [14] | 133 H200 [1]; card 88.37 [14] | No; 2.5 s built-in delay | delayed-streams-modeling last push 2026-01-26 [8] | **L** (old snapshot) |
+| Kyutai STT stt-1b-en_fr | 989.2 | bf16 1,978 MB + 385 MB | cc-by-4.0 | not on leaderboard | "An H100 can process 400 streams in real time" [15] | Not measured | HF 2025-11-18 | **V** / **U** |
+| IBM Granite Speech 5.0 2B | 2,313.2 | bf16 4,627 MB; GGUF and ONNX repos exist | apache-2.0 | 6.68; LS 0.99 / 2.21 [1] | 548 H200 [1] | No | released October 2026, updated 2026-11-06 [16] | **L** |
+| IBM Granite Speech 5.0 470M TurboCTC | 473.0 | bf16 946 MB | apache-2.0 (the `-nc` variant is cc-by-nc-sa-4.0) | 7.41 (nc variant 6.98); LS 1.48 / 2.71 [1] | 21,435 H200 [1] | Plausible (CTC, 473M); not measured | 2026-11-06 | **L** |
+| Mistral Voxtral Mini 3B (2507) | 4,676.3 (name says 3B) | bf16 9,349 MB | apache-2.0 | 8.32; LS 1.48 / 3.63 [1] | 180 H200 [1] | No | HF 2025-07-28 | **L** |
+| Mistral Voxtral Small 24B | 24,261.8 | 48.5 GB | apache-2.0 | 7.44 [1] | 101 [1] | No | 2025-12-20 | **L** |
+| Mistral Voxtral Mini 4B Realtime (2602) | 4,429.7 | bf16 8,859 MB | apache-2.0 | 9.72; LS 1.62 / 4.94 [1]. Vendor: FLEURS English 4.90 at 480 ms delay [17] | 103 H200 [1]; vendor says it needs a GPU with at least 16 GB [17] | No, and does not fit 8 GB VRAM at bf16 | 2026-03-11 | **L**, **V** |
+| 2026 open leader: Musci-ASR-qwen-1019-hf | 2,038.1 | bf16 4,076 MB | apache-2.0 | 5.70; LS 1.03 / 2.18 [1] | 775 H200 [1] | No | created 2026-10-27, 790 downloads, 8 likes [3] | **L**; very new, low adoption |
+| 2026: Qwen3-ASR-1.7B / 0.6B | 2,349.2 / 938.0 | 4.70 GB / 1,876 MB | apache-2.0 | 6.15 / 7.07 [1] | 836 / 750 H200 [1] | No / unlikely | 2026-01-30 | **L** |
+| 2026: fluid-speech-pro | 627.1 | 2,508 MB | cc-by-4.0 | 6.06 [1] | 3,690 H200 [1] | Likely (same size as Parakeet v3); not measured | created 2026-10-30 | **L**; very new |
+
+Tooling maintenance (GitHub API, 2026-11-22; "open issues" includes open pull requests) [8]: ggml-org/whisper.cpp 55,430 stars, 370 open, v1.9.5 (2026-10-06), pushed 2026-11-20. SYSTRAN/faster-whisper 26,947 stars, 19 open, v1.2.1 (2025-10-31), pushed 2026-11-12. openai/whisper 113,367 stars, 188 open. k2-fsa/sherpa-onnx 16,100 stars, 673 open, v2.0.3 (2026-11-22). istupakov/onnx-asr 392 stars, 26 open, pushed 2026-11-04. NVIDIA-NeMo/Speech 18,776 stars, 469 open.
+
+### 1.3 Hosted ASR reference (cost and quality yardstick only)
+
+| Provider / model | Price | Per audio minute | Vendor accuracy or latency claim | Independent measurement | Status |
+|---|---|---|---|---|---|
+| Deepgram Nova-3 monolingual, pre-recorded | $0.0043/min PAYG ($0.0036 Growth) [18] | $0.0043 | 5.26% median WER batch, 6.84% streaming, on Deepgram's own 81.69 h set; competitors unnamed [19] | AA-WER 5.2%, speed factor 434 [20] | price **V**; WER **V** vs **L** |
+| Deepgram Nova-3 monolingual, streaming | $0.0048/min ($0.0042 Growth) [18] | $0.0048 | as above | n/a | **V** |
+| Deepgram Flux English, streaming | $0.0065/min [18] | $0.0065 | not captured | n/a | **V** |
+| AssemblyAI-STT-3.7 (async) | $0.21/h [21] | $0.0035 | English short-form 3.16 to 3.23% WER for the realtime variants on Common Voice + LibriSpeech, vendor's own benchmark page [22] | AA-WER 2.5% (rank 8) [20]; Universal-3.5 Pro: Open ASR avg 6.21 [1], AA-WER 3.0% [20] | **V**, **L** |
+| AssemblyAI Universal-2 (async) | $0.15/h [21] | $0.0025 | n/a | AA-WER 3.8% ("Universal") [20] | **V**, **L** |
+| AssemblyAI-STT-3.7-Realtime | $0.30/h, billed on session duration [21] | $0.0050 | see above | n/a | **V** |
+| AssemblyAI Dictation API (transcript + LLM cleanup) | $0.62/h [21] | $0.0103 | n/a | n/a | **V** |
+| OpenAI gpt-transcribe | $0.0045/min [23] | $0.0045 | No WER or latency claim on the docs page [24] | Open ASR avg 6.80 [1]; AA-WER 3.3% [20] | **V**, **L** |
+| OpenAI gpt-4o-transcribe / gpt-4o-mini-transcribe / whisper-1 | $0.006 / $0.003 / $0.006 per min [23] | as listed | All three are **deprecated and shut down on 2027-02-26** [24] | gpt-4o-transcribe AA-WER 4.0%; Whisper large-v2 (OpenAI) 4.1% [20] | **V**, **L** |
+| ElevenLabs Scribe v2 / v3 | $0.20/h [25] | $0.00333 | Scribe v3: 27% fewer word errors than v2 on FLEURS (16.94% to 12.38%, per-clip averaging) [26] | Scribe v2: Open ASR avg 5.93, long-form 8.45 (rank 1) [1]; AA-WER 2.2%; Scribe v3 AA-WER 1.9% (rank 2) [20] | **V**, **L** |
+| ElevenLabs Scribe v2 Realtime / v3 Live | $0.22/h [25] | $0.00367 | "median time to committed transcript of ~150ms" [26] | n/a | **V** |
+| Cartesia Ink-2 | $0.39/h on Scale plan (3 credits per second) [27] | $0.0065 | n/a | n/a | **V** |
+
+Artificial Analysis AA-WER v2.2 is an audio-duration-weighted WER over about 8 hours (AA-AgentTalk 50%, VoxPopuli-Cleaned-AA 25%, Earnings22-Cleaned-AA 25%); its page carries no snapshot date [20]. On the same index, open models served by third parties score: Parakeet TDT 0.6B v3 4.5%, Whisper large-v3 4.1 to 4.5% (10.1% on one provider), Whisper large-v3-turbo 4.6%, Parakeet TDT 0.6B v2 6.4% [20]. The spread for one model across providers (4.1% to 10.1% for Whisper large-v3) shows that serving configuration matters as much as the checkpoint.
+
+---
+
+## Part 2. TTS
+
+### 2.1 Independent leaderboards (all read 2026-11-22)
+
+**Hugging Face Open TTS Leaderboard v1.7.1 (21 November 2026), English, no voice cloning** [2]. "ER" = error rate of an ASR transcript of the generated speech (Qwen3-ASR-1.7B) against the input text, averaged over Seed-TTS, CV3-Eval, MiniMax and ZTTS2-Mini-clean. RTFx on one H200 at batch 32 where supported. UTMOS is a predicted MOS, not a listening test.
+
+| Rank | Model | ER % | RTFx (H200) | UTMOS | Size (B) | Licence (leaderboard column) |
+|---|---|---|---|---|---|---|
+| 1 | hexgrad/Kokoro-82M | 0.66 | 78.5 | 4.51 | 0.08 | apache-2.0 |
+| 9 | kyutai/pocket-tts | 0.77 | 9.27 | 4.37 | 0.10 | cc-by-4.0 |
+| 13 | Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice | 0.84 | 13.0 | 4.43 | 1.92 | apache-2.0 |
+| 18 | FunAudioLLM/Fun-CosyVoice3-0.5B-2512 (RL) | 0.91 | 2.84 | 4.27 | 0.11 | cc-by-4.0 (HF repo tag says apache-2.0 [3]) |
+| 21 | Zyphra/ZONOS3-Mini | 0.98 | 71.3 | 4.37 | 0.80 | apache-2.0 |
+| 23 | ResembleAI/chatterbox | 0.99 | 2.25 | 4.40 | 0.80 | mit |
+| 24 | microsoft/VibeVoice-Realtime-0.5B | 1.03 | 2.73 | 4.46 | 1.36 | mit |
+| 37 | IndexTeam/IndexTTS-2.5 | 1.63 | 2.37 | 3.82 | 1.67 | custom |
+| 38 | mistralai/Voxtral-4B-TTS-2603 | 1.68 | 48.3 | 4.29 | 4.0 | **cc-by-nc-4.0** |
+| 39 | fishaudio/drama-3 | 1.75 | 22.7 | 4.44 | 35.0 | custom |
+| 46 | vibevoice/VibeVoice-1.5B-hf | 3.65 | 22.8 | 3.43 | 2.70 | mit |
+
+Streaming tab, batch size 1, 497 English prompts [2]:
+
+| Model | CPU TTFA p50 / p95 (ms) | CPU RTFx | A100 TTFA p50 / p95 (ms) | A100 RTFx | H200 TTFA p50 (ms) |
+|---|---|---|---|---|---|
+| kyutai/pocket-tts | 126 / 165 | 3.19 | 41 / 44 | 6.49 | 31 |
+| Zyphra/ZONOS3-Mini | 163 / 228 | 3.11 | 12 / 14 | 14.1 | 10 |
+| hexgrad/Kokoro-82M (no streaming API) | 852 / 2,374 | 5.46 | 103 / 131 | 38.9 | 89 |
+| microsoft/VibeVoice-Realtime-0.5B | n/a | n/a | 80 / 91 | 1.60 | 49 |
+| fishaudio/s2-pro (official runtime) | n/a | n/a | 452 / 502 | 2.76 | 265 |
+| fishaudio/s2-pro (audio.cpp) | n/a | n/a | 63 / 72 | 1.43 | 42 |
+| fishaudio/drama-3 | n/a | n/a | n/a | n/a | 90 (RTFx 7.71) |
+| FunAudioLLM/Fun-CosyVoice3-0.5B-2512 | n/a | n/a | 2,566 / 8,039 | 1.46 | n/a |
+
+The CPU track runs on Hugging Face Jobs `cpu-upgrade`, not on a laptop [2]. Not on this leaderboard at all: F5-TTS, XTTS-v2, OpenVoice v2, StyleTTS 2, Piper, Orpheus, Sesame CSM, Dia, Kyutai TTS 1.6B, Zonos v0.1, Chatterbox Turbo.
+
+**TTS Arena V2** (blind pairwise human votes, Bradley-Terry fit, ranked by a conservative lower bound; API read 2026-11-22; no snapshot date published) [28]:
+
+| Rank | Model | Rating (± uncertainty) | Votes |
+|---|---|---|---|
+| 1 | Aurora (stealth) | 1694 ± 41 | 380 |
+| 3 | MiniMax Speech 02 HD | 1585 ± 19 | 2,049 |
+| 11 | OpenAudio S2 | 1554 ± 33 | 408 |
+| 13 | Eleven v3 | 1554 ± 36 | 407 |
+| 15 | Eleven Turbo v2.5 | 1532 ± 20 | 1,928 |
+| 17 | Eleven Flash v2.5 | 1529 ± 20 | 1,935 |
+| 20 | Eleven Multilingual v2 | 1522 ± 20 | 1,978 |
+| 25 | Chatterbox | 1490 ± 18 | 2,555 |
+| 27 | Cartesia Sonic 2 | 1490 ± 32 | 451 |
+| 28 | OpenAudio S1 | 1489 ± 32 | 424 |
+| 29 | Kokoro v1.0 | 1477 ± 21 | 1,850 |
+| 40 | CosyVoice 2.0 | 1380 ± 38 | 426 |
+| 42 | StyleTTS 2 (preliminary) | 1370 ± 54 | 163 |
+
+**Artificial Analysis Speech Arena** (Elo, Zonos v0.1 anchored at 1000; 106 models; no snapshot date on the page) [29]:
+
+| Rank | Model | Elo (95% CI) | Listed price per 1M chars |
+|---|---|---|---|
+| 1 | ElevenLabs Eleven v4 Turbo | 1340 (1325 to 1355) | $40.00 |
+| 2 | ElevenLabs Eleven v4 | 1340 (1326 to 1354) | $80.00 |
+| 5 | Cartesia Sonic 3.6 | 1294 (1281 to 1307) | $49.00 |
+| 8 | Fish Audio Drama 3 | 1277 (1261 to 1293) | $15.00 |
+| 25 | Fish Audio S2.1 Pro | 1181 (1169 to 1193) | $15.00 |
+| 44 | OpenAI TTS-1 HD | 1109 (1098 to 1120) | $30.00 |
+| 48 | Fish Audio S2 Pro | 1101 (1090 to 1112) | $15.00 |
+| 52 | OpenAudio S1 | 1092 (1081 to 1103) | $15.00 |
+| 53 | ElevenLabs Multilingual v2 | 1092 (1082 to 1102) | $100.00 |
+| 56 | OpenAI TTS-1 | 1086 (1076 to 1096) | $15.00 |
+| 58 | ElevenLabs Flash v2.5 | 1075 (1065 to 1085) | $50.00 |
+| 68 | Kokoro 82M v1.0 | 1060 (1049 to 1071) | $0.65 |
+| 87 | Chatterbox | 1019 (1008 to 1030) | $25.00 |
+| 89 | Zonos v0.1 | 1000 (anchor) | $20.00 |
+| 92 | VibeVoice 1.5B | 954 (940 to 968) | n/a |
+| 98 | XTTS v2 | 914 (899 to 929) | $40.44 |
+| 102 | StyleTTS 2 | 887 (872 to 902) | $2.82 |
+
+Orpheus, Sesame CSM, Dia, Index-TTS, Piper and CosyVoice do not appear on the Artificial Analysis page [29].
+
+### 2.2 Requested models: verified table
+
+Dates and sizes from Hugging Face and GitHub APIs [3][8]. Leaderboard standings are from 2.1. "NC" = non-commercial.
+
+| Model | Latest version and date | Code licence | Weights licence | Params | VRAM | Published TTFA / RTF (hardware) | Independent standing | Maintenance | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| Fish Speech / OpenAudio S1-mini | 2025-05-31 | Fish Audio Community License v1.0 (repo, dated 2026-10-13) [30] | **cc-by-nc-sa-4.0 (NC)**, gated [3] | not in metadata; model.pth 1.7 GB + codec 1.9 GB | not stated | none captured | Arena V2 OpenAudio S1 1489; AA 1092 | fishaudio/fish-speech 33,833 stars, pushed 2026-11-14; latest tagged release still v1.5.1 (2025-05-31) | licence **M**; quality **L** |
+| Fish Audio S2 Pro | 2026-03-09 | as above | **Fish Audio Research License (NC; commercial use needs a separate licence)** [31] | 4,561.9 M | not stated; weights 9.1 GB bf16 | Vendor: RTF 0.195, TTFA about 100 ms on one H200 [31] | Open TTS LB H200: TTFA p50 265 ms, RTFx 5.0 (official runtime); AA 1101 | as above | **V** vs **L**: RTF reproduced, TTFA not |
+| Fish Audio Drama 3 (newest) | 2026-10-01; int4 build 2026-10-14 | as above | **Fish Audio Community License v1.0**: commercial use only while annual revenue is under USD 500,000; "Built with Fish Audio" attribution; no hosted TTS service [30][32] | 35.9 B total, 3 B active per token | not stated; weights about 40 GB FP8 | Vendor: TTFA p50 88.9 ms, RTF 0.131 at concurrency 1 on H200 [32] | Open TTS LB H200: TTFA p50 90.3 ms, RTFx 7.71 (RTF 0.130); ER 1.75; AA 1277 (rank 8) | as above | **V** reproduced by **L** |
+| F5-TTS | pip 1.1.22, 2026-07-23; weights v1 Base 2025-03 | MIT [33] | **cc-by-nc-4.0 (NC)**, "due to the training data Emilia" [33] | not in metadata; checkpoint 1.35 GB | not stated | Vendor: RTF 0.0394 (TensorRT, client-server), 0.1467 (PyTorch offline) on one L20 GPU, 16 NFE [33] | none | 15,635 stars, 71 open, pushed 2026-11-03 | **V** |
+| XTTS-v2 (Coqui) | 2023-10-31; weights unchanged since 2023-12-11 | MPL-2.0 | **Coqui Public Model License (NC: model and outputs)** [34] | not in metadata; model.pth 1.87 GB | not stated | Vendor: "can stream with <200ms latency" [35] | AA 914 (rank 98 of 106) | **Coqui the company shut down; coqui-ai/TTS last commit 2024-02-10.** Community fork idiap/coqui-ai-TTS is active: v0.28.0, 2026-10-19 [8][35][36] | licence **M**; perf **V** |
+| Kokoro-82M | v1.0; HF repo last changed 2025-04-10 | apache-2.0 | apache-2.0 | 82 M (card) | runs on CPU; weights 327 MB | no vendor TTFA | Open TTS LB rank 1 English (ER 0.66, RTFx 78.5 H200); CPU TTFA p50 852 ms, RTFx 5.46; Arena V2 1477 (rank 29); AA 1060 (rank 68) | hexgrad/kokoro 10,303 stars, 226 open, **last push 2025-08-06** | **L** |
+| OpenVoice v2 | 2024-04 | MIT | MIT [37] | not in metadata; converter 131 MB | not stated | none | none | 38,305 stars, 317 open, last push 2025-04-19 | licence **M**; perf **U** |
+| CosyVoice 2 / Fun-CosyVoice3-0.5B | CosyVoice2 HF 2025-07-29; CosyVoice3 2025-12-11 | apache-2.0 | apache-2.0 (HF tag) [3] | 0.5 B (name) | not stated | Vendor: "latency as low as 150ms" [38] | Open TTS LB: ER 0.91, RTFx 2.84; A100 TTFA p50 2,566 ms; Arena V2 CosyVoice 2.0 1380 | 24,481 stars, 626 open, last push 2026-05-25 | **V** not reproduced by **L** |
+| StyleTTS 2 | 2023-11 | MIT | custom terms: must disclose synthetic speech or have speaker permission [39] | not in metadata; checkpoint 771 MB | not stated | none | AA 887 (rank 102); Arena V2 1370 (preliminary) | 6,383 stars, last push 2024-08-10 (stale) | **L** |
+| Chatterbox (original, Multilingual) | original 2025-04-24; multilingual v3 weights; repo updated 2026-06-10 | MIT | MIT | 0.8 B (leaderboard) | not stated | "sub 200ms" refers to Resemble's paid hosted service, not the open model [40] | Open TTS LB: ER 0.99, RTFx 2.25 (H200); Arena V2 1490; AA 1019 | 28,037 stars, 385 open, pushed 2026-11-04; pip release v0.1.2 (2025-06-13) | **L** |
+| Chatterbox Turbo | 2025-12-02 | MIT | MIT | 350 M (vendor) [40] | "less VRAM", no number | none | none | as above; newer chatterbox-flash (2026-05-28) and chatterbox-nano (2026-04-14) repos exist, MIT, not evaluated here | **V** |
+| Piper | piper1-gpl v1.8.0, 2026-09-04 | **original rhasspy/piper (MIT) is archived; successor OHF-Voice/piper1-gpl is GPL-3.0** [8] | voices repo tagged MIT; individual voice datasets carry their own terms (not checked per voice) | per-voice ONNX 60 to 137 MB | CPU only | none captured | none | piper1-gpl 6,356 stars, pushed 2026-11-21; README says "Looking for Maintainers" [41] | licence **M**; perf **U** |
+| Kyutai TTS 1.6B en_fr | 2025-06-30 | MIT (Python) / Apache (Rust) | cc-by-4.0 | "actually 1.8B parameters" per the card [42] | not stated | "On an L40S we can serve 64 simultaneous connections at 3x real time" [15] | none | repo last push 2026-01-26 | **V** |
+| Kyutai Pocket TTS | v4.0.1, 2026-10-21 | MIT | cc-by-4.0, gated; voice licences listed separately [43] | 100 M; English variants down to 1.9 M | CPU, 2 cores | Vendor: about 200 ms to first chunk, about 6x real time on a MacBook Air M4 CPU [43] | Open TTS LB: ER 0.77; CPU TTFA p50 126 ms, RTFx 3.19 | 10,382 stars, 75 open, pushed 2026-11-18 | **V** broadly reproduced by **L** (different CPU) |
+| Orpheus 3B 0.1 | 2025-03-17 | apache-2.0 | apache-2.0, gated | 3,783.0 M | not stated | Vendor: about 200 ms streaming latency, about 100 ms with input streaming; hardware not stated [44] | none | 6,415 stars, last push 2025-12-05; smaller models still unreleased on the roadmap | **V** / **U** |
+| Sesame CSM-1B | 2025-03-06 | apache-2.0 | apache-2.0, gated | 1,552.8 M | not stated | none | none | 14,758 stars, **last push 2025-05-27** | **U** |
+| Dia 1.6B / Dia2-2B | Dia 2025-04-20; Dia2 2025-11-15 | apache-2.0 | apache-2.0 | 1,611.2 M / 1,919.6 M | about 4.4 GB (fp16/bf16), about 7.9 GB (fp32) [45] | Vendor: 2.1 to 2.2x real time with compile, half precision; GPU not captured [45] | none | dia 19,417 stars, last push 2025-11-19 | **V** |
+| Zonos v0.1 / ZONOS3-Mini | v0.1 2025-02; ZONOS3-Mini 2026-11-09 | apache-2.0 | apache-2.0 | 1,624.4 M / 0.8 B | v0.1: 6 GB+ [46] | v0.1 vendor: about 2x real time on RTX 4090 [46] | ZONOS3-Mini Open TTS LB: ER 0.98, RTFx 71.3; CPU TTFA p50 163 ms, RTFx 3.11; A100 TTFA p50 12 ms. v0.1: AA anchor 1000 | Zyphra/Zonos GitHub last push 2025-03-05; new weights on HF Nov 2026 | v0.1 **V**; v3 **L** |
+| Index-TTS 2 / 2.5 | GitHub v2.5.0, 2026-08-13 | **bilibili Model Use License Agreement** (covers code and weights) | same; separate licence required above 100M MAU or RMB 1 billion revenue; commercial contact requested [47] | 1.67 B (leaderboard) | not stated | Vendor: RTF 0.2065 (v2.5 bf16) and 0.3257 (v2.0 fp16) on RTX 4090 [47] | Open TTS LB IndexTTS-2.5: ER 1.63, RTFx 2.37 on H200 (RTF 0.42) | 25,236 stars, 421 open, last push 2026-09-29 | **V** vs **L**: half the claimed speed in the leaderboard harness |
+| VibeVoice 1.5B / Realtime-0.5B | 1.5B 2025-08-25; Realtime 2025-12-04 | MIT | MIT; README says not recommended for commercial or real-world use without further testing [48] | 2,704.0 M / 1,017.6 M (name says 0.5B) | not stated | Realtime vendor: about 300 ms first audible latency [48] | Realtime: ER 1.03, H200 TTFA p50 49 ms, A100 80 ms, RTFx 1.6 to 2.9. 1.5B: ER 3.65; AA 954 | 57,493 stars, pushed 2026-10-08 | **V**, **L** |
+| ElevenLabs (hosted) | Eleven v4 / v4 Turbo (current) | proprietary | n/a | n/a | n/a | Flash v2.5 "~100ms", v4 Turbo "median ~100ms", excluding network [26] | AA rank 1 and 2 (1340); Arena V2: Eleven v3 1554 | n/a | price **V**; quality **L** |
+| Cartesia (hosted) | Sonic 3.6, snapshot 2026-08-27 [49] | proprietary | n/a | n/a | n/a | No millisecond figure on the current model page [49] | AA 1294 (rank 5); Arena V2 Sonic 2 1490 | n/a | price **V**; latency **U** |
+| OpenAI TTS (hosted) | tts-1, tts-1-hd, gpt-4o-mini-tts | proprietary | n/a | n/a | n/a | none captured | AA: TTS-1 HD 1109, TTS-1 1086 | n/a | price **V** |
+
+Hosted TTS prices:
+
+| Provider / model | Listed price | Per 1M characters | Source |
+|---|---|---|---|
+| ElevenLabs Flash/Turbo, v4 Turbo, v3 Conversational | $0.04 per 1K chars | $40 | [25] |
+| ElevenLabs v3, Multilingual v2 | $0.08 per 1K chars | $80 | [25] |
+| Cartesia Sonic (1 credit per character) | Pro $5 / 100K; Startup $49 / 1.25M; Scale $299 / 8M | $50.00; $39.20; $37.38 | [27] |
+| OpenAI tts-1 / tts-1-hd | $15 / $30 per 1M chars | $15 / $30 | [23] |
+| OpenAI gpt-4o-mini-tts | $0.60 per 1M text tokens in, $12.00 per 1M audio tokens out | no per-character or per-minute figure on the pricing page | [23] |
+| Deepgram Aura-2 / Aura-1 / Flux TTS | $0.030 / $0.015 / $0.045 per 1K chars | $30 / $15 / $45 | [18] |
+
+### 2.3 Licence red flags for a commercial offline product
+
+| Model | Problem |
+|---|---|
+| Fish Audio S1-mini, Fish Speech 1.x | CC-BY-NC-SA-4.0 weights. Non-commercial. |
+| Fish Audio S2 Pro | Fish Audio Research License. Non-commercial; the HF gate requires ticking "non-commercial use ONLY" [31]. |
+| Fish Audio Drama 3 and the fish-speech codebase | Fish Audio Community License v1.0 (2026-10-13). Commercial use is allowed only under USD 500,000 total annual revenue (all sources, affiliates included), with a 90-day transition once crossed, a mandatory "Built with Fish Audio" notice, and the licence is revocable. The codebase is not under a standard open-source licence. In any case a 35.9B-parameter model does not fit the reference laptop [30][32]. |
+| F5-TTS | Code MIT, weights CC-BY-NC-4.0 [33]. |
+| XTTS-v2 | Coqui Public Model License: non-commercial for the model and its output; the licensor no longer operates, so no commercial licence can be bought [34][36]. |
+| Index-TTS 2 / 2.5 | Custom bilibili licence with flow-down obligations to downstream recipients [47]. |
+| Piper | The maintained codebase is GPL-3.0. Bundling it in a closed-source installer is a copyleft problem; running it as a separate process is the usual workaround and needs legal review. Per-voice dataset terms were not checked [8][41]. |
+| StyleTTS 2 | MIT code, but pre-trained weights carry a disclosure condition, and the reference inference path depends on a GPL package according to the README [39]. |
+| Granite Speech 5.0 470M TurboCTC `-nc` | CC-BY-NC-SA-4.0. The non-`-nc` sibling is Apache-2.0 and scores 0.4 points worse [1][3]. |
+| Voxtral 4B TTS, Reverb-TTS, gradium phonon-40m, OmniVoice, echo-tts | Non-commercial tags on the Open TTS Leaderboard [2]. |
+| Kyutai Pocket TTS, Kyutai TTS, Parakeet, Canary | CC-BY-4.0: commercial use allowed, attribution required. Pocket TTS voices have separate licences [43]. |
+| Nemotron speech models | NVIDIA Open Model License / OpenMDW-1.1: custom terms, need reading before shipping [3]. |
+| Clean for commercial use (weights) | Whisper family (Apache-2.0 / MIT), distil-whisper (MIT), Moonshine English and all streaming models (MIT) [50], Granite Speech (Apache-2.0), Voxtral STT (Apache-2.0), Qwen3-ASR (Apache-2.0), Kokoro (Apache-2.0), Chatterbox (MIT), OpenVoice v2 (MIT), Orpheus, CSM, Dia, Zonos (Apache-2.0), VibeVoice (MIT, with a research-only advisory). |
+
+Moonshine's non-streaming models for Arabic, Japanese, Korean, Mandarin, Spanish, Ukrainian and Vietnamese remain under a non-commercial Moonshine Community License [50].
+
+---
+
+## Part 3. Economics
+
+### 3.1 Assumptions
+
+- Dictation request = 8 s of audio = 0.1333 audio minutes. 1,000 requests = 133.33 audio minutes = 2.222 hours.
+- TTS request = 300 characters, about 20 s of audio, so 900 characters per audio minute. 1,000 requests = 300,000 characters = 333.33 audio minutes. (Cartesia's own guide is 750 to 800 characters per minute [27].)
+- Electricity: USD 0.1816 per kWh, the US average residential price for August 2026 (2026 year-to-date 18.19 cents, 2025 annual 17.23 cents) [51].
+- Local power draw, assumed and not measured: 150 W incremental while the GPU is busy (RTX 4070 Laptop is specified at 35 to 115 W TGP plus 15 to 25 W Dynamic Boost [52], plus CPU and memory); 60 W incremental for CPU-only inference. Idle power to keep a model resident is excluded.
+- Local throughput, assumed and not measured on the 165H or the 4070 Laptop: GPU 30x real time single-stream (below the 57.6x measured for Parakeet on a T4 [9]); CPU Parakeet int8 10x (a third of the 30.5x measured on a desktop Ryzen 7 9800X3D [9]); CPU Whisper large-v3-turbo 2x (versus 3.9 to 5.4x on the 9800X3D [9]). Local TTS on CPU uses the leaderboard's measured CPU RTFx: Kokoro 5.46, Pocket TTS 3.19 [2].
+- The local LLM cleanup pass is not included.
+- Hosted prices assume per-second billing with no minimum per request; I did not verify each provider's rounding rules.
+
+### 3.2 Formulas
+
+- Hosted STT: cost per 1,000 requests = price per minute x 133.33.
+- Hosted TTS: cost per 1,000 requests = price per 1M characters x 0.3; cost per audio minute = price per 1M characters x 900 / 1,000,000.
+- Local: energy per audio minute (kWh) = watts x (60 / RTFx) / 3,600,000; cost = energy x 0.1816.
+- Rented GPU at 100% utilisation: cost per audio minute = hourly price / (RTFx x 60). At utilisation u, divide by u.
+
+### 3.3 ASR
+
+| Option | Cost per audio minute | Cost per 1,000 dictation requests | Basis |
+|---|---|---|---|
+| AssemblyAI Universal-2 | $0.00250 | $0.333 | [21] |
+| ElevenLabs Scribe v2 / v3 | $0.00333 | $0.444 | [25] |
+| AssemblyAI-STT-3.7 | $0.00350 | $0.467 | [21] |
+| Deepgram Nova-3 pre-recorded | $0.00430 | $0.573 | [18] |
+| OpenAI gpt-transcribe | $0.00450 | $0.600 | [23] |
+| Deepgram Nova-3 streaming | $0.00480 | $0.640 | [18] |
+| Deepgram Flux English | $0.00650 | $0.867 | [18] |
+| AssemblyAI Dictation API (includes LLM cleanup) | $0.01033 | $1.378 | [21] |
+| **Local, GPU** (150 W, 30x) | $0.0000151 | **$0.0020** | 150 W x 2 s = 300 J = 8.33e-5 kWh |
+| **Local, CPU, Parakeet int8** (60 W, 10x) | $0.0000182 | **$0.0024** | 60 W x 6 s = 360 J = 1.0e-4 kWh |
+| **Local, CPU, Whisper turbo** (60 W, 2x) | $0.0000908 | **$0.0121** | 60 W x 30 s = 1,800 J = 5.0e-4 kWh |
+| AWS g4dn.xlarge (T4, $0.526/h), Parakeet ONNX CUDA 57.6x, 100% utilised | $0.000152 | $0.0203 | [53][9] |
+| AWS g4dn.xlarge, Parakeet TensorRT fp16 237x, 100% utilised | $0.000037 | $0.0049 | [53][9] |
+| AWS g4dn.xlarge, Whisper large-v3-turbo fp16 25.9x, 100% utilised | $0.000338 | $0.0451 | [53][9] |
+| AWS g6.xlarge (L4, $0.8048/h) at the T4 rate of 57.6x (lower bound; no L4 measurement found) | $0.000233 | $0.0310 | [53][9] |
+| AWS g5.xlarge (A10G, $1.006/h) at 57.6x (lower bound) | $0.000291 | $0.0388 | [53][9] |
+| RunPod L4 community cloud ($0.44/h; secure cloud $0.69/h) at 57.6x | $0.000127 | $0.0170 | [54][9] |
+
+Other on-demand reference prices: Lambda A10 24 GB $1.29 per GPU-hour, Quadro RTX 6000 $0.69 [55]. RunPod lists no T4 or A10 pods [54]. AWS prices are from third-party price trackers that mirror the AWS price list; I could not load AWS's own table [53].
+
+Utilisation is what decides the rented-GPU case. A g6.xlarge left on all month costs 0.8048 x 730 = $587.50. Against Deepgram at $0.0043 per minute that breaks even at 587.50 / 0.0043 = 136,600 audio minutes a month, about 1.02 million 8-second requests. A single dictation user generating 1,000 requests a month would pay $587.50 for work that costs $0.57 hosted and $0.002 locally.
+
+### 3.4 TTS
+
+| Option | Cost per audio minute | Cost per 1,000 requests (300 chars each) | Basis |
+|---|---|---|---|
+| OpenAI tts-1 / Deepgram Aura-1 | $0.0135 | $4.50 | $15 per 1M [23][18] |
+| OpenAI tts-1-hd / Deepgram Aura-2 | $0.0270 | $9.00 | $30 per 1M |
+| Cartesia Sonic, Scale plan | $0.0336 | $11.21 | $37.38 per 1M [27] |
+| ElevenLabs Flash / v4 Turbo | $0.0360 | $12.00 | $40 per 1M [25] |
+| Cartesia Sonic, Pro plan | $0.0450 | $15.00 | $50 per 1M [27] |
+| ElevenLabs v3 / Multilingual v2 | $0.0720 | $24.00 | $80 per 1M [25] |
+| **Local, CPU, Kokoro** (60 W, 5.46x) | $0.0000333 | **$0.0111** | 60 W x 10.99 s = 659 J |
+| **Local, CPU, Pocket TTS** (60 W, 3.19x) | $0.0000569 | **$0.0190** | 60 W x 18.8 s = 1,129 J |
+| AWS g6.xlarge (L4), assumed 20x for Kokoro (A100 single-stream measured 38.9x [2]; no L4 measurement), 100% utilised | $0.00067 | $0.224 | 0.8048 / (20 x 60) |
+
+Local inference costs between two and three orders of magnitude less than hosted per request, and the figure is dominated by assumptions about wattage and throughput that should be replaced with measurements on the target laptop. The real cost of local is latency and model quality, not electricity.
+
+---
+
+## Part 4. Discrepancies and untraceable claims
+
+### 4.1 Vendor claim versus independent measurement
+
+| # | Claim | Independent result | Verdict |
+|---|---|---|---|
+| 1 | Parakeet TDT 0.6B v2: 6.05% average WER, RTFx 3,386, LS clean 1.69 / other 3.19 (model card) [12] | Leaderboard today: 6.93% average, RTFx 6,148 (H200), LS 1.28 / 2.73 [1] | Both right for their date. Dataset mix, normaliser and GPU all changed. Do not mix the two. |
+| 2 | Parakeet TDT 0.6B v3: card table says 6.34%, card metadata says 6.32% [13] | Leaderboard today 7.04%; v3 is now behind v2 on the default English average (7.04 vs 6.93) and on LibriSpeech [1] | Internal inconsistency on the card; v3 is not an English upgrade over v2. |
+| 3 | Whisper large-v3 average WER quoted as 7.14 (distil-whisper card) [10] and 7.44 (leaderboard paper, 2025) [56] | 8.24 on the current default set [1] | Same checkpoint, three numbers, three methodologies. |
+| 4 | large-v3-turbo is commonly described as near-equal to large-v3 | 8.75 vs 8.24 average; Voxpopuli-AA-Cleaned 7.02 vs 4.53 [1] | Gap is small on average, large on one cleaned set. |
+| 5 | distil-large-v3.5: "1.46x" turbo speed and better short-form WER [10] | July 2026 leaderboard: WER better (5.31 vs 6.33 on 6 sets), RTFx 874 vs 783, i.e. 1.12x. Long-form: worse than turbo (13.31 vs 12.82) [1] | Accuracy claim supported; speed claim only partly; removed from the short-form board on 2026-11-20. |
+| 6 | Moonshine: "higher accuracy than Whisper Large V3" [57] | July 2026: moonshine-streaming-medium 4.82 vs whisper-large-v3 5.72 on 6 sets; but LS other 4.60 vs 3.52, and tiny/base are at 9.99 / 7.36 [1] | True only for the largest streaming model, on that snapshot. The model is absent from the 20 November table. |
+| 7 | Voxtral Mini 4B Realtime: "<500 ms" delay with accuracy "comparable to offline systems" [17] | 9.72% average, rank 61 of 68, RTFx 103 [1] | Not supported on the leaderboard's sets; also needs at least 16 GB GPU memory per the vendor. |
+| 8 | Fish Audio S2 Pro: RTF 0.195 and about 100 ms TTFA on an H200 [31] | Open TTS Leaderboard, H200, official runtime: RTFx 5.0 (RTF 0.20), TTFA p50 265 ms; 42 ms with the third-party audio.cpp runtime [2] | RTF reproduced. TTFA 2.6x slower with the vendor's own runtime. |
+| 9 | Fish Audio Drama 3: TTFA p50 88.9 ms, RTF 0.131 on H200 [32] | 90.3 ms, RTFx 7.71 (RTF 0.130) [2] | Reproduced. |
+| 10 | Pocket TTS: about 200 ms first chunk, about 6x real time on a MacBook Air M4 [43] | Cloud CPU: 126 ms p50, 3.19x [2] | Latency reproduced; throughput about half on a different CPU. |
+| 11 | CosyVoice: "latency as low as 150ms" [38] | Fun-CosyVoice3 on A100: TTFA p50 2,566 ms, p95 8,039 ms [2] | Not reproduced in the leaderboard harness. |
+| 12 | Index-TTS 2.5: RTF 0.2065 on RTX 4090 [47] | RTFx 2.37 on H200, i.e. RTF 0.42 [2] | About half the claimed speed, on a faster GPU, in a different harness. |
+| 13 | VibeVoice-Realtime: about 300 ms first audible latency [48] | 49 ms (H200), 80 ms (A100) p50 [2] | Leaderboard is faster than the claim; hardware differs. |
+| 14 | Chatterbox "Outperforms ElevenLabs", citing a Podonos study linked from the vendor's model card [40] | TTS Arena V2: Chatterbox 1490 vs Eleven Flash v2.5 1529, Turbo v2.5 1532, Multilingual v2 1522 [28]. Artificial Analysis: Chatterbox 1019 vs Multilingual v2 1092, Flash v2.5 1075 [29] | Not supported by either independent arena. |
+| 15 | Chatterbox "ultra-low latency of sub 200ms" [40] | Open model: RTFx 2.25 on H200 [2] | The sentence describes Resemble's paid service, not the open weights. |
+| 16 | Deepgram Nova-3: 54.2% WER reduction in the body, 54.3% in the summary, 53% in the pricing section; competitors unnamed; self-run [19] | AA-WER 5.2%, well behind the leaders at 1.7 to 2.5% [20] | Internally inconsistent; not independently confirmed as best-in-class. |
+| 17 | ElevenLabs API price $40 / $80 per 1M characters [25] | Artificial Analysis lists $50 for Flash v2.5 and $100 for Multilingual v2 [29] | Aggregator price is 25% above the vendor's API page. |
+| 18 | Kyutai TTS "1.6b" | Card states the model is 1.8B parameters [42] | Name understates size. |
+| 19 | Voxtral Mini "3B"; VibeVoice-Realtime "0.5B" | 4.68B and 1.02B parameters in safetensors metadata [3] | Names understate total size. |
+| 20 | Whisper model-card metadata: tiny.en LibriSpeech clean WER 8.44 [3] | Whisper paper: 5.6 [7] | Card metadata and paper disagree; use the paper. |
+
+### 4.2 Widely repeated claims that failed verification or could not be traced
+
+- **"IBM Granite Speech 4.1 2B is #1 on the Open ASR Leaderboard at 5.33"** (search results). Today it is rank 39 at 7.03 [1].
+- **"Qwen3-ASR-1.7B is the top open model at 5.40"** and **"ARK-ASR-3B at 4.76"** (third-party aggregator pages). Today: 6.15 (rank 17) and 6.92 (rank 33); the top open model is Musci-ASR-qwen-1019-hf at 5.70 [1].
+- **"Parakeet has RTFx about 3,390 versus about 200 for Whisper large-v3-turbo"** (blogs). Current H200 figures are 6,148 to 6,322 versus 809 [1]. Neither pair says anything about single-stream latency on a laptop.
+- **"Kokoro is #1 on TTS Arena."** It is rank 29 in TTS Arena V2 (1477) and rank 68 on Artificial Analysis (1060) [28][29]. It is rank 1 on the Open TTS Leaderboard, which measures intelligibility and speed, not listener preference [2].
+- **"ElevenLabs Flash v2.5 has ~75 ms latency."** The current model page says about 100 ms, median, excluding application and network latency [26].
+- **Cartesia Sonic "40 ms / 90 ms" time to first audio.** No millisecond figure appears on the current model documentation page [49]. Untraced.
+- **Orpheus "~200 ms streaming latency"** [44], **XTTS "<200 ms"** [35], **Zonos v0.1 "~2x real time on a 4090"** [46], **Kyutai "400 real-time streams on an H100"** [15], **distil-small.en "5.6x faster"** (hardware not stated) [11]. Vendor statements with no independent measurement found.
+- **Any CPU or RTX 4070 Laptop latency number for these models.** I found no independent benchmark on a Core Ultra 7 165H or an RTX 4070 Laptop. The closest third-party CPU data is a desktop Ryzen 7 9800X3D [9] and a desktop i7-12700K [5].
+- **F5-TTS parameter count** and **Coqui's exact shutdown date**: not confirmed from a primary source today. The Coqui shutdown is evidenced by a GitHub issue of 2024-01-03 quoting the company website, and by the repository's last commit on 2024-02-10 [36][8].
+- **OpenAI gpt-4o-mini-tts per-minute cost**: the pricing page gives token prices only [23].
+- **Leaderboard metadata is not authoritative for licences.** The TTS Arena API flags Chatterbox and StyleTTS 2 as not open [28], and the Open TTS Leaderboard lists Fun-CosyVoice3 as CC-BY-4.0 while its Hugging Face repo is tagged Apache-2.0 [2][3]. Read the licence file in the weights repo.
+
+### 4.3 What this means for LocalFlow (evidence-based, not measured on the target laptop)
+
+- For English dictation on CPU, the Parakeet TDT 0.6B v2 int8 ONNX build (652 MB encoder, CC-BY-4.0) is the best-evidenced option: 6.93% leaderboard average against 8.75% for Whisper large-v3-turbo, and about 30x real time on a desktop CPU against about 4 to 5x for turbo [1][9]. v3 buys 25 languages at a small English cost.
+- Granite Speech 5.0 470M TurboCTC (Apache-2.0, 946 MB) is the one newer small model worth a local test; its CPU speed is unmeasured.
+- The models that top the open rankings (Musci, Qwen3-ASR-1.7B, Granite 5.0 2B, Canary-Qwen) are 2B+ LLM-decoder models with no CPU evidence and 4 to 5 GB of weights.
+- For a later read-back voice, only Kokoro-82M (Apache-2.0) and Pocket TTS (MIT code, CC-BY-4.0 weights) combine a clean licence with independent CPU measurements. Pocket TTS streams (126 ms to first audio on a cloud CPU); Kokoro does not stream and took 852 ms median [2]. Kokoro's GitHub repo has had no push since August 2025 [8].
+
+---
+
+## Sources
+
+All accessed 2026-11-22.
+
+1. Hugging Face Open ASR Leaderboard, v1.16.2 (20 Nov 2026), tables and changelog read through the Space's own API and source: https://huggingface.co/spaces/hf-audio/open_asr_leaderboard (live app https://hf-audio-open-asr-leaderboard.hf.space ; source file https://huggingface.co/spaces/hf-audio/open_asr_leaderboard/blob/main/init.py)
+2. Hugging Face Open TTS Leaderboard, v1.7.1 (21 Nov 2026), leaderboard and streaming tabs read through the Space's API: https://huggingface.co/spaces/hf-audio/open_tts_leaderboard
+3. Hugging Face model API metadata (parameters, file sizes, licence tags, dates), e.g. https://huggingface.co/api/models/nvidia/parakeet-tdt-0.6b-v3?blobs=true ; same pattern for every model named in the tables
+4. whisper.cpp ggml model files: https://huggingface.co/ggerganov/whisper.cpp/tree/main
+5. faster-whisper README benchmarks (RTX 3070 Ti, i7-12700K) and CT2 model files: https://github.com/SYSTRAN/faster-whisper ; https://huggingface.co/Systran
+6. Parakeet ONNX builds: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx ; https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx
+7. Radford et al., "Robust Speech Recognition via Large-Scale Weak Supervision", Appendix D.1.1: https://arxiv.org/abs/2212.04356 (read via https://ar5iv.labs.arxiv.org/html/2212.04356)
+8. GitHub REST API (stars, open issues, last push, licence, latest release) for each repository named, e.g. https://api.github.com/repos/ggml-org/whisper.cpp
+9. onnx-asr benchmarks (Ryzen 7 9800X3D, Cortex-A53, T4, RTX 5070 Ti): https://istupakov.github.io/onnx-asr/benchmarks/ ; https://github.com/istupakov/onnx-asr
+10. distil-large-v3.5 model card: https://huggingface.co/distil-whisper/distil-large-v3.5
+11. distil-small.en model card: https://huggingface.co/distil-whisper/distil-small.en
+12. Parakeet TDT 0.6B v2 model card: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+13. Parakeet TDT 0.6B v3 model card: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+14. Kyutai stt-2.6b-en model card: https://huggingface.co/kyutai/stt-2.6b-en
+15. Kyutai delayed-streams-modeling README: https://github.com/kyutai-labs/delayed-streams-modeling
+16. Granite Speech 5.0 2B model card: https://huggingface.co/ibm-granite/granite-speech-5.0-2b
+17. Voxtral Mini 4B Realtime model card: https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602
+18. Deepgram pricing: https://deepgram.com/pricing
+19. Deepgram, "Introducing Nova-3" (12 Feb 2025): https://deepgram.com/learn/introducing-nova-3-speech-to-text-api
+20. Artificial Analysis speech-to-text leaderboard (AA-WER v2.2): https://artificialanalysis.ai/speech-to-text
+21. AssemblyAI pricing: https://www.assemblyai.com/pricing
+22. AssemblyAI benchmarks page (data as of 2026-11-16): https://www.assemblyai.com/benchmarks
+23. OpenAI API pricing: https://developers.openai.com/api/docs/pricing
+24. OpenAI speech-to-text guide: https://developers.openai.com/api/docs/guides/speech-to-text
+25. ElevenLabs API pricing: https://elevenlabs.io/pricing/api
+26. ElevenLabs models documentation: https://elevenlabs.io/docs/overview/models
+27. Cartesia pricing: https://cartesia.ai/pricing
+28. TTS Arena V2 leaderboard API: https://huggingface.co/spaces/TTS-AGI/TTS-Arena-V2 (https://tts-agi-tts-arena-v2.hf.space/api/leaderboard?type=tts)
+29. Artificial Analysis text-to-speech leaderboard: https://artificialanalysis.ai/text-to-speech/leaderboard
+30. Fish Audio Community License v1.0 and README licence notice: https://github.com/fishaudio/fish-speech/blob/main/LICENSE ; https://github.com/fishaudio/fish-speech
+31. Fish Audio S2 Pro model card and Research License: https://huggingface.co/fishaudio/s2-pro ; https://huggingface.co/fishaudio/s2-pro/blob/main/LICENSE.md
+32. Fish Audio Drama 3 model card and licence: https://huggingface.co/fishaudio/drama-3 ; https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE
+33. F5-TTS README: https://github.com/SWivid/F5-TTS ; weights https://huggingface.co/SWivid/F5-TTS
+34. XTTS-v2 licence text: https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt
+35. Coqui TTS community fork README: https://github.com/idiap/coqui-ai-TTS
+36. Coqui shutdown: https://github.com/coqui-ai/TTS/issues/3488 ; https://github.com/coqui-ai/TTS/discussions/4145 ; https://huggingface.co/coqui/XTTS-v2/discussions/33
+37. OpenVoice README: https://github.com/myshell-ai/OpenVoice
+38. CosyVoice README: https://github.com/QwenAudio/CosyVoice (redirect target of FunAudioLLM/CosyVoice)
+39. StyleTTS 2 README: https://github.com/yl4579/StyleTTS2
+40. Chatterbox and Chatterbox Turbo model cards: https://huggingface.co/ResembleAI/chatterbox ; https://huggingface.co/ResembleAI/chatterbox-turbo
+41. Piper: https://github.com/OHF-Voice/piper1-gpl ; archived original https://github.com/rhasspy/piper ; voices https://huggingface.co/rhasspy/piper-voices
+42. Kyutai TTS 1.6B model card: https://huggingface.co/kyutai/tts-1.6b-en_fr
+43. Pocket TTS README: https://github.com/kyutai-labs/pocket-tts ; weights https://huggingface.co/kyutai/pocket-tts
+44. Orpheus TTS README: https://github.com/canopyai/Orpheus-TTS
+45. Dia README: https://github.com/nari-labs/dia
+46. Zonos README: https://github.com/Zyphra/Zonos
+47. Index-TTS README and licence: https://github.com/index-tts/index-tts ; https://github.com/index-tts/index-tts/blob/main/LICENSE
+48. VibeVoice README: https://github.com/microsoft/VibeVoice
+49. Cartesia Sonic model documentation: https://docs.cartesia.ai/build-with-cartesia/tts-models/latest
+50. Moonshine licence file: https://github.com/moonshine-ai/moonshine/blob/main/LICENSE
+51. US EIA Electric Power Monthly, Table 5.3: https://www.eia.gov/electricity/monthly/epm_table_grapher.php?t=epmt_5_3
+52. RTX 4070 Laptop GPU power range: https://www.nvidia.com/en-gb/geforce/news/geforce-rtx-40-series-laptop-power-and-efficiency/ ; https://www.notebookcheck.net/NVIDIA-GeForce-RTX-4070-Laptop-GPU-Benchmarks-and-Specs.675690.0.html (read via search summary, not the pages themselves)
+53. AWS EC2 on-demand prices via third-party trackers: https://instances.vantage.sh/aws/ec2/g4dn.xlarge ; https://instances.vantage.sh/aws/ec2/g5.xlarge ; https://instances.vantage.sh/aws/ec2/g6.xlarge ; https://www.doit.com/compute/spot/us-east-1/g6.xlarge
+54. RunPod pricing: https://www.runpod.io/pricing
+55. Lambda pricing: https://lambda.com/pricing
+56. Open ASR Leaderboard paper (A100 methodology, 2025): https://arxiv.org/abs/2510.06961
+57. Moonshine README: https://github.com/moonshine-ai/moonshine
+
+## Limits of this verification
+
+- Nothing was run on the reference laptop. All local throughput and wattage inputs in Part 3 are stated assumptions.
+- The Open ASR and Open TTS leaderboard result files are private datasets; I read the published tables through each Space's public API rather than the raw CSVs.
+- Web pages were read through a fetch tool that summarises page content; figures from pricing pages and model cards were not all cross-checked against raw HTML. Leaderboard tables, Hugging Face metadata, GitHub metadata and licence texts were read directly.
+- Artificial Analysis and TTS Arena pages carry no snapshot date; values are as served on 2026-11-22.
+- Google Cloud GPU prices and AWS's own price table could not be loaded; AWS figures come from price trackers.
+- Per-voice licences for Piper and Pocket TTS voices, and the full text of NVIDIA's Open Model License and OpenMDW-1.1, were not reviewed.
+- The Intel specification page for the 165H redirected and was not read; CPU power is an assumption.
+- The scratchpad directory was shared with other processes during this run; my working files are in the `vb` subfolder.

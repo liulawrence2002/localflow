@@ -22,7 +22,11 @@
 - Shared network policy blocks remote model-provider URLs during ordinary dictation.
 - Shared Ollama provider blocks remote URLs before fetch and validates JSON output before cleanup is accepted.
 - Native cleanup calls only local Ollama at `127.0.0.1` with the configured local model (default `llama3.2:3b`); it never switches to a remote model.
-- Native `whisper.cpp` launch keeps model/audio/output paths and CLI arguments explicit and local.
+- Native speech-to-text runs through local sidecars only. The persistent `whisper-server.exe` binds `127.0.0.1` on an ephemeral port and receives audio in memory; its output streams are discarded. Every engine has a deadline after which the process is killed, and a kill-on-close job object stops the sidecar if LocalFlow crashes.
+- Loopback HTTP clients (whisper server and Ollama) ignore proxies and never follow redirects. Cloud-tagged Ollama models are refused.
+- Dictionary terms reach whisper as one argument or one form field, so they cannot inject flags.
+- The default speech model runs in-process through transcribe.cpp with its native logging disabled; it opens no socket and writes no file.
+- Read-aloud text is treated like dictated text: it goes only to the supervised `s2.exe` sidecar on loopback, is never logged or emitted in events, and error messages report status codes and file names only. No voice cloning is used. The S2 Pro weights are research and personal non-commercial use only and are never bundled.
 - Shared context policy blocks active-app, selected-text, and cursor-context collection for password or protected fields.
 - Command-mode planning rejects operating-system command execution phrases.
 - Native insertion revalidates the target window before pasting: LocalFlow captures the
@@ -37,7 +41,8 @@
 - Tauri capabilities are limited to default window, opener, and global shortcut permissions.
 - Logs use redaction helpers for dictated content.
 - Diagnostics export excludes dictated content and local model paths by default.
-- Native clipboard paste fallback restores prior text clipboard content after a short delay.
+- Native clipboard paste fallback restores prior text clipboard content after a short delay. The dictated text is placed on the clipboard with the Windows flags that exclude it from clipboard history (Win+V) and cloud clipboard sync.
+- A microphone that stops delivering audio no longer leaves a session listening: the end-of-speech, no-speech, and maximum-length timeouts run on silence too.
 - The waveform overlay receives phase and audio-level metadata, not transcript text.
 
 ## Planned Controls
@@ -47,6 +52,7 @@
   to defeat PID reuse; UIA element identity; protected/read-only field detection).
 - Paste-last-into-focus recovery via a dedicated hotkey (copy-last recovery already exists;
   the transcript is held in volatile memory only and never written to disk).
-- Model sidecar health checks and bounded IPC.
+- Verify the identity of the process listening on the Ollama port, and close the short window in which another local process could take the whisper sidecar's reserved port.
+- Restrict release builds from honouring `LOCALFLOW_WHISPER_*` overrides and the developer runtime path.
 - Diagnostics export with transcript exclusion by default.
 - Retention enforcement jobs.

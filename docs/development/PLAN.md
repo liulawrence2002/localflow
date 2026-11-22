@@ -72,7 +72,50 @@ Phase 1 (unify the production pipeline): in progress.
   to Diagnostics and changed the native path to paste deterministic text immediately after Whisper,
   then run configured local Ollama cleanup in the background for recovery/diagnostics. +5 Rust tests
   (58 total).
-- Follow-ups (roadmap): persistent/streaming whisper provider + benchmark harness; native
+- **Slice 16 -- speech-to-text provider layer, persistent engine, and benchmark (done).**
+  The native path now transcribes through `SpeechToTextProvider`. Default engine: a supervised
+  persistent `whisper-server.exe` on loopback (in-memory audio, warm-up at record start,
+  restart on exit, deadline kill, start-failure backoff, listener ownership check, kill-on-close
+  job object, stop on app exit) with the one-shot CLI as the local fallback. Opt-in engines:
+  base.en (model path) and Parakeet TDT through `parakeet-cli.exe`. Also: polyphase
+  band-limited resampler, locked capture channel, watchdog timeouts when the microphone stops
+  delivering audio, loopback HTTP clients without proxies or redirects, refusal of cloud-tagged
+  Ollama models, bounded Ollama context, clipboard history exclusion, path-free error
+  messages, health file written on phase changes only, and three bundled sidecar executables
+  instead of 37. Added `examples/asr_bench.rs` and measured a baseline. +54 Rust tests (112
+  total, 2 ignored). See `../research/VOICE_PIPELINE_REVIEW.md` and
+  `../benchmarks/ASR_BENCHMARK.md`.
+  Known limitations: measured on the speech-to-text stage with clean read speech, not end to
+  end with a microphone; the packaged installer was not rebuilt or smoke-tested in this slice;
+  the sidecar stays loaded (about 130 MB) until the app exits; a timeout on the server can be
+  followed by a second wait on the CLI fallback; rich clipboard formats are still not restored.
+  Next risks: antivirus or application control blocking the sidecar's loopback listener
+  (falls back to the CLI), and clipboard exclusion flags interfering with remote-desktop
+  clipboard redirection.
+- **Slice 17 -- Parakeet as the default speech model, read-aloud wiring, storage cleanup
+  (done, with one part unverified).** Speech-to-text now defaults to Parakeet TDT 0.6B v3
+  (Q5_K_M GGUF) kept loaded in-process through the `transcribe-cpp` crate, with the Whisper
+  CLI and tiny.en as the local fallback; engine choice is a pure, tested function
+  (`plan_asr_engine`). Measured 0.93 % WER against 3.31 % for tiny.en at a similar median.
+  The per-utterance Parakeet CLI engine and its bundled executable were removed. Added
+  `src-tauri/src/tts`: `TextToSpeechProvider`, a supervised Fish Audio S2 Pro engine through
+  the s2.cpp server, playback, commands, tray items, and Home-screen buttons, plus
+  `scripts/Build-FishS2.ps1` and `scripts/Get-FishModel.ps1`. Storage: removed base.en, the
+  old Parakeet file, the VAD model, and the 13 GB Rust debug build cache. +30 Rust tests (142
+  total, 3 ignored).
+  Follow-up the same day: the engine was built for CPU, Vulkan, and CUDA and measured. CUDA
+  is installed (about 2.8 times slower than real time, 35 s start-up, 3.3 GB VRAM); CPU is
+  about 11 times slower and Vulkan about 17 times. The packaged app was rebuilt and launched.
+  Known limitations: read-aloud was exercised through the engine's server endpoint but not by
+  a person from inside the running app, and voice quality was not judged; S2 Pro is slower
+  than real time on every backend tried; the S2 Pro weights are research and personal
+  non-commercial use only and are not bundled; the Parakeet model holds about 1.2 GB while
+  loaded and is not unloaded when idle; Parakeet is slower than tiny.en on dictations over
+  about ten seconds; the Parakeet model is read from the dev runtime folder and is not in the
+  installer; the installer was not rebuilt or smoke-tested.
+  Next risks: an in-process native crash would take the app down (the Whisper engines run as
+  separate processes); the first build now needs CMake on `PATH`.
+- Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey; module split of `native_dictation.rs`.
 

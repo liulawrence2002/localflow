@@ -41,20 +41,68 @@ Current tests cover:
 - Settings mutations for dictionary entries, replacements, snippets, and style profiles.
 - Saved-settings normalization for older local fallback data.
 
+- Speech-to-text provider layer: fallback chain ordering and failure reporting, per-utterance deadlines, whisper JSON parsing, multipart request building, missing-binary handling, start-failure backoff, temp-file cleanup after a failed run, and path-free error messages.
+- Sidecar process helpers: kill-on-close job object and TCP listener ownership lookup (Windows).
+- Band-limited resampler: pass-band gain, alias rejection above 8 kHz, tone frequency, edge handling, unusual sample rates, and clamping.
+- In-memory WAV encoding and round trip.
+- Capture channel locking, the end-of-speech timeouts on empty polls, cloud-tagged Ollama model refusal, and cleanup-error redaction.
+
 Run:
 
 ```powershell
 .\scripts\Run-Checks.ps1
 ```
 
+- Engine planning (`plan_asr_engine`): GGUF models in-process, Whisper models in the server, low-resource mode, and missing pieces.
+- Read-aloud: text preparation and bounding, synthesis deadlines, the Fish S2 request against a stand-in HTTP server (text sent, WAV decoded, error status reported without the response body, junk audio rejected), missing-engine handling, install discovery, and playback sample preparation.
+
+Three Rust tests are ignored by default because they need local assets or a release build:
+
+```powershell
+cd src-tauri
+cargo test --release --lib real_ -- --ignored                          # real whisper-server and Parakeet model
+cargo test --release --lib resampler_speed -- --ignored --nocapture    # resampler timing
+```
+
+The Rust crate now compiles transcribe.cpp from source, so `cmake` must be on `PATH` for the
+first build. The Visual Studio Build Tools ship one under
+`Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`. The debug profile's build
+cache is large (it reached 13 GB); running tests with `--release` reuses the release cache.
+
+Read-aloud has no automated end-to-end test: it needs the s2.cpp engine built with
+`scripts\Build-FishS2.ps1`. Manual check: dictate a sentence, choose "Read last transcript
+aloud" from the tray, confirm speech plays, confirm "Stop reading" interrupts it, and confirm
+no `s2.exe` process remains five minutes later or after Quit.
+
+## Speech-to-Text Benchmark
+
+`src-tauri/examples/asr_bench.rs` runs audio through the same provider code as the app and
+reports latency percentiles, real-time factor, word error rate, peak memory, crash recovery
+time, behaviour under concurrent requests, and whether silence produces text.
+
+```powershell
+cd src-tauri
+cargo run --release --example asr_bench -- `
+  --passes 3 --idle-secs 30 `
+  --config inprocess:parakeet-tdt-0.6b-v3-Q5_K_M.gguf:1:6 `
+  --config server:ggml-tiny.en-q5_1.bin:1:6 `
+  --json ..\docs\benchmarks\my-run.json
+```
+
+A config is `engine:model:beam:threads[:context]` with engines `inprocess`, `server`, `cli`. Corpus preparation, results, and limits
+are documented in `benchmarks/ASR_BENCHMARK.md`. Close other heavy applications first and do
+not compile while it runs; the numbers are sensitive to CPU load.
+
+`scripts/Measure-OllamaCleanup.ps1` measures the background cleanup request.
+
 Current verification on this workstation:
 
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 77 passing tests.
+- `npm run test` with 135 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test` with 14 passing tests.
+- `cargo test --release --lib` with 142 passing tests and 3 ignored (2026-11-22).
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
 - `.\scripts\Start-LocalFlow.ps1`, launching the release app without Vite.
@@ -124,8 +172,10 @@ Run with the packaged app and a real microphone; record hardware, Windows scalin
 6. Pause briefly after speaking, or press the hotkey again.
 7. Confirm only the small frosted waveform pill appears above the taskbar while listening, with no larger transparent rectangle or outline; the waveform should change with speech pitch and volume, then switch to processing/refining after the pause or second hotkey press.
 8. Confirm deterministic text appears in the target field quickly after local Whisper finishes; local Ollama cleanup should continue in the background and update Diagnostics/Copy Last Transcript when available.
-9. Open Diagnostics, click Refresh, and record `Latency: speech end to visible text`, `Latency: Whisper sidecar`, and `Latency: Ollama cleanup`.
-10. Confirm `Get-NetTCPConnection -LocalPort 1420 -State Listen` returns nothing during this release-app smoke test.
+9. Open Diagnostics, click Refresh, and record `Latency: speech end to visible text`, `Latency: Whisper sidecar`, `Latency: Ollama cleanup`, and the `ASR engine` row. The engine should read `transcribe-cpp` with the Parakeet model; `fallback engine used` means it failed and the Whisper CLI took over.
+10. If you select a Whisper model instead, confirm one `whisper-server.exe` process exists after the first dictation, that it is gone after Quit from the tray, and that it is also gone after ending `localflow.exe` from Task Manager.
+11. Press Win+V after a dictation and confirm the dictated text is not in clipboard history.
+12. Confirm `Get-NetTCPConnection -LocalPort 1420 -State Listen` returns nothing during this release-app smoke test.
 
 This validates microphone capture, end-of-speech auto-stop, pitch-reactive overlay events, local `whisper.cpp` execution, deterministic quick insert, background local Ollama `llama3.2:3b` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
 

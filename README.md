@@ -36,10 +36,11 @@ npm install
 
 For this workstation, the local runtime assets are in `.localflow-runtime/`:
 
-- `.localflow-runtime\whisper\Release\whisper-cli.exe`
-- `.localflow-runtime\models\ggml-tiny.en-q5_1.bin`
+- `.localflow-runtime\models\parakeet-tdt-0.6b-v3-Q5_K_M.gguf` (default speech model; `.\scripts\Get-AsrModel.ps1`)
+- `.localflow-runtime\models\ggml-tiny.en-q5_1.bin` (small fallback model)
+- `.localflow-runtime\whisper\Release\whisper-cli.exe` and `whisper-server.exe` (fallback engines)
 
-The folder is ignored by Git. The packaged app bundles the Whisper executables, DLLs, and tiny English model into app resources; developer builds can also use `.localflow-runtime/` directly. You can override paths with:
+The folder is ignored by Git. Dictation uses NVIDIA Parakeet TDT 0.6B v3 kept loaded in-process when that model is installed, and Whisper tiny.en otherwise. The packaged app bundles the two Whisper sidecar executables, their DLLs, and the tiny English model; the Parakeet model is read from the runtime folder and is not bundled. An optional read-aloud voice (Fish Audio S2 Pro, personal non-commercial use only) is described in `docs/MODEL_SETUP.md`. You can override paths with:
 
 ```powershell
 $env:LOCALFLOW_WHISPER_CLI = "C:\path\to\whisper-cli.exe"

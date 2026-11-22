@@ -1,6 +1,6 @@
 mod app_state;
-mod asr;
-mod audio;
+pub mod asr;
+pub mod audio;
 mod context;
 mod desktop_health;
 mod hotkeys;
@@ -11,6 +11,7 @@ mod privacy;
 mod refinement;
 mod storage;
 mod transcript;
+pub mod tts;
 mod workflow;
 
 use app_state::{
@@ -34,6 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(LocalFlowRuntime::default())
         .manage(native_dictation::NativeDictationRuntime::default())
+        .manage(tts::TtsRuntime::default())
         .setup(|app| {
             let database_path = storage::initialize(app.handle())?;
             tracing::info!(path = %database_path.display(), "initialized local settings database");
@@ -75,18 +77,37 @@ pub fn run() {
             finish_mock_session,
             cancel_session,
             native_dictation::get_last_transcript,
-            native_dictation::copy_last_transcript
+            native_dictation::copy_last_transcript,
+            tts::tts_status,
+            tts::speak_text,
+            tts::speak_last_transcript,
+            tts::stop_speaking
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running LocalFlow");
+        .build(tauri::generate_context!())
+        .expect("error while building LocalFlow")
+        .run(|app, event| {
+            // Stop the ASR sidecar on the way out so no whisper process is left running.
+            if let tauri::RunEvent::Exit = event {
+                native_dictation::shutdown(app);
+                tts::shutdown(app);
+            }
+        });
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show LocalFlow", true, None::<&str>)?;
     let copy_last =
         MenuItem::with_id(app, "copy_last", "Copy last transcript", true, None::<&str>)?;
+    let read_last = MenuItem::with_id(
+        app,
+        "read_last",
+        "Read last transcript aloud",
+        true,
+        None::<&str>,
+    )?;
+    let stop_reading = MenuItem::with_id(app, "stop_reading", "Stop reading", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &copy_last, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &copy_last, &read_last, &stop_reading, &quit])?;
 
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
@@ -105,6 +126,12 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     tracing::info!(error = %error, "copy last transcript from tray failed");
                 }
             }
+            "read_last" => {
+                if let Err(error) = tts::speak_last_transcript(app.clone()) {
+                    tracing::info!(error = %error, "read last transcript from tray failed");
+                }
+            }
+            "stop_reading" => tts::stop(app),
             "quit" => app.exit(0),
             _ => {}
         })

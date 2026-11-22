@@ -1,0 +1,56 @@
+{
+  "configs": [
+    {
+      "audioSecondsProcessed": 1002.2000625000001,
+      "concurrentFailures": null,
+      "concurrentWallMs": null,
+      "config": "server:ggml-base.en-q5_1.bin:1:6:dyn",
+      "crashRecoveryMs": 1065.4923000000001,
+      "description": "whisper.cpp server, model kept loaded (ggml-base.en-q5_1.bin)",
+      "emptyOutputs": 0,
+      "errors": 0,
+      "firstRequestMs": 870.789,
+      "maxMs": 2280.1999,
+      "meanMs": 617.1326867647062,
+      "nonSpeechHallucinations": 1,
+      "nonSpeechProbes": 2,
+      "p50Ms": 521.4217,
+      "p95Ms": 1007.3704000000001,
+      "peakMemoryMb": 180.51171875,
+      "prepareMs": 277.3361,
+      "realTimeFactor": 0.0837457994071917,
+      "shortClipP50Ms": 444.2395,
+      "utterances": 136,
+      "werPercent": 2.9686174724342664
+    },
+    {
+      "audioSecondsProcessed": 1002.2000625000001,
+      "concurrentFailures": null,
+      "concurrentWallMs": null,
+      "config": "server:ggml-tiny.en-q5_1.bin:1:6:dyn",
+      "crashRecoveryMs": 600.4954,
+      "description": "whisper.cpp server, model kept loaded (ggml-tiny.en-q5_1.bin)",
+      "emptyOutputs": 0,
+      "errors": 0,
+      "firstRequestMs": 355.1486,
+      "maxMs": 1028.7484,
+      "meanMs": 290.5849198529412,
+      "nonSpeechHallucinations": 1,
+      "nonSpeechProbes": 2,
+      "p50Ms": 250.01630000000003,
+      "p95Ms": 474.5667,
+      "peakMemoryMb": 131.48046875,
+      "prepareMs": 229.3538,
+      "realTimeFactor": 0.03943279448757767,
+      "shortClipP50Ms": 200.3288,
+      "utterances": 136,
+      "werPercent": 3.774385072094996
+    }
+  ],
+  "corpus": {
+    "audioSeconds": 1002.2000625000001,
+    "utterances": 136
+  },
+  "logicalCpus": 22,
+  "passes": 1
+}

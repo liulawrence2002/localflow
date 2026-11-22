@@ -19,6 +19,7 @@ import {
   SlidersHorizontal,
   Square,
   Trash2,
+  Volume2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -63,7 +64,11 @@ import {
   finishMockSession,
   getLastTranscript,
   getStatus,
+  getTtsStatus,
   saveSettings,
+  speakLastTranscript,
+  stopSpeaking,
+  type TtsStatus,
 } from "./services/localflowClient";
 
 type ScreenId =
@@ -112,10 +117,12 @@ export function App() {
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
   const [revealTranscript, setRevealTranscript] = useState(false);
   const [recoveryNotice, setRecoveryNotice] = useState("");
+  const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
 
   useEffect(() => {
     void getStatus().then(setStatus);
     void getLastTranscript().then(setLastTranscript);
+    void getTtsStatus().then(setTtsStatus);
   }, []);
 
   const settings = status.settings;
@@ -151,6 +158,20 @@ export function App() {
 
   async function refreshLastTranscript() {
     setLastTranscript(await getLastTranscript());
+  }
+
+  async function readRecoveryTranscriptAloud() {
+    try {
+      await speakLastTranscript();
+      setRecoveryNotice("Preparing speech with the local voice engine. This can take a while.");
+    } catch (error) {
+      setRecoveryNotice(typeof error === "string" ? error : "Read-aloud is not available.");
+    }
+  }
+
+  async function stopReadingAloud() {
+    await stopSpeaking();
+    setRecoveryNotice("Stopped reading.");
   }
 
   async function copyRecoveryTranscript() {
@@ -385,7 +406,28 @@ export function App() {
                       >
                         {revealTranscript ? "Hide preview" : "Reveal preview"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void readRecoveryTranscriptAloud()}
+                        disabled={!recovery.available || !ttsStatus?.available}
+                        title={ttsStatus?.detail ?? "Read last transcript aloud"}
+                      >
+                        <Volume2 size={16} aria-hidden="true" />
+                        Read aloud
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void stopReadingAloud()}
+                        disabled={!ttsStatus?.available}
+                        title="Stop reading"
+                      >
+                        <Square size={16} aria-hidden="true" />
+                        Stop
+                      </button>
                     </div>
+                    {ttsStatus && !ttsStatus.available ? (
+                      <p className="field-hint">Read-aloud: {ttsStatus.detail}</p>
+                    ) : null}
                     {recoveryNotice ? <p className="field-hint">{recoveryNotice}</p> : null}
                   </>
                 );
@@ -409,6 +451,11 @@ export function App() {
                   }
                   placeholder="C:\\models\\ggml-base.en.bin"
                 />
+                <span className="field-hint">
+                  Leave empty to use the installed default (Parakeet when present, otherwise Whisper
+                  tiny.en). A .gguf model runs in-process; a ggml Whisper .bin model runs in the
+                  whisper.cpp sidecar.
+                </span>
               </label>
               <label className="field field--inline">
                 <span>Threads</span>

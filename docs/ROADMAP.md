@@ -15,6 +15,19 @@ Status reflects the spec-driven upgrade. See `development/PLAN.md` for per-slice
 - Streaming ASR foundation: typed event contract, `StreamingAsrProvider` trait, overlap-dedup
   stabilizer, rolling-window planner, and a WER metric — all unit-tested (`src-tauri/src/asr`).
 
+- Speech-to-text provider layer: persistent `whisper-server` engine with supervision and a
+  local CLI fallback, opt-in base.en and Parakeet engines, per-utterance deadlines.
+- Band-limited resampler, locked capture channel, watchdog timeouts on device loss.
+- Loopback-only HTTP clients (no proxy, no redirects), clipboard history exclusion, bounded
+  Ollama context.
+- Reproducible speech-to-text benchmark harness and a measured baseline
+  (`benchmarks/ASR_BENCHMARK.md`).
+
+- Parakeet TDT 0.6B v3 kept loaded in-process as the default speech model (0.93 % WER here
+  against 3.31 % for tiny.en), with tiny.en and the Whisper CLI as the fallback.
+- Read-aloud wiring for Fish Audio S2 Pro through s2.cpp (implemented and unit-tested; the
+  engine itself not yet built or verified).
+
 ## Now
 
 - Manually verify native dictation in Notepad, a browser field, and VS Code (needs hardware).
@@ -22,8 +35,15 @@ Status reflects the spec-driven upgrade. See `development/PLAN.md` for per-slice
 
 ## Next
 
-- Implement a persistent/streaming `whisper.cpp` provider behind `StreamingAsrProvider` and
-  build the benchmark harness (spec §8) using the WER metric and the documented corpus.
+- Record real 48 kHz dictations and compare old and new builds end to end; the benchmark
+  so far covers the speech-to-text stage on clean read speech only.
+- Build and verify the Fish S2 read-aloud engine (`scripts/Build-FishS2.ps1`), measure its
+  speed on CPU and through Vulkan, and decide whether it is usable or whether a small CPU
+  voice (Pocket TTS, Kokoro) should be offered alongside it.
+- Vulkan GPU builds for the speech model, and unloading it after a period without use.
+- Decide whether the installer should carry the Parakeet model or download it on request.
+- Update the bundled whisper.cpp runtime from 1.9.1 to 1.9.5 or later.
+- Streaming partial transcripts on the `StreamingAsrProvider` foundation.
 - Persist personalization/settings/history through native SQLite; enforce retention there.
 - Add microphone selection and device-disconnect handling.
 - Add Windows UI Automation insertion before clipboard fallback; native context capture.

@@ -67,6 +67,34 @@ export async function getLastTranscript(): Promise<string | null> {
   return invokeOrFallback<string | null>("get_last_transcript", {}, () => null);
 }
 
+/** Whether a local voice engine is installed, and what is missing if not. */
+export interface TtsStatus {
+  available: boolean;
+  detail: string;
+  speaking: boolean;
+}
+
+export async function getTtsStatus(): Promise<TtsStatus> {
+  return invokeOrFallback<TtsStatus>("tts_status", {}, () => ({
+    available: false,
+    detail: "Read-aloud needs the desktop app.",
+    speaking: false,
+  }));
+}
+
+/** Read the last transcript aloud with the local voice engine. Rejects with the reason. */
+export async function speakLastTranscript(): Promise<void> {
+  // Deliberately not wrapped in the fallback helper: the caller shows the native reason
+  // (engine not built, model missing, nothing to read) instead of a silent no-op.
+  await invoke<void>("speak_last_transcript", {});
+}
+
+export async function stopSpeaking(): Promise<void> {
+  await invokeOrFallback<void>("stop_speaking", {}, async () => {
+    // Browser dev fallback: nothing is playing.
+  });
+}
+
 export async function copyLastTranscript(): Promise<void> {
   await invokeOrFallback<void>("copy_last_transcript", {}, async () => {
     // Browser dev fallback: nothing to copy from the native runtime.

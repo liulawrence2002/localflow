@@ -69,3 +69,42 @@ Run:
 ```
 
 Native hotkey dictation uses a configurable local Ollama model (default `llama3.2:3b`; run `ollama pull llama3.2:3b`) for background cleanup after the deterministic transcript is inserted. If the selected model is missing or Ollama is not running, LocalFlow logs the cleanup failure and keeps the quick inserted transcript. For the lowest resource usage, enable low-resource mode in Settings > Models to skip the LLM entirely.
+
+## Dictation Is Slow Or Diagnostics Show "fallback engine used"
+
+LocalFlow normally keeps the model loaded in a `whisper-server.exe` sidecar. If Diagnostics
+shows `ASR engine: whisper-cli ... / fallback engine used`, the server could not be used and
+every dictation is paying process start and model load.
+
+- Check that `whisper-server.exe` exists next to `whisper-cli.exe` in the runtime folder.
+- Antivirus or application-control software may block the sidecar or its loopback listener.
+  Allow `whisper-server.exe`; it only listens on `127.0.0.1`.
+- After a failed start LocalFlow waits one minute before trying the server again and uses
+  the CLI meanwhile.
+- Low-resource mode uses the CLI on purpose.
+
+## Parakeet Is Installed But Diagnostics Show A Whisper Engine
+
+The `ASR engine` row in Diagnostics names the engine and model actually used.
+
+- The default model file must be `.localflow-runtime\models\parakeet-tdt-0.6b-v3-Q5_K_M.gguf`
+  (`.\scripts\Get-AsrModel.ps1` puts it there). A model path set in Settings > Models wins
+  over it; clear that field to return to the default.
+- Low-resource mode uses the Whisper CLI on purpose so that nothing stays in memory.
+- `fallback engine used` means the in-process engine failed for that dictation.
+
+## Read Aloud Is Greyed Out Or Reports Something Missing
+
+The Home screen shows what is missing. `.\scripts\Get-FishModel.ps1` downloads the model and
+`.\scripts\Build-FishS2.ps1` builds the engine. Speech always takes a while: the first request
+loads the model (about 35 s on the CUDA build) and synthesis is slower than real time. If it
+is far slower than that, the engine is the CPU build; rebuild it with `-Backend cuda` on an
+NVIDIA GPU. The Vulkan build measured slower than CPU and is not recommended.
+A failed engine start is not retried for one minute.
+
+## Pasted Text Does Not Reach A Remote Desktop Or A Clipboard Manager
+
+Dictated text is placed on the clipboard with the Windows flags that keep it out of
+clipboard history and cloud sync. Tools that mirror the clipboard, including some remote
+desktop and virtual machine clipboard redirectors, may honour those flags and skip the text.
+Use "Copy last transcript" from the tray, which copies without those flags.

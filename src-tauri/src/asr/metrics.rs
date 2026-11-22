@@ -28,6 +28,18 @@ pub fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
     distance as f64 / reference_tokens.len() as f64
 }
 
+/// Word-level edit count and reference length for one utterance, using the same
+/// normalisation as [`word_error_rate`]. Summing both over a corpus and dividing gives the
+/// corpus-level WER, which weights every word equally instead of every utterance.
+pub fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
+    let reference_tokens = normalize_tokens(reference);
+    let hypothesis_tokens = normalize_tokens(hypothesis);
+    (
+        token_edit_distance(&reference_tokens, &hypothesis_tokens),
+        reference_tokens.len(),
+    )
+}
+
 fn normalize_tokens(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|token| {
@@ -94,6 +106,16 @@ mod tests {
         // One deletion out of three reference words.
         let wer = word_error_rate("one two three", "one three");
         assert!((wer - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn word_errors_reports_edits_and_reference_length() {
+        assert_eq!(
+            word_errors("the quick brown fox", "the quick red fox"),
+            (1, 4)
+        );
+        assert_eq!(word_errors("Hello, world.", "hello world"), (0, 2));
+        assert_eq!(word_errors("", "extra words"), (2, 0));
     }
 
     #[test]

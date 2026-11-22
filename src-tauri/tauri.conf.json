@@ -49,7 +49,8 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../.localflow-runtime/whisper/Release/*.exe": "localflow-runtime/whisper/Release/",
+      "../.localflow-runtime/whisper/Release/whisper-cli.exe": "localflow-runtime/whisper/Release/whisper-cli.exe",
+      "../.localflow-runtime/whisper/Release/whisper-server.exe": "localflow-runtime/whisper/Release/whisper-server.exe",
       "../.localflow-runtime/whisper/Release/*.dll": "localflow-runtime/whisper/Release/",
       "../.localflow-runtime/models/ggml-tiny.en-q5_1.bin": "localflow-runtime/models/ggml-tiny.en-q5_1.bin"
     },

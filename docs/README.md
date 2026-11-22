@@ -9,6 +9,12 @@ Reference and design documentation for LocalFlow. Start with the [project README
 - [TESTING.md](TESTING.md) — how to run and interpret the test suites.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — common issues and fixes.
 
+## Research & Benchmarks
+
+- [research/VOICE_PIPELINE_REVIEW.md](research/VOICE_PIPELINE_REVIEW.md) — audit of the voice pipeline, survey of current speech models, decisions, and roadmap.
+- [benchmarks/ASR_BENCHMARK.md](benchmarks/ASR_BENCHMARK.md) — before-and-after speech-to-text measurements and how to reproduce them.
+- [research/appendix/](research/appendix/) — the underlying research reports with sources.
+
 ## Policy & Status
 
 - [PRIVACY.md](PRIVACY.md) — data handling and privacy controls.
