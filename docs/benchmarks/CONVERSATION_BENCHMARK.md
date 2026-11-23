@@ -103,6 +103,59 @@ than exactly as the model wrote them did not slow the next request: 49-62 ms eit
 Cancelling a reply by closing the connection frees the server at once: the next request got
 its first words in 46-66 ms.
 
+## After milestone 4: transcribing during the turn
+
+Measured 2026-11-23 with the same harness, twelve turns (four questions, three passes).
+Phrases are now transcribed at each 250 ms pause while the user is still speaking, and the
+silence that ends a turn depends on how finished the transcript reads.
+
+|                                            | Median   | Slowest  |
+| ------------------------------------------ | -------- | -------- |
+| Milestone 2 (700 ms wait, then transcribe) | 1,090 ms | 1,859 ms |
+| Milestone 4                                | 663 ms   | 786 ms   |
+
+| Stage                                            | Short questions (2-3 s) | Long question (8.4 s) |
+| ------------------------------------------------ | ----------------------- | --------------------- |
+| Silence when the turn was ended                  | 576-736 ms              | 640-672 ms            |
+| Transcription, total across the turn's phrases   | 398-622 ms              | 1,159-1,255 ms        |
+| Language model, first words                      | 40-163 ms               | 179-190 ms            |
+| Voice, first audio after the first piece of text | 43-136 ms               | 69-85 ms              |
+
+The long question spent over a second in the recogniser in total, but almost all of it
+while the speaker was still talking: its response time (652-756 ms) is the same as a short
+question's. The silence when the turn ended is longer than the 400 ms a finished question
+needs because the transcript of the last phrase arrives about 350-500 ms after the pause is
+noticed; the turn ends the moment it does. That makes the recogniser's speed on the last
+phrase the remaining limit.
+
+An earlier run of the same build, with eight turns and a placeholder rule in place of the
+completeness judge, gave a median of 484 ms. Recogniser times were lower in that run
+(275-425 ms against 398-622 ms), which is the difference; timings on this machine move
+with background load.
+
+Echo cancellation costs 31-77 microseconds per 10 ms of audio, measured in its own
+harness.
+
+### The microphone while the assistant speaks
+
+Measured by playing a test signal through the laptop's own speakers at full volume and
+recording its own microphone, four runs:
+
+| Run | Microphone, nothing playing | Microphone during playback | Loss from speaker to microphone |
+| --- | --------------------------- | -------------------------- | ------------------------------- |
+| 1   | -69 dBFS                    | -50 dBFS                   | 29 dB                           |
+| 2   | -86 dBFS                    | -77 dBFS                   | 56 dB                           |
+| 3   | -78 dBFS                    | -67 dBFS                   | 46 dB                           |
+| 4   | -87 dBFS                    | -69 dBFS                   | 48 dB                           |
+
+In runs 2 to 4 what reached the microphone had no linear relation to what was played
+(correlation 0.01-0.02), which means this laptop's audio driver already removes the
+speaker from the microphone. Run 1, on another day, was louder and contained an outside
+sound; why its level differed by about 27 dB is not known. On this machine, then, talking
+over the assistant does not depend on LocalFlow's canceller, which detects the situation
+and passes the microphone through. On synthetic rooms with a real echo path it removed
+29-33 dB after the first second.
+
 ## Not measured
 
 - A person speaking into a real microphone, in a real room, with a real speaker. The
@@ -114,3 +167,8 @@ its first words in 46-66 ms.
 - Behaviour on battery power or under another power plan.
 - Any model other than `llama3.2:3b`.
 - How the voice sounds. Nobody has listened to it for naturalness yet.
+- A person talking over the assistant. Interruption is tested with scripted audio only,
+  and the final echo canceller settings were never run against the real devices.
+- How often the completeness judge makes the assistant answer too early or wait too long
+  in real conversation. On its own test sets it never called an unfinished sentence
+  finished (215 and 52 utterances), but those were written, not spoken.

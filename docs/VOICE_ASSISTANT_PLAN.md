@@ -170,7 +170,7 @@ Not yet measured: a person at a real microphone and speaker, and how the voice s
    by hotkey. Includes the end-to-end latency benchmark that replaces the estimates above.
 3. **Read this page (done, see `development/PLAN.md` slice 21).** UI Automation snapshot, the policy gate, verbatim reading with next
    and back, chunked read-aloud, and the `PRIVACY.md` change. No language model involved.
-4. **Natural turn-taking.** Turn-completion model, decoding while the user speaks, spoken
+4. **Natural turn-taking (done, see `development/PLAN.md` slice 22).** Turn-completion model, decoding while the user speaks, spoken
    barge-in with echo cancellation, automatic fallback to hotkey interrupt.
 5. **Summarise, explain, what changed.** Page text passed to the model as quoted data, a
    snapshot diff kept in memory only, and a fixture corpus of malicious pages.

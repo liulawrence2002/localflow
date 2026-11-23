@@ -78,6 +78,14 @@ impl TurnSegmenter {
         self.silence_run = 0;
     }
 
+    /// Treat speech as already under way, so the next pause is reported. Used when another
+    /// detector (with stricter rules) has just confirmed the start of speech.
+    pub fn assume_speaking(&mut self) {
+        self.speaking = true;
+        self.speech_run = 0;
+        self.silence_run = 0;
+    }
+
     /// Feed the probability of the next frame.
     pub fn observe(&mut self, probability: f32) -> Option<SegmentEvent> {
         if !self.speaking {
@@ -240,6 +248,21 @@ mod tests {
         assert!(!segmenter.is_speaking());
         // Silence afterwards ends nothing, because nothing is in progress.
         assert!(feed(&mut segmenter, 0.0, 100, &mut clock).is_empty());
+    }
+
+    #[test]
+    fn speech_assumed_under_way_ends_at_the_next_pause_without_a_second_start() {
+        let mut segmenter = segmenter();
+        let mut clock = 0;
+        segmenter.assume_speaking();
+
+        assert!(
+            feed(&mut segmenter, 0.9, 10, &mut clock).is_empty(),
+            "no second start"
+        );
+        let events = feed(&mut segmenter, 0.0, 30, &mut clock);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].1, SegmentEvent::SpeechEnded { .. }));
     }
 
     #[test]

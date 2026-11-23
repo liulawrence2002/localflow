@@ -21,6 +21,9 @@ tauri-build = { version = "2", features = [] }
 arboard = "3"
 cpal = "0.15"
 hound = "3"
+# Echo cancellation for conversation mode: a pure-Rust port of the WebRTC canceller (no C or
+# C++ build, nothing downloaded). Pinned exactly; see audio/echo.rs.
+sonora = { version = "=0.3.0", default-features = false }
 # The conversation voice (Phonon), in-process on the CPU. Pinned exactly: its API changed in
 # each of 0.5, 0.6 and 0.7. Only `hf` (the tokenizer) is enabled; without `hub` the library
 # cannot download anything.

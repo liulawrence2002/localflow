@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod devices;
+pub mod echo;
 pub mod resample;
 pub mod ring;
 pub mod spectrum;

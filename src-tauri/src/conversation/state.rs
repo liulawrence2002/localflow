@@ -87,6 +87,14 @@ pub enum Event {
     SpeechEnded {
         conversation: u64,
     },
+    /// The user started speaking over the assistant's reply.
+    BargeIn {
+        conversation: u64,
+    },
+    /// What sounded like the start of a turn held no words (a cough, a noise).
+    TurnAbandoned {
+        conversation: u64,
+    },
     TurnRouted {
         turn: u64,
         outcome: TurnOutcome,
@@ -242,6 +250,35 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
                         ..state
                     },
                     vec![Effect::BeginTurn { turn }],
+                )
+            } else {
+                stay
+            }
+        }
+        Event::BargeIn { conversation } => {
+            // Only a reply that is being spoken can be talked over. The user keeps the floor:
+            // what they are saying is the start of their next turn.
+            if state.phase == Speaking && conversation == state.conversation {
+                (
+                    ConversationState {
+                        phase: UserSpeaking,
+                        turn: state.turn + 1,
+                        ..state
+                    },
+                    vec![Effect::CancelTurn { turn: state.turn }],
+                )
+            } else {
+                stay
+            }
+        }
+        Event::TurnAbandoned { conversation } => {
+            if state.phase == UserSpeaking && conversation == state.conversation {
+                (
+                    ConversationState {
+                        phase: Listening,
+                        ..state
+                    },
+                    Vec::new(),
                 )
             } else {
                 stay
@@ -605,6 +642,57 @@ mod tests {
     }
 
     #[test]
+    fn a_noise_that_was_not_speech_goes_back_to_listening_without_a_turn() {
+        let mut events = listening();
+        events.push(Event::SpeechStarted { conversation: 1 });
+        let (state, effects) = after(events, &[Event::TurnAbandoned { conversation: 1 }]);
+
+        assert_eq!(state.phase, Phase::Listening);
+        assert_eq!(effects, vec![Effect::Start { conversation: 1 }]);
+        // It means nothing in any other phase.
+        let (thinking_state, _) = run(&thinking());
+        let (state, effects) = transition(thinking_state, Event::TurnAbandoned { conversation: 1 });
+        assert_eq!(state, thinking_state);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn speaking_over_a_reply_cuts_it_off_and_starts_the_users_turn() {
+        let mut speaking = thinking();
+        speaking.push(Event::ReplyAudioStarted { turn: 1 });
+        let (state, effects) = after(speaking.clone(), &[Event::BargeIn { conversation: 1 }]);
+
+        assert_eq!(state.phase, Phase::UserSpeaking);
+        assert_eq!(effects.last(), Some(&Effect::CancelTurn { turn: 1 }));
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Stop { .. })));
+
+        // The interrupted reply reporting in late changes nothing, and the user's words
+        // become the next turn.
+        let (late, none) = transition(state, Event::ReplyFinished { turn: 1 });
+        assert_eq!(late, state);
+        assert!(none.is_empty());
+        let (next, effects) = transition(state, Event::SpeechEnded { conversation: 1 });
+        assert_eq!(next.phase, Phase::Thinking);
+        assert_eq!(effects, vec![Effect::BeginTurn { turn: 3 }]);
+    }
+
+    #[test]
+    fn only_a_reply_being_spoken_can_be_talked_over() {
+        for prefix in [vec![Event::Toggle], listening(), thinking()] {
+            let (before, _) = run(&prefix);
+            let (state, effects) = transition(before, Event::BargeIn { conversation: 1 });
+            assert_eq!(state, before, "{:?}", before.phase);
+            assert!(effects.is_empty());
+        }
+        // And not from an earlier conversation.
+        let mut speaking = thinking();
+        speaking.push(Event::ReplyAudioStarted { turn: 1 });
+        let (before, _) = run(&speaking);
+        let (state, _) = transition(before, Event::BargeIn { conversation: 7 });
+        assert_eq!(state, before);
+    }
+
+    #[test]
     fn a_failed_start_closes_everything() {
         let (state, effects) = run(&[Event::Toggle, Event::StartFailed { conversation: 1 }]);
 
@@ -633,6 +721,7 @@ mod tests {
             Event::Ready { conversation: 1 },
             Event::SpeechStarted { conversation: 1 },
             Event::SpeechEnded { conversation: 1 },
+            Event::TurnAbandoned { conversation: 1 },
             Event::IdleTimeout { conversation: 1 },
             Event::MaxDuration { conversation: 1 },
             Event::DeviceLost { conversation: 1 },

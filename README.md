@@ -18,9 +18,9 @@ A hands-free spoken conversation with your local language model, as a second mod
 1. Install its two small models once: `.\scripts\Get-PhononModel.ps1` (the voice, about 65 MB) and `.\scripts\Get-VadModel.ps1` (voice detection, 1.2 MB). Ollama must be running.
 2. Press `Ctrl+Alt+T` (or `Ctrl+Alt+Shift+T` if another app holds that), or use the tray item or the Home screen button. The overlay appears and stays for the whole conversation.
 3. Talk. Pause when you have finished and the assistant answers aloud.
-4. Press the hotkey while the assistant is talking to interrupt it. Press it at any other time, or say "goodbye", to end the conversation. It also ends after 45 seconds of silence or 10 minutes in total.
+4. Talk over the assistant to interrupt it, or press the hotkey while it is talking. Press it at any other time, or say "goodbye", to end the conversation. It also ends after 45 seconds of silence or 10 minutes in total.
 
-This is a first version. The assistant does not listen while it is speaking, so you interrupt with the hotkey, not by voice. The voice is English only. Measured response time on the development laptop is about 1.1 s from the end of your speech to the start of the reply ([benchmark](docs/benchmarks/CONVERSATION_BENCHMARK.md)).
+The assistant answers sooner after something that reads as finished and waits longer when you trail off mid-thought. The voice and that judgement are English only. Measured response time on the development laptop is a median of about 0.7 s from the end of your speech to the start of the reply ([benchmark](docs/benchmarks/CONVERSATION_BENCHMARK.md)). Interrupting by voice has been tested with scripted audio but not yet by a person at a real microphone; if it misbehaves, the hotkey always works.
 
 ## Read a Window Aloud
 
@@ -32,7 +32,7 @@ Some windows expose little or nothing this way: Google Docs unless its screen-re
 
 ## What Is Next
 
-Summarising and explaining what is on screen, "what changed?", a shorter wait before replies, and interrupting by voice are planned. None of them exists yet. The audit, measured baselines, technology choices and milestones are in [docs/VOICE_ASSISTANT_PLAN.md](docs/VOICE_ASSISTANT_PLAN.md).
+Summarising and explaining what is on screen and "what changed?" are planned. None of them exists yet. The audit, measured baselines, technology choices and milestones are in [docs/VOICE_ASSISTANT_PLAN.md](docs/VOICE_ASSISTANT_PLAN.md).
 
 ## Documentation
 

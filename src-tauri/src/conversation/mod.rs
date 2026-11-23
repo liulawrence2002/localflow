@@ -13,12 +13,15 @@
 //! This file supplies the real devices and models and connects the engine to the tray, the
 //! hotkey and the overlay. Nothing that is said is logged, stored, or sent in an event.
 
+pub mod assembler;
 pub mod chunker;
+pub mod echo_guard;
 pub mod engine;
 pub mod memory;
 pub mod router;
 pub mod speaking;
 pub mod state;
+pub mod turn_completion;
 
 use std::sync::{Arc, Mutex};
 
@@ -157,6 +160,15 @@ fn silero_model(app: &AppHandle) -> Option<std::path::PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// How finished a transcript reads, for deciding how long a silence ends the turn.
+pub fn default_readiness() -> assembler::ReadinessJudge {
+    Arc::new(|text: &str| match turn_completion::judge_transcript(text) {
+        turn_completion::Completeness::Complete => assembler::Readiness::Ready,
+        turn_completion::Completeness::Incomplete => assembler::Readiness::NotReady,
+        turn_completion::Completeness::Unsure => assembler::Readiness::Unsure,
+    })
+}
+
 struct TauriHost {
     app: AppHandle,
     shared: Arc<Shared>,
@@ -220,6 +232,8 @@ impl ConversationHost for TauriHost {
                 Some(reader) => Arc::new(reader.inner().clone()),
                 None => Arc::new(NoPageSource),
             },
+            echo: crate::audio::echo::best_echo_canceller(),
+            readiness: default_readiness(),
             model,
             language,
         })

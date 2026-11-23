@@ -207,6 +207,8 @@ impl ConversationHost for BenchHost {
             chat: self.chat.clone(),
             voice: self.voice.clone(),
             page: Arc::new(NoPageSource),
+            echo: Box::new(localflow_lib::audio::echo::NoEchoCancellation),
+            readiness: localflow_lib::conversation::default_readiness(),
             model: self.model.clone(),
             language: "en".to_string(),
         })

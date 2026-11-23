@@ -68,8 +68,9 @@ hotkey interrupts a reply, or ends the conversation when the assistant is not ta
 Dictation is ignored while a conversation is on, so the two never share the microphone.
 
 ```
-microphone (kept open) -> voice detector -> turn segmenter -> Parakeet
-    -> command matcher --(goodbye, repeat, quiet)--> fixed action
+microphone (kept open) -> echo canceller -> voice detector -> pauses
+    -> turn assembler <-> Parakeet (each phrase, while the user is still speaking)
+    -> command matcher --(goodbye, repeat, quiet, read this page)--> fixed action
                        --(anything else)----------> Ollama chat, streaming
     -> sentence chunker -> Phonon voice -> speaker queue
 ```
@@ -97,7 +98,23 @@ microphone (kept open) -> voice detector -> turn segmenter -> Parakeet
   fades out over 6 ms and discards what was queued.
 - `audio/speech_detector.rs` and `audio/turn_segmenter.rs`: Silero VAD (through the speech
   library already linked), with loudness against an adaptive noise floor as the fallback,
-  and a frame-counted segmenter: 96 ms of speech starts a turn, 700 ms of silence ends it.
+  and a frame-counted segmenter: 96 ms of speech starts a turn and 250 ms of silence is
+  reported as a pause.
+- `conversation/assembler.rs`: decides which pause ends the turn (pure, counted in audio
+  samples). At each pause the speech not yet transcribed is sent to the recogniser; if the
+  user carries on, that text is kept and only what follows is sent next time, so a long
+  turn costs no more than its last phrase. Once everything said is transcribed, the
+  silence needed to end the turn depends on how finished it reads: 400 ms after a complete
+  question or statement, 700 ms when unsure, 1.4 s after something that trails off.
+- `conversation/turn_completion.rs`: judges a transcript as complete, incomplete or unsure
+  from its words (English). Tuned so that it does not call an unfinished sentence finished;
+  when in doubt it says unsure.
+- `audio/echo.rs`: `EchoCanceller` and a pure-Rust port of the WebRTC canceller (`sonora`).
+  It is given what the speaker actually played (`AudioSink::take_played`) and removes it
+  from the microphone. Where the audio driver already does this, it detects that and
+  passes the microphone through.
+- `conversation/echo_guard.rs`: the last check on an interruption: if its transcript is
+  just a stretch of what the assistant was saying, it was the assistant's own voice.
 - `llm/chat.rs`: `ChatProvider` and the streaming Ollama client. Loopback only, cancellable
   by closing the connection, same context size as dictation cleanup.
 - `tts/stream.rs` and `tts/phonon.rs`: `StreamingTextToSpeech` and the Phonon 31m voice,
@@ -105,9 +122,15 @@ microphone (kept open) -> voice detector -> turn segmenter -> Parakeet
 
 Rules the design enforces:
 
-- **The assistant cannot hear itself.** The microphone is only acted on while listening or
-  while the user is speaking; during thinking and speaking its audio is discarded, and the
-  first 300 ms after a reply is skipped. Interrupting is by hotkey for now.
+- **Talking over the assistant.** While a reply is spoken the microphone, with the
+  assistant's voice removed, is watched for the user. Speech has to be surer (0.65 rather
+  than 0.5) and longer (288 ms rather than 96 ms) than an ordinary start of turn. Then the
+  reply is cut off (a 6 ms fade), its unheard part is forgotten, and what the user is
+  saying becomes their next turn, from its first word. The hotkey still interrupts too.
+- **The assistant must not answer itself.** Three layers: echo cancellation, the stricter
+  gate above, and the transcript check in `echo_guard.rs`. While the assistant is thinking
+  the microphone is ignored. Without a working echo canceller, the microphone is ignored
+  while it speaks as well, and interrupting is by hotkey only.
 - **Limits.** 45 s of silence ends a conversation, as does 10 minutes in total; one turn is
   cut at 60 s. A microphone that reports an error or delivers nothing for 3 s ends it.
 - **Nothing said is logged or stored.** Notices from the engine carry phases, fixed

@@ -226,6 +226,44 @@ Phase 1 (unify the production pipeline): in progress.
   - The page does not scroll or highlight as it is read.
   Next risks: asking a browser for its accessibility tree switches that feature on in the
   browser; `Ctrl+Alt+R` may clash with other software.
+- **Slice 22 -- natural turn-taking (done; interruption by voice not yet tried by a person).**
+  See `../ARCHITECTURE.md` (Conversation Mode) and `../benchmarks/CONVERSATION_BENCHMARK.md`.
+  - Transcribing during the turn: `conversation/assembler.rs` sends each phrase to the
+    recogniser at a 250 ms pause and ends the turn once everything said is transcribed and
+    the silence has lasted 400 ms, 700 ms or 1.4 s depending on how finished it reads
+    (`conversation/turn_completion.rs`). The turn worker no longer transcribes anything.
+  - Talking over the assistant: `audio/echo.rs` (the `sonora` port of the WebRTC canceller,
+    pure Rust, pinned), the speaker reporting exactly what it played, a stricter speech gate
+    while a reply is spoken, a `BargeIn` transition in the state machine, and
+    `conversation/echo_guard.rs` to discard an interruption that is the assistant's own
+    words. With no working canceller the previous behaviour applies (hotkey only).
+  - Three agents built the echo canceller, the completeness judge and a Smart Turn audio
+    model in isolated harnesses while the engine was restructured.
+  - Measured: median 663 ms from end of speech to first reply audio over twelve turns
+    (slowest 786 ms), against 1,090 ms and 1,859 ms before. On this laptop the audio driver
+    already removes the speaker from the microphone (46-56 dB loss in three of four runs).
+  +76 Rust tests (496 total, 7 ignored); 163 web tests unchanged.
+  Known limitations:
+  - Nobody has talked over the assistant at a real microphone. The tests use scripted
+    audio, and the echo canceller's final settings were not run against the real devices.
+    One measurement run had the microphone 27 dB louder than the others for unknown
+    reasons, so behaviour may vary from day to day.
+  - The completeness judge is English, rule-based, and tested on written utterances. It
+    treats "hold on" and "wait" as hesitation, never calls an unpunctuated statement
+    complete, and can be fooled by a full stop the recogniser put after a verb that wanted
+    more. Its precision for "incomplete" on the held-out set was 0.85, below the 0.9 aim,
+    which shows up as waiting longer than needed, not as cutting the user off.
+  - The turn ends when the last phrase's transcript arrives, about 350-500 ms after the
+    pause, so the 400 ms wait is rarely the limit; a faster recogniser would be.
+  - Smart Turn (`audio/smart_turn.rs`, `scripts/Get-SmartTurnModel.ps1`) is written and
+    validated against the reference implementation but NOT compiled into the app: it would
+    add about 27 MB and 40 crates, takes 62-80 ms per decision (150-210 ms under load), and
+    in a rough check called 18 of 60 cut-off clips complete. The file is not in the module
+    tree. Decide after real use whether to wire it in or delete it.
+  - A real interruption that repeats most of a sentence the assistant just said is
+    discarded as echo. While the assistant is thinking, speech is still ignored.
+  Next risks: an echo that slips through all three layers makes the assistant cut itself
+  off; the canceller adds 28 ms of delay to the microphone path.
 - Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey.

@@ -26,7 +26,9 @@ use std::{
 };
 
 use super::{
+    assembler::{Action, AssemblerConfig, ReadinessJudge, TurnAssembler},
     chunker::SentenceChunker,
+    echo_guard::is_echo_of,
     memory::ConversationMemory,
     router::{route_turn, ReadWhat, TurnIntent},
     speaking::{speak_pieces, Spoken},
@@ -36,6 +38,7 @@ use crate::{
     asr::provider::{SpeechToTextProvider, TranscriptionRequest},
     audio::{
         devices::{AudioSink, AudioSource},
+        echo::{EchoCanceller, ECHO_SAMPLE_RATE},
         resample::StreamResampler,
         spectrum::{SpectrumAnalyzer, SpectrumFrame},
         speech_detector::{EnergyDetector, SpeechDetector, DETECTOR_SAMPLE_RATE},
@@ -56,6 +59,11 @@ pub struct Resources {
     pub voice: Arc<dyn StreamingTextToSpeech>,
     /// Reads the focused window when the user asks for it.
     pub page: Arc<dyn PageSource>,
+    /// Removes the assistant's own voice from the microphone. When it is a real canceller
+    /// the user can interrupt by speaking; with the pass-through one, only by hotkey.
+    pub echo: Box<dyn EchoCanceller>,
+    /// Judges how finished a transcript reads, which sets how long a silence ends the turn.
+    pub readiness: ReadinessJudge,
     /// The local model to answer with.
     pub model: String,
     /// Language code for speech recognition.
@@ -71,6 +79,20 @@ pub struct Limits {
     pub max_conversation: Duration,
     /// One user turn is cut off at this length.
     pub max_utterance: Duration,
+    /// A silence this long counts as a pause: the speech so far is sent for transcription.
+    pub pause: Duration,
+    /// Silence that ends a turn whose words read as finished.
+    pub ready_wait: Duration,
+    /// Silence that ends a turn when it is unclear whether the user has finished.
+    pub unsure_wait: Duration,
+    /// Silence that ends a turn whose words trail off mid-thought.
+    pub not_ready_wait: Duration,
+    /// How long the user must speak over the assistant before it gives way. Longer than
+    /// the ordinary start of a turn, because a remnant of the assistant's own voice or a
+    /// noise in the room must not cut a reply off.
+    pub barge_in_speech: Duration,
+    /// How sure the speech detector must be, from 0 to 1, for speech over the assistant.
+    pub barge_in_threshold: f32,
     /// Audio kept from before speech was detected, so the first word is not clipped.
     pub pre_roll: Duration,
     /// Silence kept after the last word of a turn.
@@ -95,6 +117,12 @@ impl Default for Limits {
             idle: Duration::from_secs(45),
             max_conversation: Duration::from_secs(10 * 60),
             max_utterance: Duration::from_secs(60),
+            pause: Duration::from_millis(250),
+            ready_wait: Duration::from_millis(400),
+            unsure_wait: Duration::from_millis(700),
+            not_ready_wait: Duration::from_millis(1_400),
+            barge_in_speech: Duration::from_millis(288),
+            barge_in_threshold: 0.65,
             pre_roll: Duration::from_millis(400),
             tail: Duration::from_millis(200),
             reopen_guard: Duration::from_millis(300),
@@ -195,8 +223,12 @@ enum Message {
 
 /// One user turn's audio, handed from the ear to the turn worker.
 struct Utterance {
-    /// Mono 16 kHz.
-    samples: Vec<f32>,
+    /// Everything the user said, already transcribed while they spoke.
+    text: String,
+    /// From the first word to the last.
+    speech_ms: u64,
+    /// Total time the recogniser spent on this turn's phrases.
+    transcribe_ms: u64,
     /// When the user stopped speaking, as best the detector can tell.
     speech_ended_at: Instant,
     endpoint_wait: Duration,
@@ -214,6 +246,10 @@ struct Session {
     /// Whether the language model should be kept warm: true from the moment the user starts
     /// speaking until their question is sent to it.
     keep_model_warm: Arc<AtomicBool>,
+    /// True while a reply is being spoken, which is when the user may talk over it.
+    assistant_speaking: Arc<AtomicBool>,
+    /// The reply being spoken, as text, so its echo can be told from an interruption.
+    speaking_text: Arc<Mutex<String>>,
     utterance: Arc<Mutex<Option<Utterance>>>,
     source: Arc<dyn AudioSource>,
     sink: Arc<dyn AudioSink>,
@@ -341,12 +377,11 @@ fn run_loop(
                         utterance,
                         cancel,
                         sink: active.sink.clone(),
-                        asr: active.asr.clone(),
                         chat: active.chat.clone(),
                         voice: active.voice.clone(),
                         page: active.page.clone(),
+                        speaking_text: active.speaking_text.clone(),
                         model: active.model.clone(),
-                        language: active.language.clone(),
                         memory: memory.clone(),
                         keep_model_warm: active.keep_model_warm.clone(),
                         host: host.clone(),
@@ -397,6 +432,9 @@ fn run_loop(
                 .store(next.phase.listens(), Ordering::SeqCst);
             // Warm from the first word; the turn worker switches it off when it asks the
             // question, and any phase other than "thinking" switches it off too.
+            active
+                .assistant_speaking
+                .store(next.phase == Phase::Speaking, Ordering::SeqCst);
             match next.phase {
                 Phase::UserSpeaking => active.keep_model_warm.store(true, Ordering::SeqCst),
                 Phase::Thinking => {}
@@ -432,6 +470,8 @@ fn open_session(
         chat,
         voice,
         page,
+        echo,
+        readiness,
         model,
         language,
     } = resources;
@@ -441,6 +481,8 @@ fn open_session(
         listening: Arc::new(AtomicBool::new(false)),
         listen_epoch: Arc::new(AtomicU64::new(0)),
         keep_model_warm: Arc::new(AtomicBool::new(false)),
+        assistant_speaking: Arc::new(AtomicBool::new(false)),
+        speaking_text: Arc::new(Mutex::new(String::new())),
         utterance: Arc::new(Mutex::new(None)),
         source,
         sink,
@@ -460,6 +502,13 @@ fn open_session(
         listening: session.listening.clone(),
         listen_epoch: session.listen_epoch.clone(),
         utterance: session.utterance.clone(),
+        asr: session.asr.clone(),
+        language: session.language.clone(),
+        readiness,
+        echo,
+        sink: session.sink.clone(),
+        assistant_speaking: session.assistant_speaking.clone(),
+        speaking_text: session.speaking_text.clone(),
         host: host.clone(),
         tx: tx.clone(),
         limits,
@@ -538,14 +587,129 @@ struct Ear {
     listening: Arc<AtomicBool>,
     listen_epoch: Arc<AtomicU64>,
     utterance: Arc<Mutex<Option<Utterance>>>,
+    asr: Arc<dyn SpeechToTextProvider>,
+    language: String,
+    readiness: ReadinessJudge,
+    echo: Box<dyn EchoCanceller>,
+    sink: Arc<dyn AudioSink>,
+    assistant_speaking: Arc<AtomicBool>,
+    speaking_text: Arc<Mutex<String>>,
     host: Arc<dyn ConversationHost>,
     tx: mpsc::Sender<Message>,
     limits: Limits,
 }
 
+/// The audio of the turn in progress and the bookkeeping that goes with it.
+#[derive(Default)]
+struct TurnAudio {
+    /// 16 kHz audio not yet released. `samples[0]` is position `base` on the audio clock.
+    samples: Vec<f32>,
+    base: u64,
+    /// Where the turn's audio began, for measuring how long the user spoke.
+    turn_start: u64,
+    /// Recogniser time spent on this turn so far.
+    transcribe_ms: u64,
+    /// The turn began by speaking over the assistant.
+    barged: bool,
+}
+
+impl TurnAudio {
+    fn clear(&mut self) {
+        self.samples.clear();
+        self.base = 0;
+        self.turn_start = 0;
+        self.transcribe_ms = 0;
+        self.barged = false;
+    }
+
+    /// A copy of the audio in `from..to`, clamped to what is still held.
+    fn slice(&self, from: u64, to: u64) -> Vec<f32> {
+        let start = from
+            .saturating_sub(self.base)
+            .min(self.samples.len() as u64) as usize;
+        let end = to.saturating_sub(self.base).min(self.samples.len() as u64) as usize;
+        self.samples[start..end.max(start)].to_vec()
+    }
+
+    /// Drop audio before `position`.
+    fn release(&mut self, position: u64) {
+        let drop = position
+            .saturating_sub(self.base)
+            .min(self.samples.len() as u64) as usize;
+        self.samples.drain(..drop);
+        self.base += drop as u64;
+    }
+
+    /// Keep only the last `keep` samples.
+    fn keep_last(&mut self, keep: usize) {
+        if self.samples.len() > keep {
+            let drop = self.samples.len() - keep;
+            self.samples.drain(..drop);
+            self.base += drop as u64;
+        }
+    }
+}
+
+/// What the ear is doing with the microphone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EarMode {
+    /// Ignoring it: the assistant is thinking, or speaking with no way to tell its own voice
+    /// from the user's.
+    Deaf,
+    /// The user has the floor: finding the start and end of their turn.
+    Listening,
+    /// The assistant is speaking; listening only for the user talking over it.
+    Guarding,
+}
+
+/// One phrase for the recogniser: the request id and its audio.
+type TranscribeJob = (u64, Vec<f32>);
+/// The recogniser's answer: the id, the text (or failure) and how long it took.
+type TranscribeDone = (u64, Result<String, ()>, u64);
+
 impl Ear {
     fn send(&self, event: Event) {
         let _ = self.tx.send(Message::Event(event));
+    }
+
+    /// Transcribes phrases on its own thread, one at a time, so listening never stalls.
+    fn start_transcriber(&self) -> (mpsc::Sender<TranscribeJob>, mpsc::Receiver<TranscribeDone>) {
+        let (job_tx, job_rx) = mpsc::channel::<TranscribeJob>();
+        let (done_tx, done_rx) = mpsc::channel::<TranscribeDone>();
+        let asr = self.asr.clone();
+        let language = self.language.clone();
+        thread::Builder::new()
+            .name("localflow-transcriber".to_string())
+            .spawn(move || {
+                for (id, samples) in job_rx {
+                    let started = Instant::now();
+                    let result = asr
+                        .transcribe(&TranscriptionRequest {
+                            samples: &samples,
+                            language: &language,
+                            initial_prompt: None,
+                        })
+                        .map(|transcription| {
+                            // The recogniser's marker for "no speech" is not something said.
+                            if crate::asr::whisper_text::is_blank_transcript(&transcription.text) {
+                                String::new()
+                            } else {
+                                transcription.text
+                            }
+                        })
+                        .map_err(|error| {
+                            tracing::warn!(error = %error, "conversation phrase could not be transcribed");
+                        });
+                    if done_tx
+                        .send((id, result, started.elapsed().as_millis() as u64))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .expect("the transcription thread should start");
+        (job_tx, done_rx)
     }
 
     fn run(mut self) {
@@ -555,26 +719,61 @@ impl Ear {
             |duration: Duration| (duration.as_secs_f64() * detector_rate as f64) as usize;
         let samples_native =
             |duration: Duration| (duration.as_secs_f64() * native_rate as f64) as usize;
+        // With a real echo canceller the microphone stays useful while the assistant speaks.
+        let can_barge_in = self.echo.id() != "none";
 
-        let mut config = SegmenterConfig::conversation(self.detector.frame());
+        // The segmenter reports short pauses; the assembler decides which pause ends the turn.
+        let segmenter_config = |frame: Duration, pause: Duration| SegmenterConfig {
+            end_silence: pause,
+            ..SegmenterConfig::conversation(frame)
+        };
+        // Speaking over the assistant has to be surer and last longer than starting a turn.
+        let guard_config = |frame: Duration, limits: &Limits| SegmenterConfig {
+            start_threshold: limits.barge_in_threshold,
+            min_speech: limits.barge_in_speech,
+            ..SegmenterConfig::conversation(frame)
+        };
+        let mut config = segmenter_config(self.detector.frame(), self.limits.pause);
         let mut segmenter = TurnSegmenter::new(config);
+        let mut guard = TurnSegmenter::new(guard_config(self.detector.frame(), &self.limits));
         let mut frame_samples = samples_16k(config.frame).max(1);
+        let mut assembler = TurnAssembler::new(
+            AssemblerConfig {
+                sample_rate: DETECTOR_SAMPLE_RATE,
+                pre_roll: self.limits.pre_roll,
+                tail: self.limits.tail,
+                ready_wait: self.limits.ready_wait,
+                unsure_wait: self.limits.unsure_wait,
+                not_ready_wait: self.limits.not_ready_wait,
+                max_turn: self.limits.max_utterance,
+            },
+            self.readiness.clone(),
+        );
+        let (jobs, done) = self.start_transcriber();
         let mut to_16k = StreamResampler::new(native_rate, DETECTOR_SAMPLE_RATE);
+        let mut played_to_16k = StreamResampler::new(self.sink.sample_rate(), ECHO_SAMPLE_RATE);
         let mut analyzer = SpectrumAnalyzer::new(native_rate);
 
         let mut native: Vec<f32> = Vec::new();
         let mut pcm: Vec<f32> = Vec::new();
+        let mut cleaned: Vec<f32> = Vec::new();
+        let mut played: Vec<f32> = Vec::new();
+        let mut played_16k: Vec<f32> = Vec::new();
         let mut probabilities: Vec<f32> = Vec::new();
         // 16 kHz audio the detector has been given but has not scored yet.
         let mut staging: Vec<f32> = Vec::new();
-        // The turn being captured: a short lead-in while waiting, everything while speaking.
-        let mut heard: Vec<f32> = Vec::new();
-        let mut speaking = false;
+        let mut turn = TurnAudio::default();
+        // Position on the audio clock: 16 kHz samples scored since the mode last changed.
+        let mut clock = 0u64;
+        let mut mode = EarMode::Deaf;
         // The last "floor is yours" signal acted on. Zero means none yet.
         let mut seen_epoch = 0u64;
         // A finished turn has been handed over; ignore the microphone until the loop gives
         // the floor back.
         let mut handed_off = false;
+        // The user spoke over the assistant and the loop has not yet caught up: keep
+        // listening to them meanwhile.
+        let mut barging = false;
         let mut guard_remaining = 0usize;
         // Audio-clock counters: they advance with samples received, not with wall time.
         let mut idle_samples = 0usize;
@@ -588,6 +787,29 @@ impl Ear {
                 return;
             }
             thread::sleep(self.limits.poll);
+
+            // Transcripts first: they can end a turn even when no new audio has arrived.
+            while let Ok((id, result, took_ms)) = done.try_recv() {
+                if handed_off || mode != EarMode::Listening {
+                    continue;
+                }
+                let actions = match result {
+                    Ok(text) => {
+                        turn.transcribe_ms += took_ms;
+                        assembler.transcribed(id, &text, clock)
+                    }
+                    Err(()) => {
+                        let actions = assembler.transcription_failed(id);
+                        if !actions.is_empty() {
+                            self.host.notify(Notice::Problem(
+                                "I couldn't make out that audio.".to_string(),
+                            ));
+                        }
+                        actions
+                    }
+                };
+                handed_off |= self.carry_out(actions, &mut turn, &jobs);
+            }
 
             native.clear();
             self.source.read(&mut native);
@@ -617,29 +839,64 @@ impl Ear {
                 });
             }
 
-            if !self.listening.load(Ordering::SeqCst) {
-                continue;
+            // The echo canceller hears everything, in every mode: what the speaker was given
+            // and what the microphone picked up. It can only stay adapted if it is never
+            // starved, and its output replaces the raw microphone from here on.
+            played.clear();
+            self.sink.take_played(&mut played);
+            if !played.is_empty() {
+                played_16k.clear();
+                played_to_16k.process(&played, &mut played_16k);
+                self.echo.played(&played_16k);
             }
+            pcm.clear();
+            to_16k.process(&native, &mut pcm);
+            cleaned.clear();
+            self.echo.heard(&pcm, &mut cleaned);
+
+            // Which mode applies now.
+            let listening = self.listening.load(Ordering::SeqCst);
+            if listening {
+                barging = false;
+            }
+            let wanted = if listening || barging {
+                EarMode::Listening
+            } else if can_barge_in && self.assistant_speaking.load(Ordering::SeqCst) {
+                EarMode::Guarding
+            } else {
+                EarMode::Deaf
+            };
             let epoch = self.listen_epoch.load(Ordering::SeqCst);
-            if epoch != seen_epoch {
-                // The floor has just been handed to the user: start from a clean slate.
+            let floor_returned = listening && epoch != seen_epoch;
+            if floor_returned {
                 seen_epoch = epoch;
+            }
+            if floor_returned || (wanted != mode && !(barging && wanted == EarMode::Listening)) {
+                // A fresh start: the floor has been handed to the user, or the assistant has
+                // begun speaking. A transcription still running belongs to the old turn.
                 segmenter.reset();
+                guard.reset();
+                assembler.reset();
                 self.detector.reset();
-                to_16k.reset();
                 analyzer.reset();
                 staging.clear();
-                heard.clear();
-                speaking = false;
+                turn.clear();
+                clock = 0;
                 handed_off = false;
                 idle_samples = 0;
-                guard_remaining = samples_native(self.limits.reopen_guard);
+                // Without echo cancellation, skip the tail of the assistant's own voice.
+                guard_remaining = if floor_returned && !can_barge_in {
+                    samples_16k(self.limits.reopen_guard)
+                } else {
+                    0
+                };
             }
-            if handed_off {
+            mode = wanted;
+            if mode == EarMode::Deaf || handed_off {
                 continue;
             }
 
-            let mut fresh = &native[..];
+            let mut fresh = &cleaned[..];
             if guard_remaining > 0 {
                 let skip = guard_remaining.min(fresh.len());
                 fresh = &fresh[skip..];
@@ -649,25 +906,25 @@ impl Ear {
                 continue;
             }
 
-            // A live picture for the overlay, about 35 times a second.
-            analyzer.push(fresh);
-            picture_samples += fresh.len();
-            if picture_samples >= native_rate as usize / 35 {
-                picture_samples = 0;
-                let level = (fresh.iter().map(|sample| sample * sample).sum::<f32>()
-                    / fresh.len() as f32)
-                    .sqrt();
-                self.host.notify(Notice::Microphone {
-                    frame: analyzer.analyze(),
-                    level,
-                });
+            // A live picture for the overlay while the user has the floor.
+            if mode == EarMode::Listening {
+                analyzer.push(&native);
+                picture_samples += native.len();
+                if picture_samples >= native_rate as usize / 35 {
+                    picture_samples = 0;
+                    let level = (native.iter().map(|sample| sample * sample).sum::<f32>()
+                        / native.len() as f32)
+                        .sqrt();
+                    self.host.notify(Notice::Microphone {
+                        frame: analyzer.analyze(),
+                        level,
+                    });
+                }
             }
 
-            pcm.clear();
-            to_16k.process(fresh, &mut pcm);
-            staging.extend_from_slice(&pcm);
+            staging.extend_from_slice(fresh);
             probabilities.clear();
-            if let Err(problem) = self.detector.feed(&pcm, &mut probabilities) {
+            if let Err(problem) = self.detector.feed(fresh, &mut probabilities) {
                 // Keep the conversation going on the simple detector rather than ending it.
                 tracing::warn!(
                     detector = self.detector.id(),
@@ -675,12 +932,19 @@ impl Ear {
                 );
                 self.host.notify(Notice::Problem(problem));
                 self.detector = Box::new(EnergyDetector::default());
-                config = SegmenterConfig::conversation(self.detector.frame());
+                config = segmenter_config(self.detector.frame(), self.limits.pause);
                 segmenter = TurnSegmenter::new(config);
+                guard = TurnSegmenter::new(guard_config(self.detector.frame(), &self.limits));
                 frame_samples = samples_16k(config.frame).max(1);
                 staging.clear();
-                heard.clear();
-                speaking = false;
+                if assembler.in_turn() {
+                    assembler.reset();
+                    self.send(Event::TurnAbandoned {
+                        conversation: self.conversation,
+                    });
+                }
+                turn.clear();
+                clock = 0;
                 continue;
             }
 
@@ -690,39 +954,51 @@ impl Ear {
             let mut consumed = 0usize;
             for probability in probabilities.iter().copied() {
                 let frame_end = (consumed + frame_samples).min(staging.len());
-                heard.extend_from_slice(&staging[consumed..frame_end]);
+                turn.samples
+                    .extend_from_slice(&staging[consumed..frame_end]);
+                clock += (frame_end - consumed) as u64;
                 consumed = frame_end;
+                let frame = frame_samples as u64;
 
-                match segmenter.observe(probability) {
-                    Some(SegmentEvent::SpeechStarted { .. }) => {
-                        speaking = true;
-                        self.send(Event::SpeechStarted {
+                if mode == EarMode::Guarding {
+                    // Only one thing matters here: is the user talking over the reply?
+                    turn.keep_last(
+                        samples_16k(self.limits.pre_roll)
+                            + samples_16k(self.limits.barge_in_speech),
+                    );
+                    if let Some(SegmentEvent::SpeechStarted { frames_ago }) =
+                        guard.observe(probability)
+                    {
+                        self.send(Event::BargeIn {
                             conversation: self.conversation,
                         });
+                        // Their words so far are the start of the next turn.
+                        let started = clock.saturating_sub((frames_ago as u64 + 1) * frame);
+                        let actions = assembler.speech_started(started);
+                        self.carry_out(actions, &mut turn, &jobs);
+                        turn.barged = true;
+                        segmenter.assume_speaking();
+                        barging = true;
+                        mode = EarMode::Listening;
                     }
-                    Some(SegmentEvent::SpeechEnded { frames_ago }) => {
-                        self.finish_utterance(
-                            &mut heard,
-                            frames_ago as usize * frame_samples,
-                            config.end_silence,
-                        );
-                        handed_off = true;
-                        break;
-                    }
-                    None => {}
+                    continue;
                 }
 
-                if speaking {
-                    if heard.len() >= samples_16k(self.limits.max_utterance) {
-                        self.finish_utterance(&mut heard, 0, Duration::ZERO);
-                        handed_off = true;
-                        break;
-                    }
-                } else {
-                    let keep = samples_16k(self.limits.pre_roll);
-                    if heard.len() > keep {
-                        heard.drain(..heard.len() - keep);
-                    }
+                let actions = match segmenter.observe(probability) {
+                    Some(SegmentEvent::SpeechStarted { frames_ago }) => assembler
+                        .speech_started(clock.saturating_sub((frames_ago as u64 + 1) * frame)),
+                    Some(SegmentEvent::SpeechEnded { frames_ago }) => assembler
+                        .pause_started(clock.saturating_sub(frames_ago as u64 * frame), clock),
+                    None => assembler.tick(clock),
+                };
+                handed_off |= self.carry_out(actions, &mut turn, &jobs);
+                if handed_off {
+                    break;
+                }
+
+                if !assembler.in_turn() {
+                    // Waiting: keep only a short lead-in, and count the silence.
+                    turn.keep_last(samples_16k(self.limits.pre_roll));
                     idle_samples += frame_samples;
                     if idle_samples >= samples_16k(self.limits.idle) {
                         idle_samples = 0;
@@ -730,42 +1006,90 @@ impl Ear {
                             conversation: self.conversation,
                         });
                     }
+                } else {
+                    idle_samples = 0;
                 }
             }
             if handed_off {
                 staging.clear();
-                speaking = false;
             } else {
                 staging.drain(..consumed);
             }
         }
     }
 
-    /// Hand the captured turn to the loop. `trailing_silence` samples at the end are the
-    /// pause that ended the turn; all but a short tail of it is dropped.
-    fn finish_utterance(
+    /// Do what the assembler asked. Returns true when the turn was handed to the loop, after
+    /// which the microphone is ignored until the floor comes back.
+    fn carry_out(
         &self,
-        heard: &mut Vec<f32>,
-        trailing_silence: usize,
-        endpoint_wait: Duration,
-    ) {
-        let tail = (self.limits.tail.as_secs_f64() * DETECTOR_SAMPLE_RATE as f64) as usize;
-        let cut = trailing_silence.saturating_sub(tail).min(heard.len());
-        heard.truncate(heard.len() - cut);
-        let utterance = Utterance {
-            samples: std::mem::take(heard),
-            speech_ended_at: Instant::now()
-                .checked_sub(endpoint_wait)
-                .unwrap_or_else(Instant::now),
-            endpoint_wait,
-        };
-        *self
-            .utterance
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(utterance);
-        self.send(Event::SpeechEnded {
-            conversation: self.conversation,
-        });
+        actions: Vec<Action>,
+        turn: &mut TurnAudio,
+        jobs: &mpsc::Sender<TranscribeJob>,
+    ) -> bool {
+        let mut handed_off = false;
+        for action in actions {
+            match action {
+                Action::TurnStarted => {
+                    turn.turn_start = turn.base;
+                    turn.transcribe_ms = 0;
+                    self.send(Event::SpeechStarted {
+                        conversation: self.conversation,
+                    });
+                }
+                Action::Transcribe { id, from, to } => {
+                    let _ = jobs.send((id, turn.slice(from, to)));
+                }
+                Action::Release { before } => turn.release(before),
+                Action::Commit {
+                    text,
+                    speech_end,
+                    waited,
+                } => {
+                    // An "interruption" that is only the assistant's own words, heard back
+                    // through the microphone, is not a turn.
+                    let own_voice = turn.barged && {
+                        let speaking = self
+                            .speaking_text
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        is_echo_of(&text, &speaking)
+                    };
+                    turn.barged = false;
+                    if own_voice {
+                        tracing::info!("an interruption was the assistant's own voice; ignored");
+                        self.send(Event::TurnAbandoned {
+                            conversation: self.conversation,
+                        });
+                        continue;
+                    }
+                    let utterance = Utterance {
+                        text,
+                        speech_ms: speech_end.saturating_sub(turn.turn_start) * 1_000
+                            / DETECTOR_SAMPLE_RATE as u64,
+                        transcribe_ms: turn.transcribe_ms,
+                        speech_ended_at: Instant::now()
+                            .checked_sub(waited)
+                            .unwrap_or_else(Instant::now),
+                        endpoint_wait: waited,
+                    };
+                    *self
+                        .utterance
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(utterance);
+                    self.send(Event::SpeechEnded {
+                        conversation: self.conversation,
+                    });
+                    handed_off = true;
+                }
+                Action::Abandon => {
+                    turn.barged = false;
+                    self.send(Event::TurnAbandoned {
+                        conversation: self.conversation,
+                    });
+                }
+            }
+        }
+        handed_off
     }
 }
 
@@ -774,12 +1098,11 @@ struct TurnContext {
     utterance: Utterance,
     cancel: CancelFlag,
     sink: Arc<dyn AudioSink>,
-    asr: Arc<dyn SpeechToTextProvider>,
     chat: Arc<dyn ChatProvider>,
     voice: Arc<dyn StreamingTextToSpeech>,
     page: Arc<dyn PageSource>,
+    speaking_text: Arc<Mutex<String>>,
     model: String,
-    language: String,
     memory: Arc<Mutex<ConversationMemory>>,
     keep_model_warm: Arc<AtomicBool>,
     host: Arc<dyn ConversationHost>,
@@ -803,32 +1126,13 @@ fn run_turn(context: TurnContext) {
     let turn = context.turn;
     let mut timings = TurnTimings {
         turn,
-        speech_ms: (context.utterance.samples.len() as u64 * 1_000) / DETECTOR_SAMPLE_RATE as u64,
+        speech_ms: context.utterance.speech_ms,
         endpoint_wait_ms: context.utterance.endpoint_wait.as_millis() as u64,
+        transcribe_ms: context.utterance.transcribe_ms,
         ..Default::default()
     };
-
-    let transcribe_started = Instant::now();
-    let transcript = context.asr.transcribe(&TranscriptionRequest {
-        samples: &context.utterance.samples,
-        language: &context.language,
-        initial_prompt: None,
-    });
-    timings.transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
-    if context.cancel.is_cancelled() {
-        return;
-    }
-    let transcript = match transcript {
-        Ok(transcription) => transcription.text,
-        Err(error) => {
-            tracing::warn!(error = %error, "conversation turn could not be transcribed");
-            context.host.notify(Notice::Problem(
-                "I couldn't make out that audio.".to_string(),
-            ));
-            context.send(Event::ReplyFailed { turn });
-            return;
-        }
-    };
+    // Transcribed phrase by phrase while the user was speaking.
+    let transcript = context.utterance.text.clone();
     timings.transcript_chars = transcript.chars().count();
 
     let intent = if crate::asr::whisper_text::is_blank_transcript(&transcript) {
@@ -950,11 +1254,25 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
         let first_audio = &first_audio_at;
         let voice_thread = scope.spawn(move || voice_pieces(context, piece_rx, first_audio));
 
+        // A new reply: what was being said before no longer matters to the echo check.
+        context
+            .speaking_text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         let send_piece = |piece: String| {
             first_piece_at
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .get_or_insert_with(Instant::now);
+            {
+                let mut speaking = context
+                    .speaking_text
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                speaking.push(' ');
+                speaking.push_str(&piece);
+            }
             let _ = piece_tx.send(piece);
         };
 
@@ -1202,6 +1520,29 @@ mod tests {
         }
     }
 
+    /// Stands in for a real echo canceller: reports itself as one, and passes the microphone
+    /// through. The scripted microphone carries only what the test puts on it, so there is
+    /// no echo to remove.
+    struct PretendEchoCancellation;
+
+    impl EchoCanceller for PretendEchoCancellation {
+        fn id(&self) -> &'static str {
+            "pretend"
+        }
+
+        fn played(&mut self, _speaker: &[f32]) {}
+
+        fn heard(&mut self, microphone: &[f32], cleaned: &mut Vec<f32>) {
+            cleaned.extend_from_slice(microphone);
+        }
+
+        fn echo_reduction_db(&self) -> f32 {
+            0.0
+        }
+
+        fn reset(&mut self) {}
+    }
+
     struct TestHost {
         mic: Arc<ScriptedMic>,
         speaker: Arc<RecordingSpeaker>,
@@ -1209,6 +1550,8 @@ mod tests {
         chat: Arc<MockChat>,
         voice: Arc<MockVoice>,
         page: Arc<ScriptedPage>,
+        /// Whether the conversation gets an echo canceller, which allows talking over it.
+        cancel_echo: AtomicBool,
         fail_open: Option<String>,
         notices: Mutex<Vec<Notice>>,
         opens: AtomicUsize,
@@ -1223,6 +1566,7 @@ mod tests {
                 chat: Arc::new(chat),
                 voice: Arc::new(voice),
                 page: Arc::new(ScriptedPage::default()),
+                cancel_echo: AtomicBool::new(false),
                 fail_open: None,
                 notices: Mutex::new(Vec::new()),
                 opens: AtomicUsize::new(0),
@@ -1304,6 +1648,12 @@ mod tests {
                 chat: self.chat.clone(),
                 voice: self.voice.clone(),
                 page: self.page.clone(),
+                echo: if self.cancel_echo.load(Ordering::Relaxed) {
+                    Box::new(PretendEchoCancellation)
+                } else {
+                    Box::new(crate::audio::echo::NoEchoCancellation)
+                },
+                readiness: test_readiness(),
                 model: "test-model".to_string(),
                 language: "en".to_string(),
             })
@@ -1316,8 +1666,24 @@ mod tests {
         }
     }
 
+    /// Questions and sentences read as finished; anything ending in "and" as unfinished.
+    fn test_readiness() -> ReadinessJudge {
+        Arc::new(|text: &str| {
+            if text.ends_with(['?', '.', '!']) {
+                crate::conversation::assembler::Readiness::Ready
+            } else if text.ends_with("and") {
+                crate::conversation::assembler::Readiness::NotReady
+            } else {
+                crate::conversation::assembler::Readiness::Unsure
+            }
+        })
+    }
+
     fn limits() -> Limits {
         Limits {
+            ready_wait: Duration::from_millis(300),
+            unsure_wait: Duration::from_millis(500),
+            not_ready_wait: Duration::from_millis(800),
             idle: Duration::from_secs(4),
             max_conversation: Duration::from_secs(60),
             max_utterance: Duration::from_secs(10),
@@ -1465,7 +1831,7 @@ mod tests {
             host.user_turn();
             wait_for("return to listening", || {
                 host.phases()
-                    .ends_with(&[Phase::Thinking, Phase::Listening])
+                    .ends_with(&[Phase::UserSpeaking, Phase::Listening])
             });
             host.notices.lock().unwrap().clear();
         }
@@ -2028,6 +2394,213 @@ mod tests {
             *host.page.requests.lock().unwrap(),
             vec![ReadWhat::Next, ReadWhat::Next]
         );
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn a_pause_mid_thought_keeps_the_turn_open_and_the_whole_thought_is_answered() {
+        let host = TestHost::new(
+            ScriptedAsr::saying(&["I went to the shop and", "bought some bread."]),
+            MockChat::replying(&["Nice."]),
+            MockVoice {
+                sample_rate: RATE,
+                ..MockVoice::default()
+            },
+        );
+        let core = started(&host);
+
+        // First phrase, then a pause long enough to end a finished sentence but not this one.
+        host.silence(Duration::from_millis(400));
+        host.user_speaks(Duration::from_millis(900));
+        host.silence(Duration::from_millis(600));
+        wait_for("the first phrase to be transcribed", || {
+            host.asr.calls.load(Ordering::SeqCst) == 1
+        });
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            core.phase(),
+            Phase::UserSpeaking,
+            "the turn must still be open"
+        );
+        assert!(host.chat.requests.lock().unwrap().is_empty());
+
+        // The user carries on and finishes.
+        host.user_speaks(Duration::from_millis(900));
+        host.silence(Duration::from_millis(900));
+        wait_for("the reply", || {
+            host.phases()
+                .ends_with(&[Phase::Speaking, Phase::Listening])
+        });
+
+        let requests = host.chat.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "one turn, one question");
+        assert_eq!(
+            requests[0][1].content,
+            "I went to the shop and bought some bread."
+        );
+        // Only the new phrase was transcribed the second time, not the whole turn again.
+        let samples = host.asr.samples_seen.lock().unwrap();
+        assert_eq!(samples.len(), 2);
+        assert!(samples[1] < RATE as usize * 2, "{samples:?}");
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn a_finished_question_is_answered_sooner_than_something_unclear() {
+        let answered_after = |transcript: &'static str| {
+            let host = TestHost::new(
+                ScriptedAsr::saying(&[transcript]),
+                MockChat::replying(&["Reply."]),
+                MockVoice {
+                    sample_rate: RATE,
+                    ..MockVoice::default()
+                },
+            );
+            let core = started(&host);
+            host.user_turn();
+            wait_for("the reply", || {
+                host.phases()
+                    .ends_with(&[Phase::Speaking, Phase::Listening])
+            });
+            let waited = host
+                .notices
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|notice| match notice {
+                    Notice::Turn(timings) => Some(timings.endpoint_wait_ms),
+                    _ => None,
+                })
+                .expect("turn timings");
+            core.send(Event::EndRequested);
+            waited
+        };
+
+        // All the audio arrives at once, so the wait recorded is the silence that had been
+        // heard when the transcript came back: at least the wait for its kind.
+        assert!(answered_after("What time is it?") >= 300);
+        assert!(answered_after("maybe the blue one") >= 500);
+    }
+
+    /// A host whose conversation can be talked over, with a slow voice so there is time to.
+    fn interruptible(asr: &[&str], reply: &[&str]) -> Arc<TestHost> {
+        let host = TestHost::new(
+            ScriptedAsr::saying(asr),
+            MockChat::replying(reply),
+            MockVoice {
+                sample_rate: RATE,
+                chunk_delay: Duration::from_millis(15),
+                ..MockVoice::default()
+            },
+        );
+        host.cancel_echo.store(true, Ordering::Relaxed);
+        // Audio stays queued, as on a real speaker, so there is a reply to cut off.
+        host.speaker.hold.store(true, Ordering::Relaxed);
+        host
+    }
+
+    #[test]
+    fn speaking_over_the_reply_cuts_it_off_and_the_interruption_is_answered() {
+        let host = interruptible(
+            &["Tell me a long story.", "Actually, what time is it?"],
+            &[
+                "Once upon a time. ",
+                "There was a very long story. ",
+                "It went on and on.",
+            ],
+        );
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("speaking", || core.phase() == Phase::Speaking);
+        let flushes_before = host.speaker.flushes.load(Ordering::Relaxed);
+
+        // The user talks over the reply, then stops.
+        host.user_speaks(Duration::from_millis(900));
+        wait_for("the assistant to give way", || {
+            core.phase() == Phase::UserSpeaking
+        });
+        assert!(host.speaker.flushes.load(Ordering::Relaxed) > flushes_before);
+        host.speaker.release();
+        host.silence(Duration::from_millis(900));
+
+        wait_for("the interruption to reach the model", || {
+            host.chat.requests.lock().unwrap().len() == 2
+        });
+        let requests = host.chat.requests.lock().unwrap();
+        assert_eq!(
+            requests[1].last().unwrap().content,
+            "Tell me a long story. Actually, what time is it?",
+            "nothing of the first reply was heard, so the user's two messages run together"
+        );
+        // The recogniser heard the interruption from its first word.
+        let samples = host.asr.samples_seen.lock().unwrap();
+        assert!(samples[1] >= RATE as usize * 9 / 10, "{samples:?}");
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn a_short_noise_over_the_reply_does_not_cut_it_off() {
+        let host = interruptible(&["A question?"], &["A fairly long answer to hear out."]);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("speaking", || core.phase() == Phase::Speaking);
+        // A cough: 150 ms, shorter than an interruption must be.
+        host.user_speaks(Duration::from_millis(150));
+        host.silence(Duration::from_millis(400));
+        thread::sleep(Duration::from_millis(150));
+
+        assert_eq!(core.phase(), Phase::Speaking);
+        assert_eq!(host.asr.calls.load(Ordering::SeqCst), 1);
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn the_assistants_own_words_heard_back_are_not_taken_for_an_interruption() {
+        // The second "transcript" is a stretch of the reply itself: what a recogniser makes
+        // of echo the canceller let through.
+        let host = interruptible(
+            &["Explain it.", "is a lock that lets only one thread"],
+            &["A mutex is a lock that lets only one thread touch the data at a time."],
+        );
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("speaking", || core.phase() == Phase::Speaking);
+        host.user_speaks(Duration::from_millis(900));
+        wait_for("the apparent interruption", || {
+            core.phase() == Phase::UserSpeaking
+        });
+        host.speaker.release();
+        host.silence(Duration::from_millis(900));
+
+        wait_for("it to be recognised as echo", || {
+            core.phase() == Phase::Listening
+        });
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            host.chat.requests.lock().unwrap().len(),
+            1,
+            "the assistant answered its own voice"
+        );
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn without_echo_cancellation_speech_over_the_reply_is_ignored() {
+        let host = interruptible(&["A question?"], &["A fairly long answer to hear out."]);
+        host.cancel_echo.store(false, Ordering::Relaxed);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("speaking", || core.phase() == Phase::Speaking);
+        host.user_speaks(Duration::from_millis(900));
+        host.silence(Duration::from_millis(400));
+        thread::sleep(Duration::from_millis(150));
+
+        assert_eq!(core.phase(), Phase::Speaking);
+        assert_eq!(host.asr.calls.load(Ordering::SeqCst), 1);
         core.send(Event::EndRequested);
     }
 

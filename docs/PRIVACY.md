@@ -33,7 +33,10 @@ While it is on:
   the assistant can follow it, and is cleared when the conversation ends. It is not written
   to the database, to a file, or to a log, and it is not sent to the overlay or the
   settings window.
-- While the assistant is thinking or speaking the microphone's audio is discarded.
+- While the assistant is thinking, the microphone's audio is discarded. While it is
+  speaking, the microphone is listened to only to notice you talking over it; that audio is
+  kept for less than a second unless you do, in which case it becomes the start of your
+  next turn.
 
 It ends when you press the hotkey while the assistant is not talking, say goodbye, quit
 the app, after 45 seconds without speech, after 10 minutes in total, or if the microphone

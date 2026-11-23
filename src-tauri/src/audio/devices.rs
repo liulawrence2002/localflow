@@ -38,6 +38,9 @@ const MIC_RING_SECONDS: usize = 10;
 /// Speech queued for playback. A voice that generates faster than real time fills this and
 /// then waits, which also stops it racing far ahead of what has been heard.
 const SPEAKER_RING_SECONDS: usize = 20;
+/// How much played audio is kept for the echo canceller to collect. It is read every few
+/// milliseconds; two seconds only matters if the reader stalls.
+const PLAYED_COPY_SECONDS: usize = 2;
 /// Length of the fade when playback is told to stop.
 const STOP_FADE: Duration = Duration::from_millis(6);
 /// Headroom on synthesised speech so a loud passage never clips the device.
@@ -65,6 +68,11 @@ pub trait AudioSink: Send + Sync {
     fn queued(&self) -> usize;
     /// Total samples played since the stream opened.
     fn played(&self) -> u64;
+    /// Append what the device has been given to play since the last call, silence included,
+    /// at [`AudioSink::sample_rate`]. This is the reference an echo canceller needs: the
+    /// sound as it left for the speaker, in step with real time. The default reports
+    /// nothing, for sinks that make no sound.
+    fn take_played(&self, _out: &mut Vec<f32>) {}
     /// Stop now: fade out, discard everything queued, and return once that has happened.
     fn flush(&self);
     fn healthy(&self) -> bool;
@@ -301,6 +309,9 @@ fn capture<T: Copy>(
 
 struct SpeakerShared {
     ring: SampleRing,
+    /// A copy of every sample sent to the device, for echo cancellation. When nobody is
+    /// reading it, it fills and further samples are dropped, which costs nothing.
+    played_copy: SampleRing,
     failed: AtomicBool,
     played: AtomicU64,
     /// Incremented by [`AudioSink::flush`]; the callback fades out and discards when it sees
@@ -366,6 +377,10 @@ impl AudioSink for SpeakerStream {
 
     fn played(&self) -> u64 {
         self.shared.played.load(Ordering::Relaxed)
+    }
+
+    fn take_played(&self, out: &mut Vec<f32>) {
+        self.shared.played_copy.pop_all(out);
     }
 
     fn flush(&self) {
@@ -461,8 +476,10 @@ impl Renderer {
     /// Fill one interleaved device buffer, the same mono signal on every channel.
     fn fill<T: Copy>(&mut self, output: &mut [T], channels: usize, convert: impl Fn(f32) -> T) {
         for frame in output.chunks_mut(channels.max(1)) {
-            let value = convert(self.next().clamp(-1.0, 1.0));
-            frame.fill(value);
+            let sample = self.next().clamp(-1.0, 1.0);
+            // Lock-free and allocation-free, like everything else on this thread.
+            self.shared.played_copy.push(sample);
+            frame.fill(convert(sample));
         }
     }
 }
@@ -482,6 +499,7 @@ fn build_speaker_stream() -> Result<(cpal::Stream, Arc<SpeakerShared>, u32), Str
 
     let shared = Arc::new(SpeakerShared {
         ring: SampleRing::new(sample_rate as usize * SPEAKER_RING_SECONDS),
+        played_copy: SampleRing::new(sample_rate as usize * PLAYED_COPY_SECONDS),
         failed: AtomicBool::new(false),
         played: AtomicU64::new(0),
         flush_requested: AtomicU32::new(0),
@@ -647,6 +665,7 @@ mod tests {
     fn speaker(rate: u32) -> (Renderer, Arc<SpeakerShared>) {
         let shared = Arc::new(SpeakerShared {
             ring: SampleRing::new(rate as usize),
+            played_copy: SampleRing::new(rate as usize),
             failed: AtomicBool::new(false),
             played: AtomicU64::new(0),
             flush_requested: AtomicU32::new(0),
@@ -723,6 +742,24 @@ mod tests {
         renderer.fill(&mut output, 1, |sample| sample);
 
         assert_eq!(output, [0.25 * PLAYBACK_GAIN; 4]);
+    }
+
+    #[test]
+    fn everything_sent_to_the_device_can_be_collected_in_step() {
+        let (mut renderer, shared) = speaker(48_000);
+        shared.ring.push_slice(&[0.5, -0.5]);
+        let mut output = [0.0f32; 8];
+        renderer.fill(&mut output, 2, |sample| sample);
+
+        let mut collected = Vec::new();
+        shared.played_copy.pop_all(&mut collected);
+
+        // One mono sample per device frame: the two queued samples, then the silence that
+        // followed, exactly as the speaker received them.
+        assert_eq!(
+            collected,
+            vec![0.5 * PLAYBACK_GAIN, -0.5 * PLAYBACK_GAIN, 0.0, 0.0]
+        );
     }
 
     #[test]

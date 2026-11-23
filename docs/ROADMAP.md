@@ -40,11 +40,16 @@ Status reflects the spec-driven upgrade. See `development/PLAN.md` for per-slice
 - Reading a window aloud: hotkey or spoken command, Windows UI Automation, a capture policy,
   main-content extraction, a per-page reading position, word-for-word speech.
 
+- Natural turn-taking: phrases transcribed while the user speaks, a wait that depends on how
+  finished the sentence reads, and interrupting by voice with echo cancellation. Median
+  response 663 ms on the benchmark.
+
 ## Now
 
 - Try conversation mode and page reading with a real microphone and speaker; judge the voice.
+- Talk over the assistant and note whether it gives way, and whether it ever cuts itself off.
 - Try page reading on the sites you actually use and note where extraction goes wrong.
-- The remaining milestones (natural turn-taking, summarise and explain, charts): see `VOICE_ASSISTANT_PLAN.md` for
+- The remaining milestones (summarise and explain, charts): see `VOICE_ASSISTANT_PLAN.md` for
   the audit, measured baselines, technology choices and milestones.
 
 - Manually verify native dictation in Notepad, a browser field, and VS Code (needs hardware).
