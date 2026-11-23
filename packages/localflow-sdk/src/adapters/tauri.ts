@@ -50,6 +50,7 @@ export function createTauriLocalFlowClient<TSettings = unknown, TContext = unkno
   const commands = { ...defaultCommands, ...options.commands };
   const listeners = new Map<keyof LocalFlowEventMap<TSettings>, Set<UntypedHandler>>();
   let nativeUnlisten: LocalFlowUnsubscribe | undefined;
+  let lastPhase: { phase: LocalFlowDictationPhase; message: string } | undefined;
 
   async function ensureNativeListener() {
     if (nativeUnlisten) {
@@ -57,7 +58,19 @@ export function createTauriLocalFlowClient<TSettings = unknown, TContext = unkno
     }
 
     nativeUnlisten = await listen<Partial<LocalFlowVoiceState>>(eventName, (event) => {
-      emit("voice_state", normalizeVoiceState(event.payload));
+      const state = normalizeVoiceState(event.payload);
+      if (isAudioFeatureEvent(event.payload)) {
+        // Audio-feature events are labelled "listening" by the native layer, and one can
+        // arrive just after the next phase was announced. They carry data for the picture
+        // only, so they keep whatever phase was announced last.
+        if (lastPhase) {
+          state.phase = lastPhase.phase;
+          state.message = lastPhase.message;
+        }
+      } else {
+        lastPhase = { phase: state.phase, message: state.message };
+      }
+      emit("voice_state", state);
     });
   }
 
@@ -124,7 +137,24 @@ function normalizeVoiceState(payload: Partial<LocalFlowVoiceState>): LocalFlowVo
     level: payload.level,
     pitch: payload.pitch,
     brightness: payload.brightness,
+    voicing: payload.voicing,
+    bands: normalizeBands(payload.bands),
   };
+}
+
+function isAudioFeatureEvent(payload: Partial<LocalFlowVoiceState>): boolean {
+  return payload.level != null || payload.bands != null;
+}
+
+/**
+ * LocalFlow's native layer sends spectrum bands as bytes (0..255); the SDK exposes 0..1.
+ * This adapter is specific to that native layer, so the scaling is unconditional.
+ */
+function normalizeBands(bands: number[] | null | undefined): number[] | undefined {
+  if (!Array.isArray(bands) || bands.length === 0) {
+    return undefined;
+  }
+  return bands.map((value) => (Number.isFinite(value) ? Math.max(0, Math.min(1, value / 255)) : 0));
 }
 
 function mapTauriStatus<TSettings>(

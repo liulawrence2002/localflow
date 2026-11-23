@@ -53,41 +53,60 @@ export class FeatureSmoother {
 }
 
 /**
- * Fixed-size circular buffer of recent normalized levels. Rear terrain rows read
- * older entries so speech peaks propagate backward through the depth rows.
- * Never grows; writes overwrite the oldest entry.
+ * Fixed-size ring of recent spectrum frames, each `columns` values wide. The ridgeline
+ * spectrogram draws its rear rows from older frames, so sound visibly recedes into the
+ * distance. Never grows and never allocates after construction.
  */
-export class CircularHistory {
+export class SpectrumHistory {
   private readonly buffer: Float32Array;
   private head = 0;
 
   constructor(
-    readonly size: number,
-    fill = 0,
+    readonly frames: number,
+    readonly columns: number,
   ) {
-    this.buffer = new Float32Array(Math.max(1, Math.floor(size)));
-    this.buffer.fill(clampUnit(fill));
+    this.buffer = new Float32Array(Math.max(1, frames) * Math.max(1, columns));
   }
 
-  push(value: number): void {
-    this.head = (this.head + 1) % this.buffer.length;
-    this.buffer[this.head] = clampUnit(value, this.buffer[this.head]);
+  /** Store a new frame, overwriting the oldest. */
+  push(values: Float32Array): void {
+    this.head = (this.head + 1) % this.frames;
+    const offset = this.head * this.columns;
+    for (let column = 0; column < this.columns; column += 1) {
+      const value = values[column];
+      this.buffer[offset + column] = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+    }
   }
 
-  /** Entry `stepsBack` writes ago; 0 is the newest. Clamped to the oldest entry. */
-  at(stepsBack: number): number {
-    const back = Math.max(0, Math.min(this.buffer.length - 1, Math.floor(stepsBack)));
-    return this.buffer[(this.head - back + this.buffer.length) % this.buffer.length];
+  /**
+   * Value at a fractional `column` and a fractional age in frames (0 is the newest),
+   * blended linearly in both directions and clamped to the stored range. Interpolating
+   * across columns matters: ridges are drawn with more points than there are columns, and
+   * reading whole columns would draw them as staircases.
+   */
+  sample(ageFrames: number, column: number): number {
+    const age = Math.max(0, Math.min(this.frames - 1, Number.isFinite(ageFrames) ? ageFrames : 0));
+    const newer = Math.floor(age);
+    const older = Math.min(this.frames - 1, newer + 1);
+    const ageFraction = age - newer;
+
+    const position = Math.max(0, Math.min(this.columns - 1, Number.isFinite(column) ? column : 0));
+    const left = Math.floor(position);
+    const right = Math.min(this.columns - 1, left + 1);
+    const columnFraction = position - left;
+
+    const newerOffset = ((this.head - newer + this.frames) % this.frames) * this.columns;
+    const olderOffset = ((this.head - older + this.frames) % this.frames) * this.columns;
+    const newerValue =
+      this.buffer[newerOffset + left] +
+      (this.buffer[newerOffset + right] - this.buffer[newerOffset + left]) * columnFraction;
+    const olderValue =
+      this.buffer[olderOffset + left] +
+      (this.buffer[olderOffset + right] - this.buffer[olderOffset + left]) * columnFraction;
+    return newerValue + (olderValue - newerValue) * ageFraction;
   }
 
   fill(value: number): void {
-    this.buffer.fill(clampUnit(value));
+    this.buffer.fill(Math.max(0, Math.min(1, value)));
   }
-}
-
-/** History offset for a depth row: front rows (depth→1) read the newest level,
- * rear rows (depth→0) read progressively older ones. */
-export function historyStepsForDepth(depth: number, historySize: number): number {
-  const clamped = clampUnit(depth, 1);
-  return Math.round((1 - clamped) * Math.max(0, historySize - 1) * 0.6);
 }

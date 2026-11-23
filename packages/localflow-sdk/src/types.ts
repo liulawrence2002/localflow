@@ -8,6 +8,13 @@ export interface LocalFlowVoiceState {
   level?: number | null;
   pitch?: number | null;
   brightness?: number | null;
+  /** How periodic (voiced) the sound is, 0..1. */
+  voicing?: number | null;
+  /**
+   * Spectrum magnitudes in 0..1, low to high frequency (about 70 Hz to 8 kHz). Present only
+   * on audio-feature updates from engines that analyse the microphone signal.
+   */
+  bands?: number[] | null;
 }
 
 export interface LocalFlowTranscriptEvent {

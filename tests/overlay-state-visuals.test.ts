@@ -84,4 +84,16 @@ describe("displacementForMotion", () => {
     expect(displacementForMotion(true)).toBeLessThan(displacementForMotion(false));
     expect(displacementForMotion(true)).toBeGreaterThan(0);
   });
+
+  it("freezes the captured spectrum while waiting and shows it only when relevant", () => {
+    expect(visualsForPhase("listening", false).freeze).toBe(false);
+    expect(visualsForPhase("listening", false).historyGain).toBe(1);
+    for (const phase of ["processing", "refining", "inserted", "error"] as const) {
+      expect(visualsForPhase(phase, false).freeze).toBe(true);
+      expect(visualsForPhase(phase, false).historyGain).toBeGreaterThan(0);
+    }
+    for (const phase of ["idle", "ready", "cancelled"] as const) {
+      expect(visualsForPhase(phase, false).historyGain).toBe(0);
+    }
+  });
 });

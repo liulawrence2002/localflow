@@ -1,4 +1,5 @@
 pub mod resample;
+pub mod spectrum;
 pub mod wav;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

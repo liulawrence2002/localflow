@@ -15,8 +15,9 @@ export interface LocalFlowOverlayProps {
   ariaLabelPrefix?: string;
   /**
    * Optional high-frequency feature channel. When provided, the renderer polls
-   * this ref once per animation frame, so ~18 Hz microphone events never need a
-   * React re-render. Falls back to `state.level/pitch/brightness` otherwise.
+   * this ref once per animation frame, so microphone events (about 36 a second)
+   * never need a React re-render. Falls back to
+   * `state.level/pitch/brightness/bands` otherwise.
    */
   featuresRef?: React.RefObject<AudioFeatureTargets | null>;
   /** Rendering quality; "low" halves point density and caps the frame rate. */
@@ -88,9 +89,10 @@ export function LocalFlowOverlay({
         level: state.level,
         pitch: state.pitch,
         brightness: state.brightness,
+        bands: state.bands,
       });
     }
-  }, [phase, state.level, state.pitch, state.brightness, featuresRef, hidden]);
+  }, [phase, state.level, state.pitch, state.brightness, state.bands, featuresRef, hidden]);
 
   if (hidden) {
     return null;

@@ -24,6 +24,10 @@ export interface PhaseVisuals {
   collapse: number;
   /** Extra dot brightness for active speech. */
   brightnessBoost: number;
+  /** Stop recording new spectrum history, so the captured utterance stays on screen. */
+  freeze: boolean;
+  /** How strongly the spectrum history shows, 0..1 (0 = ambient motion only). */
+  historyGain: number;
 }
 
 const NEUTRAL: readonly [number, number, number] = [235, 240, 245];
@@ -42,6 +46,8 @@ const AMBIENT: PhaseVisuals = {
   accentStrength: 0,
   collapse: 0,
   brightnessBoost: 0,
+  freeze: false,
+  historyGain: 0,
 };
 
 const BY_PHASE: Record<LocalFlowDictationPhase, PhaseVisuals> = {
@@ -61,6 +67,7 @@ const BY_PHASE: Record<LocalFlowDictationPhase, PhaseVisuals> = {
     accent: ACCENT_BLUE,
     accentStrength: 0.18,
     brightnessBoost: 0.35,
+    historyGain: 1,
   },
   processing: {
     ...AMBIENT,
@@ -71,6 +78,8 @@ const BY_PHASE: Record<LocalFlowDictationPhase, PhaseVisuals> = {
     sweepSpeed: 0.42,
     accent: ACCENT_BLUE,
     accentStrength: 0.34,
+    freeze: true,
+    historyGain: 0.6,
   },
   refining: {
     ...AMBIENT,
@@ -81,6 +90,8 @@ const BY_PHASE: Record<LocalFlowDictationPhase, PhaseVisuals> = {
     sweepSpeed: 0.22,
     accent: ACCENT_TEAL,
     accentStrength: 0.3,
+    freeze: true,
+    historyGain: 0.6,
   },
   inserted: {
     ...AMBIENT,
@@ -89,6 +100,8 @@ const BY_PHASE: Record<LocalFlowDictationPhase, PhaseVisuals> = {
     accent: ACCENT_GREEN,
     accentStrength: 0.42,
     collapse: 0.72,
+    freeze: true,
+    historyGain: 0.6,
   },
   cancelled: {
     ...AMBIENT,
@@ -104,6 +117,8 @@ const BY_PHASE: Record<LocalFlowDictationPhase, PhaseVisuals> = {
     accent: ACCENT_RED,
     accentStrength: 0.45,
     brightnessBoost: 0.1,
+    freeze: true,
+    historyGain: 0.5,
   },
 };
 

@@ -19,9 +19,14 @@ function createContextStub() {
     moveTo: vi.fn(),
     setTransform: vi.fn(),
     stroke: vi.fn(),
-    fillStyle: "",
+    createLinearGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
+    fillStyle: "" as string | object,
+    globalAlpha: 1,
+    globalCompositeOperation: "source-over",
+    lineCap: "butt",
+    lineJoin: "miter",
     lineWidth: 0,
-    strokeStyle: "",
+    strokeStyle: "" as string | object,
   };
 }
 
@@ -99,16 +104,170 @@ describe("TopologyRenderer", () => {
     harness.renderer.dispose();
   });
 
-  it("draws depth rows as dot fills every frame", () => {
+  it("draws every ridge as an occluding fill and a stroked line", () => {
     const harness = createHarness();
     harness.renderer.start();
     harness.runFrame(16);
 
     expect(harness.context.clearRect).toHaveBeenCalled();
-    // Balanced quality: 11 depth-row fills per frame.
-    expect(harness.context.fill.mock.calls.length).toBeGreaterThanOrEqual(11);
-    expect(harness.context.arc.mock.calls.length).toBeGreaterThan(100);
+    // Balanced quality: nine ridges, each erasing what it covers and then stroked.
+    expect(harness.context.fill.mock.calls.length).toBeGreaterThanOrEqual(9);
+    expect(harness.context.stroke.mock.calls.length).toBeGreaterThanOrEqual(9);
+    expect(harness.context.lineTo.mock.calls.length).toBeGreaterThan(800);
     harness.renderer.dispose();
+  });
+
+  it("keeps every drawn coordinate finite and below the top edge", () => {
+    const harness = createHarness();
+    harness.renderer.start();
+    harness.renderer.setPhase("listening");
+    harness.renderer.setFeatureTargets({
+      level: 1,
+      pitch: 0.5,
+      brightness: 0.5,
+      bands: new Array(32).fill(1),
+    });
+    for (let frame = 1; frame <= 40; frame += 1) {
+      harness.runFrame(frame * 16);
+    }
+
+    let allFinite = true;
+    let highest = Number.POSITIVE_INFINITY;
+    for (const [x, y] of harness.context.lineTo.mock.calls as Array<[number, number]>) {
+      allFinite = allFinite && Number.isFinite(x) && Number.isFinite(y);
+      highest = Math.min(highest, y);
+    }
+    expect(allFinite).toBe(true);
+    // Even a full-scale spectrum stays below the top edge of the 91 px pill.
+    expect(highest).toBeGreaterThanOrEqual(3);
+    harness.renderer.dispose();
+  });
+
+  it("follows real spectrum bands", () => {
+    const harness = createHarness();
+    harness.renderer.start();
+    harness.renderer.setPhase("listening");
+    const bands = new Array(32).fill(0);
+    bands[4] = 1;
+    harness.renderer.setFeatureTargets({ level: 0.8, pitch: 0.5, brightness: 0.5, bands });
+    for (let frame = 1; frame <= 30; frame += 1) {
+      harness.runFrame(frame * 16);
+    }
+
+    const current = harness.renderer.currentBands;
+    expect(current[4]).toBeGreaterThan(0.3);
+    expect(current[25]).toBeLessThan(0.02);
+    expect(current[4]).toBeGreaterThan(current[10] * 5);
+    harness.renderer.dispose();
+  });
+
+  it("starts every listening phase clean, even straight after processing", () => {
+    const harness = createHarness();
+    harness.renderer.start();
+    harness.renderer.setPhase("listening");
+    harness.renderer.setFeatureTargets({
+      level: 1,
+      pitch: 0.5,
+      brightness: 0.5,
+      bands: new Array(32).fill(1),
+    });
+    for (let frame = 1; frame <= 30; frame += 1) {
+      harness.runFrame(frame * 16);
+    }
+    expect(Math.max(...harness.renderer.currentBands)).toBeGreaterThan(0.5);
+
+    // The hotkey is pressed again while the previous dictation is still being transcribed.
+    harness.renderer.setPhase("processing");
+    harness.renderer.setPhase("listening");
+    expect(Math.max(...harness.renderer.currentBands)).toBe(0);
+    harness.runFrame(31 * 16);
+    expect(Math.max(...harness.renderer.currentBands)).toBeLessThan(0.05);
+    harness.renderer.dispose();
+  });
+
+  it("keeps the front ridge continuous when processing begins", () => {
+    const harness = createHarness();
+    harness.renderer.start();
+    harness.renderer.setPhase("listening");
+    harness.renderer.setFeatureTargets({
+      level: 1,
+      pitch: 0.5,
+      brightness: 0.5,
+      bands: new Array(32).fill(1),
+    });
+    for (let frame = 1; frame <= 40; frame += 1) {
+      harness.runFrame(frame * 16);
+    }
+    const frontRidge = () => {
+      const calls = harness.context.lineTo.mock.calls as Array<[number, number]>;
+      // The front ridge is drawn last; take the highest point of the final 132 lineTo calls.
+      return Math.min(...calls.slice(-132).map(([, y]) => y));
+    };
+    const before = frontRidge();
+
+    harness.renderer.setPhase("processing");
+    harness.context.lineTo.mockClear();
+    harness.runFrame(41 * 16);
+    const after = frontRidge();
+
+    // One 16 ms frame later the ridge (about 50 px tall here) has only eased down a little:
+    // it decays from the live spectrum instead of dropping to nothing or to a stale frame.
+    expect(after).toBeGreaterThanOrEqual(before);
+    expect(after - before).toBeLessThan(8);
+    harness.renderer.dispose();
+  });
+
+  it("synthesises a spectrum when no bands are provided", () => {
+    const harness = createHarness();
+    harness.renderer.start();
+    harness.renderer.setPhase("listening");
+    harness.renderer.setFeatureTargets({ level: 0.9, pitch: 0.5, brightness: 0.5 });
+    for (let frame = 1; frame <= 30; frame += 1) {
+      harness.runFrame(frame * 16);
+    }
+
+    expect(Math.max(...harness.renderer.currentBands)).toBeGreaterThan(0.3);
+    harness.renderer.dispose();
+  });
+
+  it("ignores the microphone while processing", () => {
+    const harness = createHarness();
+    harness.renderer.start();
+    harness.renderer.setPhase("processing");
+    harness.renderer.setFeatureTargets({
+      level: 1,
+      pitch: 0.5,
+      brightness: 0.5,
+      bands: new Array(32).fill(1),
+    });
+    for (let frame = 1; frame <= 30; frame += 1) {
+      harness.runFrame(frame * 16);
+    }
+
+    expect(Math.max(...harness.renderer.currentBands)).toBe(0);
+    harness.renderer.dispose();
+  });
+
+  it("draws fewer points at low quality and fewer ridges with reduced motion", () => {
+    const balanced = createHarness();
+    balanced.renderer.start();
+    balanced.runFrame(16);
+    const balancedPoints = balanced.context.lineTo.mock.calls.length;
+    balanced.renderer.dispose();
+
+    const low = createHarness();
+    low.renderer.setQuality("low");
+    low.renderer.start();
+    low.runFrame(16);
+    expect(low.context.lineTo.mock.calls.length).toBeLessThan(balancedPoints / 2);
+    low.renderer.dispose();
+
+    const reduced = createHarness();
+    reduced.renderer.setReducedMotion(true);
+    reduced.renderer.start();
+    reduced.runFrame(16);
+    expect(reduced.context.lineTo.mock.calls.length).toBeLessThan(balancedPoints / 2);
+    reduced.renderer.dispose();
   });
 
   it("cancels the pending frame on stop and dispose", () => {
@@ -164,9 +323,15 @@ describe("TopologyRenderer", () => {
     }
     expect(harness.renderer.currentLevel).toBeGreaterThan(0.5);
 
+    expect(Math.max(...harness.renderer.currentBands)).toBeGreaterThan(0.2);
+
     harness.renderer.setPhase("inserted");
     harness.renderer.setPhase("listening");
     expect(harness.renderer.currentLevel).toBeLessThan(0.15);
+    // The previous session's spectrum is gone too, and stale targets cannot bring it back.
+    expect(Math.max(...harness.renderer.currentBands)).toBe(0);
+    harness.runFrame(31 * 16);
+    expect(Math.max(...harness.renderer.currentBands)).toBeLessThan(0.05);
     harness.renderer.dispose();
   });
 
@@ -194,6 +359,17 @@ describe("TopologyRenderer", () => {
     harness.runFrame(16);
     harness.runFrame(32);
     expect(Number.isFinite(harness.renderer.currentLevel)).toBe(true);
+
+    harness.renderer.setFeatureTargets({
+      level: 0.8,
+      pitch: 0.5,
+      brightness: 0.5,
+      bands: [Number.NaN, Number.POSITIVE_INFINITY, -4, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+    });
+    harness.runFrame(48);
+    harness.runFrame(64);
+    expect(harness.renderer.currentBands.every((band) => Number.isFinite(band))).toBe(true);
+    expect(harness.renderer.currentBands.every((band) => band >= 0 && band <= 1)).toBe(true);
     harness.renderer.dispose();
   });
 });

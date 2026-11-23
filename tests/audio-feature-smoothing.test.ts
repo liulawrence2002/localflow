@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  CircularHistory,
+  SpectrumHistory,
   FeatureSmoother,
   clampUnit,
-  historyStepsForDepth,
   smoothingCoefficient,
 } from "../packages/localflow-sdk/src/react/topology/audioFeatureSmoothing";
 
@@ -86,40 +85,62 @@ describe("FeatureSmoother", () => {
   });
 });
 
-describe("CircularHistory", () => {
-  it("returns the newest entry at offset 0 and older entries behind it", () => {
-    const history = new CircularHistory(4, 0);
-    history.push(0.1);
-    history.push(0.2);
-    history.push(0.3);
-    expect(history.at(0)).toBeCloseTo(0.3);
-    expect(history.at(1)).toBeCloseTo(0.2);
-    expect(history.at(2)).toBeCloseTo(0.1);
+describe("SpectrumHistory", () => {
+  const frame = (value: number) => new Float32Array([value, value * 0.5]);
+
+  it("returns the newest frame at age zero and older frames further back", () => {
+    const history = new SpectrumHistory(4, 2);
+    history.push(frame(0.2));
+    history.push(frame(0.4));
+    history.push(frame(0.8));
+
+    expect(history.sample(0, 0)).toBeCloseTo(0.8, 6);
+    expect(history.sample(1, 0)).toBeCloseTo(0.4, 6);
+    expect(history.sample(2, 0)).toBeCloseTo(0.2, 6);
+    expect(history.sample(0, 1)).toBeCloseTo(0.4, 6);
   });
 
-  it("overwrites the oldest entry once full and never grows", () => {
-    const history = new CircularHistory(3, 0);
-    history.push(0.1);
-    history.push(0.2);
-    history.push(0.3);
-    history.push(0.4);
-    expect(history.at(0)).toBeCloseTo(0.4);
-    expect(history.at(2)).toBeCloseTo(0.2);
-    // Reading past the capacity clamps to the oldest retained entry.
-    expect(history.at(10)).toBeCloseTo(0.2);
+  it("blends linearly between neighbouring frames at fractional ages", () => {
+    const history = new SpectrumHistory(4, 2);
+    history.push(frame(0.2));
+    history.push(frame(0.6));
+
+    expect(history.sample(0.5, 0)).toBeCloseTo(0.4, 6);
+    expect(history.sample(0.25, 0)).toBeCloseTo(0.5, 6);
   });
 
-  it("ignores invalid pushes rather than storing NaN", () => {
-    const history = new CircularHistory(2, 0.5);
-    history.push(Number.NaN);
-    expect(Number.isFinite(history.at(0))).toBe(true);
-  });
-});
+  it("overwrites the oldest frame and clamps reads to the oldest one kept", () => {
+    const history = new SpectrumHistory(3, 2);
+    for (const value of [0.1, 0.2, 0.3, 0.4]) {
+      history.push(frame(value));
+    }
 
-describe("historyStepsForDepth", () => {
-  it("gives the foreground the newest sample and rear rows older ones", () => {
-    expect(historyStepsForDepth(1, 32)).toBe(0);
-    expect(historyStepsForDepth(0, 32)).toBeGreaterThan(historyStepsForDepth(0.5, 32));
-    expect(historyStepsForDepth(0, 32)).toBeLessThan(32);
+    expect(history.sample(0, 0)).toBeCloseTo(0.4, 6);
+    expect(history.sample(2, 0)).toBeCloseTo(0.2, 6);
+    // Asking for more history than exists returns the oldest frame, not garbage.
+    expect(history.sample(99, 0)).toBeCloseTo(0.2, 6);
+    expect(history.sample(-5, 0)).toBeCloseTo(0.4, 6);
+  });
+
+  it("blends linearly between neighbouring columns", () => {
+    const history = new SpectrumHistory(2, 3);
+    history.push(new Float32Array([0, 1, 0.5]));
+
+    expect(history.sample(0, 0.5)).toBeCloseTo(0.5, 6);
+    expect(history.sample(0, 1.5)).toBeCloseTo(0.75, 6);
+    // Out-of-range columns clamp to the ends instead of reading another frame.
+    expect(history.sample(0, 9)).toBeCloseTo(0.5, 6);
+    expect(history.sample(0, -3)).toBe(0);
+  });
+
+  it("sanitises stored values and can be cleared", () => {
+    const history = new SpectrumHistory(2, 2);
+    history.push(new Float32Array([Number.NaN, 7]));
+    expect(history.sample(0, 0)).toBe(0);
+    expect(history.sample(0, 1)).toBe(1);
+
+    history.fill(0);
+    expect(history.sample(0, 1)).toBe(0);
+    expect(history.sample(Number.NaN, 0)).toBe(0);
   });
 });

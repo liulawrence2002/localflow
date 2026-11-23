@@ -1,20 +1,22 @@
 import type { LocalFlowDictationPhase } from "../../types";
-import {
-  CircularHistory,
-  FeatureSmoother,
-  clampUnit,
-  historyStepsForDepth,
-  smoothingCoefficient,
-} from "./audioFeatureSmoothing";
-import {
-  depthAlpha,
-  dotRadius,
-  projectPoint,
-  surfaceHeight,
-  type SmoothedFeatures,
-  type SurfaceMotion,
-} from "./topologyMath";
+import { FeatureSmoother, SpectrumHistory, smoothingCoefficient } from "./audioFeatureSmoothing";
 import { displacementForMotion, visualsForPhase, type PhaseVisuals } from "./overlayStateVisuals";
+import {
+  BAND_COUNT,
+  COLUMN_COUNT,
+  ambientRidge,
+  bandsToColumns,
+  conditionBands,
+  historyAge,
+  mirroredColumn,
+  rampColor,
+  resampleBands,
+  ridgeEnvelope,
+  smoothBands,
+  softCeiling,
+  sweepCrest,
+  synthesizeBands,
+} from "./spectrumMath";
 
 export type TopologyQuality = "balanced" | "low";
 
@@ -28,22 +30,66 @@ export interface AudioFeatureTargets {
   level: number | null | undefined;
   pitch: number | null | undefined;
   brightness: number | null | undefined;
+  /**
+   * Spectrum magnitudes in 0..1, low to high frequency. When absent (or shorter than
+   * MIN_REAL_BANDS) the renderer synthesises a plausible spectrum from level, pitch and
+   * brightness.
+   */
+  bands?: ArrayLike<number> | null;
 }
 
 interface QualityProfile {
   rows: number;
-  columnSpacing: number;
+  points: number;
   minFrameIntervalMs: number;
+  glow: boolean;
 }
 
 const QUALITY_PROFILES: Record<TopologyQuality, QualityProfile> = {
-  balanced: { rows: 11, columnSpacing: 8, minFrameIntervalMs: 0 },
-  low: { rows: 7, columnSpacing: 12, minFrameIntervalMs: 32 },
+  balanced: { rows: 9, points: 128, minFrameIntervalMs: 0, glow: true },
+  low: { rows: 5, points: 48, minFrameIntervalMs: 32, glow: false },
 };
 
-const HISTORY_SIZE = 32;
-const HISTORY_PUSH_INTERVAL_MS = 60;
+/** Rows drawn when the user prefers reduced motion: enough for depth, little movement. */
+const REDUCED_MOTION_ROWS = 3;
+const MAX_ROWS = 9;
+const MAX_POINTS = 128;
+
+const MIN_REAL_BANDS = 8;
+const HISTORY_FRAMES = 24;
+const HISTORY_PUSH_INTERVAL_MS = 50;
+/** History frames between neighbouring rows: nine rows span about 800 ms of sound. */
+const HISTORY_FRAMES_PER_ROW = 2;
 const PHASE_BLEND_TAU_MS = 140;
+
+// Geometry, as fractions of the canvas height or width.
+const REAR_BASELINE = 0.27;
+const FRONT_BASELINE = 0.87;
+const DEPTH_CURVE = 1.18;
+const REAR_HEIGHT = 0.26;
+const FRONT_HEIGHT = 0.64;
+const BASE_INSET = 0.058;
+const REAR_INSET_EXTRA = 0.052;
+/** Rear ridges are drawn lower so the newest sound always reads as the tallest. */
+const REAR_ATTENUATION = 0.45;
+/** How much of what lies behind a ridge it hides; the remainder reads as depth fog. */
+const OCCLUSION = 0.88;
+
+/**
+ * Colour by frequency while listening, as stops across the pill. The layout is mirrored, so
+ * the centre is the lowest frequency and both ends are the highest: warm low tones in the
+ * middle, through cyan, to violet highs at the edges.
+ */
+const SPECTRUM_STOPS: ReadonlyArray<readonly [number, string]> = [
+  [0, "rgb(168, 132, 255)"],
+  [0.2, "rgb(96, 170, 255)"],
+  [0.38, "rgb(84, 222, 236)"],
+  [0.5, "rgb(206, 255, 236)"],
+  [0.62, "rgb(84, 222, 236)"],
+  [0.8, "rgb(96, 170, 255)"],
+  [1, "rgb(168, 132, 255)"],
+];
+
 const IDLE_PHASES: ReadonlySet<LocalFlowDictationPhase> = new Set([
   "idle",
   "inserted",
@@ -52,14 +98,16 @@ const IDLE_PHASES: ReadonlySet<LocalFlowDictationPhase> = new Set([
 ]);
 
 /**
- * Owns the animation loop and all mutable visualization state for the
- * topographic waveform. Contains no dictation business logic: phases come in
- * via `setPhase`, audio features via `setFeatureTargets` or a polled source.
+ * Owns the animation loop and all mutable visualization state for the voice overlay.
+ * Contains no dictation business logic: phases come in via `setPhase`, audio features via
+ * `setFeatureTargets` or a polled source.
  *
- * Rendering model: `rows` parallel depth rows of dots. Rear rows are higher,
- * narrower, dimmer and read older level history so speech peaks propagate
- * into the distance. One arc path + one fill per row per frame; no shadow
- * blur; the horizontal edge fade is a CSS mask on the canvas element.
+ * Rendering model: a mirrored ridgeline spectrogram. The front ridge is the live spectrum
+ * (low frequencies at the centre, highs toward both ends); each ridge behind it is the
+ * spectrum a little earlier, so sound recedes into the distance. Ridges are drawn back to
+ * front; each one first erases what it covers, then strokes its line, which gives true
+ * hidden-line depth without painting a background over the frosted pill. All per-frame
+ * work uses preallocated typed arrays.
  */
 export class TopologyRenderer {
   private canvas: HTMLCanvasElement | null = null;
@@ -88,7 +136,28 @@ export class TopologyRenderer {
   private readonly brightness = new FeatureSmoother(150, 260, 0.35);
   private targets: AudioFeatureTargets = { level: 0.08, pitch: 0.5, brightness: 0.35 };
   private featureSource: (() => AudioFeatureTargets | null) | null = null;
-  private readonly history = new CircularHistory(HISTORY_SIZE, 0.08);
+
+  // Spectrum state. `targetBands` is the latest conditioned input, `bands` follows it with
+  // attack and release smoothing, `columns` is `bands` interpolated for drawing.
+  private readonly targetBands = new Float32Array(BAND_COUNT);
+  private readonly bands = new Float32Array(BAND_COUNT);
+  private readonly columns = new Float32Array(COLUMN_COUNT);
+  private readonly history = new SpectrumHistory(HISTORY_FRAMES, COLUMN_COUNT);
+
+  // Geometry cache, rebuilt on resize or quality change.
+  private readonly pointX = new Float32Array(MAX_ROWS * MAX_POINTS);
+  private readonly pointColumn = new Float32Array(MAX_POINTS);
+  private readonly pointEnvelope = new Float32Array(MAX_POINTS);
+  private readonly pointProgress = new Float32Array(MAX_POINTS);
+  private readonly pointY = new Float32Array(MAX_POINTS);
+  private readonly rowBaseline = new Float32Array(MAX_ROWS);
+  private readonly rowScale = new Float32Array(MAX_ROWS);
+  private geometryRows = 0;
+  private geometryPoints = 0;
+
+  private readonly rgb = new Uint8ClampedArray(3);
+  private underFill: CanvasGradient | null = null;
+  private spectrumStroke: CanvasGradient | null = null;
 
   // Phase-derived parameters are themselves smoothed so state transitions
   // (success collapse, error tint, processing sweep) ease in rather than snap.
@@ -97,13 +166,16 @@ export class TopologyRenderer {
     energyFloor: 0.1,
     sweep: 0,
     collapse: 0,
+    historyGain: 0,
     accentStrength: 0,
     accentR: 235,
     accentG: 240,
     accentB: 245,
   };
+  private readonly accent: [number, number, number] = [235, 240, 245];
 
   private detachEnvironment: (() => void) | null = null;
+  private wasRunningBeforeHide = false;
 
   constructor(hooks?: Partial<RendererTimingHooks>) {
     this.timing = {
@@ -147,14 +219,17 @@ export class TopologyRenderer {
     this.detachEnvironment = null;
     this.canvas = null;
     this.context = null;
+    this.underFill = null;
+    this.spectrumStroke = null;
   }
 
   setPhase(phase: LocalFlowDictationPhase): void {
     if (phase === this.phase) {
       return;
     }
-    // A fresh session must never inherit the previous session's terrain energy.
-    if ((phase === "listening" || phase === "ready") && IDLE_PHASES.has(this.phase)) {
+    // A fresh session must never inherit the previous session's picture. Listening can
+    // also begin while an earlier dictation is still processing, so it always starts clean.
+    if (phase === "listening" || (phase === "ready" && IDLE_PHASES.has(this.phase))) {
       this.resetDynamics();
     }
     this.phase = phase;
@@ -173,19 +248,29 @@ export class TopologyRenderer {
 
   setQuality(quality: TopologyQuality): void {
     this.quality = QUALITY_PROFILES[quality] ?? QUALITY_PROFILES.balanced;
+    this.rebuildGeometry();
   }
 
   setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
     this.phaseVisuals = visualsForPhase(this.phase, reducedMotion);
+    this.rebuildGeometry();
   }
 
-  /** Clear smoothed levels and history (new session, or shown after hidden). */
+  /** Clear smoothed levels, spectrum, peaks and history (new session, or shown after
+   * hidden). */
   resetDynamics(): void {
     this.level.reset(0.08);
     this.pitch.reset(0.5);
     this.brightness.reset(0.35);
-    this.history.fill(0.08);
+    // Drop the last pushed targets too: stale spectrum bands from the previous session
+    // must not reappear before the first new audio frame arrives.
+    this.targets = { level: 0.08, pitch: 0.5, brightness: 0.35 };
+    this.targetBands.fill(0);
+    this.bands.fill(0);
+    this.columns.fill(0);
+    this.history.fill(0);
+    this.historyAccumulatorMs = 0;
     this.blend.sweep = 0;
     this.blend.collapse = 0;
   }
@@ -197,6 +282,11 @@ export class TopologyRenderer {
   /** Smoothed microphone level; exposed for tests and diagnostics only. */
   get currentLevel(): number {
     return this.level.value;
+  }
+
+  /** Smoothed spectrum bands; exposed for tests and diagnostics only. */
+  get currentBands(): Float32Array {
+    return this.bands;
   }
 
   /** Advance and draw one frame; exposed for deterministic tests. */
@@ -244,18 +334,13 @@ export class TopologyRenderer {
     this.pitch.update(this.targets.pitch, dtMs);
     this.brightness.update(this.targets.brightness, dtMs);
 
-    this.historyAccumulatorMs += dtMs;
-    while (this.historyAccumulatorMs >= HISTORY_PUSH_INTERVAL_MS) {
-      this.historyAccumulatorMs -= HISTORY_PUSH_INTERVAL_MS;
-      this.history.push(this.level.value);
-    }
-
     const k = smoothingCoefficient(dtMs, PHASE_BLEND_TAU_MS);
     const blend = this.blend;
     blend.micDrive += (visuals.micDrive - blend.micDrive) * k;
     blend.energyFloor += (visuals.energyFloor - blend.energyFloor) * k;
     blend.sweep += (visuals.sweep - blend.sweep) * k;
     blend.collapse += (visuals.collapse - blend.collapse) * k;
+    blend.historyGain += (visuals.historyGain - blend.historyGain) * k;
     blend.accentStrength += (visuals.accentStrength - blend.accentStrength) * k;
     blend.accentR += (visuals.accent[0] - blend.accentR) * k;
     blend.accentG += (visuals.accent[1] - blend.accentG) * k;
@@ -264,6 +349,55 @@ export class TopologyRenderer {
     if (visuals.sweepSpeed > 0) {
       this.sweepCycle = (this.sweepCycle + (dtMs / 1000) * visuals.sweepSpeed) % 1;
     }
+
+    this.updateSpectrum(dtMs, visuals);
+  }
+
+  private updateSpectrum(dtMs: number, visuals: PhaseVisuals): void {
+    // While the microphone is not driving the picture the live spectrum eases to nothing;
+    // what stays visible is the frozen history.
+    if (visuals.micDrive > 0) {
+      const source = this.targets.bands;
+      if (source && source.length >= MIN_REAL_BANDS) {
+        resampleBands(source, this.targetBands);
+      } else {
+        synthesizeBands(
+          this.targetBands,
+          this.level.value,
+          this.pitch.value,
+          this.brightness.value,
+          this.timeSec,
+        );
+      }
+      conditionBands(this.targetBands, this.level.value);
+      if (visuals.micDrive < 1) {
+        for (let index = 0; index < BAND_COUNT; index += 1) {
+          this.targetBands[index] *= visuals.micDrive;
+        }
+      }
+    } else {
+      this.targetBands.fill(0);
+    }
+
+    smoothBands(this.bands, this.targetBands, dtMs);
+    bandsToColumns(this.bands, this.columns);
+
+    if (visuals.freeze) {
+      // Stop recording but leave the accumulator alone: every ridge keeps reading exactly
+      // the history it was showing, so nothing jumps when the freeze begins.
+      return;
+    }
+    this.historyAccumulatorMs += dtMs;
+    while (this.historyAccumulatorMs >= HISTORY_PUSH_INTERVAL_MS) {
+      this.historyAccumulatorMs -= HISTORY_PUSH_INTERVAL_MS;
+      this.history.push(this.columns);
+    }
+  }
+
+  private activeRows(): number {
+    return this.reducedMotion
+      ? Math.min(REDUCED_MOTION_ROWS, this.quality.rows)
+      : this.quality.rows;
   }
 
   private draw(): void {
@@ -271,78 +405,150 @@ export class TopologyRenderer {
     if (!context || this.width <= 0 || this.height <= 0) {
       return;
     }
+    if (this.geometryRows === 0) {
+      this.rebuildGeometry();
+    }
 
     context.clearRect(0, 0, this.width, this.height);
 
-    const viewport = { width: this.width, height: this.height };
-    const { rows, columnSpacing } = this.quality;
-    const columns = Math.max(24, Math.round(this.width / columnSpacing));
-    const displacement = displacementForMotion(this.reducedMotion);
+    const rows = this.geometryRows;
+    const points = this.geometryPoints;
     const blend = this.blend;
-    const brightnessBoost = this.phaseVisuals.brightnessBoost;
+    const displacement = displacementForMotion(this.reducedMotion) * (1 - blend.collapse);
     // Sweep travels slightly past both edges so it enters and exits smoothly.
     const sweepPosition = this.sweepCycle * 1.3 - 0.15;
+    const sinceLastPush = this.historyAccumulatorMs / HISTORY_PUSH_INTERVAL_MS;
+    const top = 3;
+    const knee = this.height * 0.2;
+    const bottom = this.height + 4;
+    // While listening the ridges are coloured by frequency; in every other phase they take
+    // the phase's accent. `micDrive` is already smoothed, so the two cross-fade.
+    const spectrumMix = this.spectrumStroke ? Math.min(1, Math.max(0, blend.micDrive)) : 0;
 
-    const motion: SurfaceMotion = {
-      displacement,
-      travel: 1,
-      sweep: blend.sweep,
-      sweepPosition,
-      collapse: blend.collapse,
-    };
+    this.accent[0] = blend.accentR;
+    this.accent[1] = blend.accentG;
+    this.accent[2] = blend.accentB;
+    context.lineJoin = "round";
+    context.lineCap = "round";
 
     for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
       const depth = rows === 1 ? 1 : rowIndex / (rows - 1);
-      const rowLevel = this.history.at(historyStepsForDepth(depth, HISTORY_SIZE));
-      const drive = clampUnit(blend.energyFloor + blend.micDrive * rowLevel, 0.1);
-      const features: SmoothedFeatures = {
-        level: drive,
-        pitch: this.pitch.value,
-        brightness: this.brightness.value,
-      };
-      const activity = drive + brightnessBoost * this.brightness.value;
-      const alpha = depthAlpha(depth, activity);
-      const mix = blend.accentStrength * (0.25 + 0.5 * depth);
-      const r = Math.round(235 + (blend.accentR - 235) * mix);
-      const g = Math.round(240 + (blend.accentG - 240) * mix);
-      const b = Math.round(245 + (blend.accentB - 245) * mix);
-      const baseRadius = dotRadius(depth, activity);
-      const isFrontRow = rowIndex === rows - 1;
+      const rowsBack = rows - 1 - rowIndex;
+      const isFront = rowsBack === 0;
+      const age = historyAge(rowsBack, HISTORY_FRAMES_PER_ROW, sinceLastPush);
+      const attenuation = 1 - REAR_ATTENUATION * (1 - depth);
+      const baseline = this.rowBaseline[rowIndex];
+      const scale = this.rowScale[rowIndex] * displacement;
+      const ambientGain = blend.energyFloor * 0.3;
+      const rowOffset = rowIndex * MAX_POINTS;
 
+      let energy = 0;
+      for (let point = 0; point < points; point += 1) {
+        const column = this.pointColumn[point];
+        const progress = this.pointProgress[point];
+        // The front ridge reads the live smoothed spectrum so it responds at once; ridges
+        // behind it read the recorded history at their age.
+        const live = isFront ? this.sampleColumns(column) : 0;
+        const recorded = this.history.sample(age, column);
+        const sound = Math.max(live, recorded) * attenuation * blend.historyGain;
+        const ambient = ambientGain * ambientRidge(progress, rowIndex, this.timeSec);
+        const crest = blend.sweep > 0 ? sweepCrest(progress, sweepPosition, rowsBack) : 0;
+        // The ambient ripple fades out smoothly under real sound, so the two never meet at
+        // a visible kink.
+        const lit =
+          (sound + ambient * (1 - Math.min(1, sound * 3))) *
+          (1 + blend.sweep * (0.75 * crest - 0.45));
+        const value = (lit + blend.sweep * 0.22 * crest) * this.pointEnvelope[point];
+        energy += value;
+        this.pointY[point] = softCeiling(baseline - value * scale, top, knee);
+      }
+      energy /= points;
+
+      // One closed path per ridge: off-canvas corners keep the closing edges invisible.
       context.beginPath();
-      let firstX = 0;
-      let firstY = 0;
-      for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
-        const progress = columns === 1 ? 0.5 : columnIndex / (columns - 1);
-        const height = surfaceHeight(progress, depth, this.timeSec, features, motion);
-        const point = projectPoint(progress, depth, height, viewport);
-        const radius = baseRadius * (0.75 + 0.25 * Math.min(1, Math.abs(height) * 1.4));
-        context.moveTo(point.x + radius, point.y);
-        context.arc(point.x, point.y, radius, 0, Math.PI * 2);
-        if (columnIndex === 0) {
-          firstX = point.x;
-          firstY = point.y;
-        }
+      context.moveTo(-4, bottom);
+      context.lineTo(-4, baseline);
+      for (let point = 0; point < points; point += 1) {
+        context.lineTo(this.pointX[rowOffset + point], this.pointY[point]);
       }
-      context.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
-      context.fill();
+      context.lineTo(this.width + 4, baseline);
+      context.lineTo(this.width + 4, bottom);
 
-      if (isFrontRow) {
-        // A faint connecting stroke anchors the foreground ridge (and becomes
-        // the calm resting line as the terrain collapses on success/cancel).
-        context.beginPath();
-        context.moveTo(firstX, firstY);
-        for (let columnIndex = 1; columnIndex < columns; columnIndex += 1) {
-          const progress = columnIndex / (columns - 1);
-          const height = surfaceHeight(progress, depth, this.timeSec, features, motion);
-          const point = projectPoint(progress, depth, height, viewport);
-          context.lineTo(point.x, point.y);
-        }
-        context.strokeStyle = `rgba(${r}, ${g}, ${b}, ${(0.1 + drive * 0.22).toFixed(3)})`;
-        context.lineWidth = 1;
-        context.stroke();
+      // Erase what this ridge covers. The canvas has no background of its own, so erasing
+      // shows the frosted pill through rather than painting a dark slab.
+      context.globalCompositeOperation = "destination-out";
+      context.fillStyle = OCCLUSION_STYLE;
+      context.fill();
+      context.globalCompositeOperation = "source-over";
+
+      if (isFront && this.underFill) {
+        context.fillStyle = this.underFill;
+        context.fill();
       }
+
+      rampColor(
+        // Kept below the near-white end of the ramp so the phase tint stays visible.
+        0.1 + 0.42 * depth + 0.28 * Math.min(1, energy * 2.2),
+        this.accent,
+        0.5 + 0.5 * blend.accentStrength,
+        this.rgb,
+      );
+      const r = this.rgb[0];
+      const g = this.rgb[1];
+      const b = this.rgb[2];
+      const alpha = 0.14 + 0.86 * Math.pow(depth, 1.6);
+
+      const accentStyle = `rgb(${r}, ${g}, ${b})`;
+      const glow =
+        this.quality.glow && rowsBack < 2
+          ? (0.5 + 0.5 * Math.min(1, energy * 3)) * (isFront ? 1 : 0.6)
+          : 0;
+      const lineWidth = 0.75 + 0.85 * depth;
+
+      if (spectrumMix < 0.98) {
+        this.strokeRidge(context, accentStyle, alpha * (1 - spectrumMix), glow, lineWidth);
+      }
+      if (spectrumMix > 0.02 && this.spectrumStroke) {
+        // Louder ridges are more saturated; quiet distant ones stay faint.
+        const vivid = alpha * spectrumMix * (0.7 + 0.3 * Math.min(1, energy * 3));
+        this.strokeRidge(context, this.spectrumStroke, vivid, glow, lineWidth);
+      }
+      context.globalAlpha = 1;
     }
+  }
+
+  /**
+   * Stroke the current path as one ridge: two wide faint passes for glow (cheaper than
+   * shadowBlur), then the core line. Opacity goes through `globalAlpha` so the same
+   * prebuilt gradient serves every row.
+   */
+  private strokeRidge(
+    context: CanvasRenderingContext2D,
+    style: string | CanvasGradient,
+    alpha: number,
+    glow: number,
+    lineWidth: number,
+  ): void {
+    context.strokeStyle = style;
+    if (glow > 0) {
+      context.globalAlpha = Math.min(1, alpha * 0.1 * glow);
+      context.lineWidth = 5;
+      context.stroke();
+      context.globalAlpha = Math.min(1, alpha * 0.2 * glow);
+      context.lineWidth = 2.75;
+      context.stroke();
+    }
+    context.globalAlpha = Math.min(1, alpha);
+    context.lineWidth = lineWidth;
+    context.stroke();
+  }
+
+  /** Linear read of the live column array at a fractional column index. */
+  private sampleColumns(column: number): number {
+    const lower = Math.floor(column);
+    const upper = Math.min(COLUMN_COUNT - 1, lower + 1);
+    const a = this.columns[lower];
+    return a + (this.columns[upper] - a) * (column - lower);
   }
 
   private resize(): void {
@@ -363,6 +569,57 @@ export class TopologyRenderer {
     canvas.width = Math.max(1, Math.round(width * ratio));
     canvas.height = Math.max(1, Math.round(height * ratio));
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    this.rebuildGeometry();
+  }
+
+  /** Precompute everything about the ridge layout that does not change per frame. */
+  private rebuildGeometry(): void {
+    const rows = Math.min(MAX_ROWS, this.activeRows());
+    const points = Math.min(MAX_POINTS, this.quality.points);
+    this.geometryRows = rows;
+    this.geometryPoints = points;
+    if (this.width <= 0 || this.height <= 0) {
+      return;
+    }
+
+    for (let point = 0; point < points; point += 1) {
+      const progress = points === 1 ? 0.5 : point / (points - 1);
+      this.pointProgress[point] = progress;
+      this.pointColumn[point] = mirroredColumn(progress, COLUMN_COUNT);
+      this.pointEnvelope[point] = ridgeEnvelope(progress);
+    }
+
+    for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+      const depth = rows === 1 ? 1 : rowIndex / (rows - 1);
+      this.rowBaseline[rowIndex] =
+        this.height *
+        (REAR_BASELINE + Math.pow(depth, DEPTH_CURVE) * (FRONT_BASELINE - REAR_BASELINE));
+      this.rowScale[rowIndex] = this.height * (REAR_HEIGHT + depth * (FRONT_HEIGHT - REAR_HEIGHT));
+      // Rear ridges are narrower, which gives the trapezoid perspective.
+      const inset = this.width * (BASE_INSET + (1 - depth) * REAR_INSET_EXTRA);
+      const span = this.width - inset * 2;
+      for (let point = 0; point < points; point += 1) {
+        this.pointX[rowIndex * MAX_POINTS + point] = inset + this.pointProgress[point] * span;
+      }
+    }
+
+    // Created here, never per frame. Test canvases may not implement gradients.
+    const context = this.context;
+    this.underFill = null;
+    this.spectrumStroke = null;
+    if (context && typeof context.createLinearGradient === "function") {
+      const gradient = context.createLinearGradient(0, this.height * 0.3, 0, this.height);
+      gradient.addColorStop(0, "rgba(255, 255, 255, 0.14)");
+      gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+      this.underFill = gradient;
+
+      const inset = this.width * BASE_INSET;
+      const spectrum = context.createLinearGradient(inset, 0, this.width - inset, 0);
+      for (const [position, colour] of SPECTRUM_STOPS) {
+        spectrum.addColorStop(position, colour);
+      }
+      this.spectrumStroke = spectrum;
+    }
   }
 
   /** Wire up resize, DPI-change, and visibility listeners; all removed on dispose. */
@@ -421,6 +678,6 @@ export class TopologyRenderer {
       }
     };
   }
-
-  private wasRunningBeforeHide = false;
 }
+
+const OCCLUSION_STYLE = `rgba(0, 0, 0, ${OCCLUSION})`;

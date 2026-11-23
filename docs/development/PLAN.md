@@ -115,6 +115,18 @@ Phase 1 (unify the production pipeline): in progress.
   installer; the installer was not rebuilt or smoke-tested.
   Next risks: an in-process native crash would take the app down (the Whisper engines run as
   separate processes); the first build now needs CMake on `PATH`.
+- **Slice 18 -- real spectrum overlay (done; not yet judged with a real microphone).** The
+  overlay now shows what the microphone hears. Native: `audio/spectrum.rs` analyses the newest
+  40 ms about 36 times a second (FFT, 32 mel bands, adaptive noise floor, pitch, brightness;
+  92 microseconds per frame measured) and the event carries `bands`. Voice-activity detection
+  still runs on 55 ms chunks. Feature events no longer touch the overlay window, hide timer,
+  or health file. Web: the renderer is a mirrored ridgeline spectrogram with hidden-line
+  depth, coloured by frequency while listening and by the phase accent otherwise; consumers
+  without bands get a synthesised spectrum. Removed the synthetic terrain math. Added a
+  browser preview at `?view=overlay-demo`. +20 Rust tests, +13 web tests.
+  Known limitations: the look was checked with generated speech-like input in a browser, not
+  with a live microphone in the packaged overlay; the mirrored layout is decorative rather
+  than a calibrated analyser.
 - Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey; module split of `native_dictation.rs`.

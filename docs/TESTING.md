@@ -14,11 +14,11 @@ Current tests cover:
 - Bounded audio ring buffers.
 - RMS-based VAD and end-of-speech detection.
 - Mono downmixing and sample-rate normalization helpers.
-- Native overlay audio-feature extraction, including pitch distinction for lower and higher voice tones.
-- Topographic overlay surface math: deterministic heights, boundedness under extreme inputs, pitch-as-spacing (never loudness), soft edge clamping, and depth projection ordering.
-- Overlay feature smoothing: frame-rate-independent attack/release, invalid-value (NaN/Infinity/null) clamping, bounded circular level history, and missed-event gap bounding.
-- Overlay phase-to-visual mapping, including processing/refining sweeps, success/cancel collapse, restrained state tints, and reduced-motion behavior.
-- Overlay renderer lifecycle: single animation loop under rapid state changes, frame cancellation on stop/dispose, pause while the document is hidden, listener removal on dispose, and dynamics reset when a new session starts.
+- Native spectrum analysis for the overlay: a tone peaks in its own band, two tones resolve, silence is exactly zero, louder never reads lower, white noise fills the range, the same tone lands in the same band at every sample rate, pitch follows a harmonic voice without octave errors, brightness follows the spectral centroid, steady background noise sinks while new sound still shows, bad input (NaN, infinity, clipping, zero rate) stays finite and in range, and the analysis is deterministic.
+- Overlay spectrum math: band resampling (including bytes from the native layer), the synthetic spectrum fallback, floor and silence gating, frame-rate-independent attack and release, spline interpolation without overshoot, mirrored layout, edge envelope, the soft ceiling that keeps peaks inside the pill, and the colour ramp.
+- Overlay feature smoothing and history: frame-rate-independent attack/release, invalid-value (NaN/Infinity/null) clamping, missed-event gap bounding, and the bounded spectrum history ring with interpolation across both time and columns.
+- Overlay phase-to-visual mapping, including processing/refining sweeps over the frozen spectrum, success/cancel collapse, restrained state tints, and reduced-motion behavior.
+- Overlay renderer: single animation loop under rapid state changes, frame cancellation on stop/dispose, pause while the document is hidden, listener removal on dispose, a clean start for each session (no stale spectrum), following real bands, ignoring the microphone while processing, finite in-bounds coordinates at full scale, and reduced work at low quality and with reduced motion.
 - Boundary-aware replacements.
 - Snippet expansion.
 - Spoken punctuation.
@@ -143,11 +143,11 @@ Manual acceptance tests must record exact app version, model, hardware, and obse
 
 Run with the packaged app and a real microphone; record hardware, Windows scaling, and observed frame smoothness for each item.
 
-1. Quiet room, no speech: terrain shows slow ambient breathing, no false speech ridges; auto-cancel hides the overlay after the no-speech timeout.
-2. Soft speech: visible but gentle ridge response; no visual collapse between words.
-3. Loud speech: strong central ridges propagating into rear rows; peaks compress smoothly near the pill edge without clipping.
-4. Low-pitch speech: wider ridge spacing; overall brightness unchanged.
-5. High-pitch speech: tighter ridge spacing; overall brightness unchanged (pitch must not read as loudness).
+1. Quiet room, no speech: ridges show slow ambient breathing, no false speech peaks; auto-cancel hides the overlay after the no-speech timeout.
+2. Soft speech: visible but gentle peaks near the centre; no visual collapse between words.
+3. Loud speech: tall peaks that recede into the rear ridges over about a second; peaks compress smoothly near the top of the pill without clipping.
+4. Vowels against consonants: vowels ("ah", "oo") raise the centre (low frequencies, pale green to cyan); sibilants ("s", "sh") raise the outer parts (high frequencies, blue to violet). The picture is mirrored left to right.
+5. A steady background sound (fan, hum): visible at first, then sinks out of view within a few seconds while speech still shows clearly.
 6. Sudden short utterance: fast attack, slower settle; no jump or flicker.
 7. Long continuous dictation: motion stays smooth for 60+ seconds; no drift, memory growth, or slowdown.
 8. Processing and refining: terrain stops following the microphone; a slow traveling crest sweeps the pill, slower during refining.

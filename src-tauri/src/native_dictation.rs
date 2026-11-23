@@ -3,7 +3,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -36,12 +36,19 @@ use crate::{
         whisper_text::{build_whisper_prompt, is_blank_transcript},
         WhisperDecodeOptions,
     },
-    audio::resample::resample_to_16khz,
+    audio::{
+        resample::resample_to_16khz,
+        spectrum::{quantize_bands, SpectrumAnalyzer, SpectrumFrame, BAND_COUNT},
+    },
 };
 
 pub struct NativeDictationRuntime {
     command_tx: Mutex<mpsc::Sender<RecorderCommand>>,
     overlay_epoch: AtomicU64,
+    /// True from the moment a recording starts until it is finished or cancelled. Audio
+    /// feature events do not keep the overlay visible, so nothing else may hide it or
+    /// replace its phase while this is set.
+    recording: AtomicBool,
     sessions: Mutex<SessionRegistry>,
     last_transcript: Mutex<Option<String>>,
     latency_snapshots: Mutex<VecDeque<NativeLatencySnapshot>>,
@@ -211,6 +218,10 @@ struct OverlayAudioFeatures {
     level: f32,
     pitch: f32,
     brightness: f32,
+    /// How periodic (voiced) the sound is, 0..1.
+    voicing: f32,
+    /// Spectrum magnitudes, low to high frequency, quantised to bytes for a small payload.
+    bands: [u8; BAND_COUNT],
 }
 
 struct RecorderCommand {
@@ -286,6 +297,12 @@ struct NativeDictationEvent {
     level: Option<f32>,
     pitch: Option<f32>,
     brightness: Option<f32>,
+    /// Present only on audio-feature events. Older consumers ignore both fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voicing: Option<f32>,
+    /// Spectrum bands as bytes (0..=255); divide by 255 for magnitudes in 0..1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bands: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -323,6 +340,11 @@ const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const SILENCE_PEAK_THRESHOLD: f32 = 0.003;
 const SILENCE_RMS_THRESHOLD: f32 = 0.0005;
 const VAD_POLL_MS: u64 = 55;
+/// The level meter wakes this many times per VAD poll. Each wake analyses the spectrum for the
+/// overlay (about 36 frames a second); every `METER_TICKS_PER_VAD_POLL`-th wake also runs
+/// voice-activity detection on the audio gathered since the last one, so the detector sees
+/// the same 55 ms chunks as before.
+const METER_TICKS_PER_VAD_POLL: u64 = 2;
 const VAD_START_RMS_THRESHOLD: f32 = 0.008;
 const VAD_CONTINUE_RMS_THRESHOLD: f32 = 0.0045;
 const VAD_CONFIRM_SPEECH_MS: u64 = 120;
@@ -364,6 +386,7 @@ impl Default for NativeDictationRuntime {
         Self {
             command_tx: Mutex::new(command_tx),
             overlay_epoch: AtomicU64::new(0),
+            recording: AtomicBool::new(false),
             sessions: Mutex::new(SessionRegistry::default()),
             last_transcript: Mutex::new(None),
             latency_snapshots: Mutex::new(VecDeque::new()),
@@ -500,12 +523,36 @@ pub fn copy_last_transcript(app: AppHandle) -> Result<(), String> {
     copy_last_transcript_to_clipboard(&app)
 }
 
+/// Whether a recording is in progress.
+fn is_recording(app: &AppHandle) -> bool {
+    app.state::<NativeDictationRuntime>()
+        .recording
+        .load(Ordering::SeqCst)
+}
+
+fn set_recording(app: &AppHandle, recording: bool) {
+    app.state::<NativeDictationRuntime>()
+        .recording
+        .store(recording, Ordering::SeqCst);
+}
+
+/// Whether a status pulse from outside the dictation flow may be shown. During a recording
+/// it may not: the pulse would replace the "listening" phase and its hide timer would then
+/// hide the overlay while the user is still speaking.
+fn pulse_allowed(recording: bool) -> bool {
+    !recording
+}
+
 pub fn show_ready_pulse(app: &AppHandle, message: &str) {
-    emit_status(app, "ready", message);
+    if pulse_allowed(is_recording(app)) {
+        emit_status(app, "ready", message);
+    }
 }
 
 pub fn show_error_pulse(app: &AppHandle, message: &str) {
-    emit_status(app, "error", message);
+    if pulse_allowed(is_recording(app)) {
+        emit_status(app, "error", message);
+    }
 }
 
 fn record_latency_snapshot(app: &AppHandle, snapshot: NativeLatencySnapshot) {
@@ -789,6 +836,7 @@ fn recorder_loop(command_rx: mpsc::Receiver<RecorderCommand>) {
                     let _ = active_session.level_stop_tx.send(());
                     drop(active_session.stream);
                 }
+                set_recording(&command.app, false);
                 set_escape_cancel(&command.app, false);
                 invalidate_session(&command.app);
                 emit_status(&command.app, "cancelled", "Cancelled");
@@ -869,6 +917,7 @@ fn start_recording(
     // Assign and activate a fresh session id; this supersedes any worker still
     // processing a previous recording so it cannot insert stale text.
     let session_id = begin_session(app);
+    set_recording(app, true);
 
     *session = Some(RecordingSession {
         session_id,
@@ -933,6 +982,7 @@ fn finish_recording(
 
     let _ = level_stop_tx.send(());
     drop(stream);
+    set_recording(&app, false);
     set_escape_cancel(&app, false);
     emit_status(&app, "processing", "Transcribing with local whisper.cpp");
 
@@ -1251,9 +1301,11 @@ fn start_background_cleanup(
     });
 }
 
-fn emit_cancelled(app: &AppHandle) {
+/// A worker found that its session is no longer current. It deliberately emits nothing: an
+/// explicit cancel has already announced "cancelled" itself, and a session superseded by a
+/// newer recording must not hide the overlay that the newer recording is using.
+fn emit_cancelled(_app: &AppHandle) {
     tracing::info!("native dictation session superseded or cancelled before insertion");
-    emit_status(app, "cancelled", "Cancelled");
 }
 
 fn start_level_meter(
@@ -1267,34 +1319,51 @@ fn start_level_meter(
     thread::spawn(move || {
         let mut cursor = 0usize;
         let mut detector = EndOfSpeechDetector::new(Instant::now());
+        let mut analyzer = SpectrumAnalyzer::new(sample_rate);
+        // Reused buffers: nothing is allocated per tick once they have grown.
+        let mut fresh: Vec<f32> = Vec::new();
+        let mut vad_chunk: Vec<f32> = Vec::new();
+        let mut tick = 0u64;
 
         loop {
-            thread::sleep(Duration::from_millis(VAD_POLL_MS));
+            thread::sleep(Duration::from_millis(
+                VAD_POLL_MS / METER_TICKS_PER_VAD_POLL,
+            ));
             if stop_rx.try_recv().is_ok() {
                 break;
             }
+            tick += 1;
 
-            let chunk = match samples.lock() {
-                Ok(output) => {
-                    let start = cursor.min(output.len());
-                    let next = output[start..].to_vec();
-                    cursor = output.len();
-                    next
-                }
-                Err(_) => Vec::new(),
-            };
+            // Copy the new samples out and release the lock before any analysis, so the
+            // audio callback is never kept waiting on the meter.
+            fresh.clear();
+            if let Ok(output) = samples.lock() {
+                let start = cursor.min(output.len());
+                fresh.extend_from_slice(&output[start..]);
+                cursor = output.len();
+            }
+
+            if !fresh.is_empty() {
+                analyzer.push(&fresh);
+                let frame = analyzer.analyze();
+                emit_audio_features(&app, overlay_audio_features(&frame, rms_level(&fresh)));
+                vad_chunk.extend_from_slice(&fresh);
+            }
+
+            if tick % METER_TICKS_PER_VAD_POLL != 0 {
+                continue;
+            }
 
             // A device that stops delivering audio (unplugged, disabled) produces empty
             // polls. The end-of-speech, no-speech, and maximum-length timeouts still run on
             // them so a session can never listen forever, but an empty poll is not evidence
             // of silence (the device may simply deliver buffers longer than the poll
             // interval), so it does not reset speech confirmation.
-            let finished = if chunk.is_empty() {
+            let finished = if vad_chunk.is_empty() {
                 detector.timed_out(Instant::now())
             } else {
-                let rms = rms_level(&chunk);
-                let features = overlay_audio_features(&chunk, sample_rate, rms);
-                emit_audio_features(&app, features);
+                let rms = rms_level(&vad_chunk);
+                vad_chunk.clear();
                 detector.observe(Instant::now(), rms)
             };
 
@@ -1417,88 +1486,16 @@ fn display_level_from_rms(rms: f32) -> f32 {
     (rms * 15.0).clamp(0.05, 1.0)
 }
 
-fn overlay_audio_features(samples: &[f32], sample_rate: u32, rms: f32) -> OverlayAudioFeatures {
+/// Overlay features for one analysed frame. `chunk_rms` is the level of the newest samples
+/// only, so the level stays as responsive as it was before spectrum analysis was added.
+fn overlay_audio_features(frame: &SpectrumFrame, chunk_rms: f32) -> OverlayAudioFeatures {
     OverlayAudioFeatures {
-        level: display_level_from_rms(rms),
-        pitch: estimate_pitch_normalized(samples, sample_rate, rms).unwrap_or(0.5),
-        brightness: estimate_brightness(samples, rms),
+        level: display_level_from_rms(chunk_rms),
+        pitch: frame.pitch,
+        brightness: frame.brightness,
+        voicing: frame.voicing,
+        bands: quantize_bands(&frame.bands),
     }
-}
-
-fn estimate_pitch_normalized(samples: &[f32], sample_rate: u32, rms: f32) -> Option<f32> {
-    if rms < VAD_CONTINUE_RMS_THRESHOLD || sample_rate == 0 {
-        return None;
-    }
-
-    let min_hz = 75.0f32;
-    let max_hz = 420.0f32;
-    let min_lag = (sample_rate as f32 / max_hz).round().max(1.0) as usize;
-    let max_lag = (sample_rate as f32 / min_hz).round() as usize;
-
-    if samples.len() <= max_lag + 2 {
-        return None;
-    }
-
-    let mean = samples.iter().copied().sum::<f32>() / samples.len() as f32;
-    let centered: Vec<f32> = samples.iter().map(|sample| sample - mean).collect();
-    let mut best_lag = 0usize;
-    let mut best_score = 0.0f32;
-    let mut scores = Vec::with_capacity(max_lag.saturating_sub(min_lag) + 1);
-
-    for lag in min_lag..=max_lag {
-        let mut correlation = 0.0f32;
-        let mut left_energy = 0.0f32;
-        let mut right_energy = 0.0f32;
-
-        for index in lag..centered.len() {
-            let left = centered[index];
-            let right = centered[index - lag];
-            correlation += left * right;
-            left_energy += left * left;
-            right_energy += right * right;
-        }
-
-        let energy = (left_energy * right_energy).sqrt();
-        if energy <= f32::EPSILON {
-            continue;
-        }
-
-        let score = correlation / energy;
-        scores.push((lag, score));
-        if score > best_score {
-            best_score = score;
-            best_lag = lag;
-        }
-    }
-
-    if best_score < 0.34 || best_lag == 0 {
-        return None;
-    }
-
-    let strong_score = best_score * 0.9;
-    if let Some((lag, _)) = scores
-        .iter()
-        .find(|(_, score)| *score >= strong_score)
-        .copied()
-    {
-        best_lag = lag;
-    }
-
-    let hz = sample_rate as f32 / best_lag as f32;
-    Some(((hz - min_hz) / (max_hz - min_hz)).clamp(0.0, 1.0))
-}
-
-fn estimate_brightness(samples: &[f32], rms: f32) -> f32 {
-    if samples.len() < 2 || rms < VAD_CONTINUE_RMS_THRESHOLD {
-        return 0.35;
-    }
-
-    let crossings = samples
-        .windows(2)
-        .filter(|pair| (pair[0] < 0.0 && pair[1] >= 0.0) || (pair[0] >= 0.0 && pair[1] < 0.0))
-        .count();
-
-    (crossings as f32 / samples.len() as f32 * 12.0).clamp(0.12, 1.0)
 }
 
 fn build_stream(
@@ -2295,6 +2292,30 @@ fn emit_native_event(
     message: &str,
     features: Option<OverlayAudioFeatures>,
 ) {
+    // Audio-feature events arrive about 36 times a second while listening. They carry data
+    // for the picture only: the overlay is already visible, so they do not touch the window,
+    // the hide timer, or the health file.
+    let Some(features) = features else {
+        emit_phase_event(app, phase, message);
+        return;
+    };
+
+    let _ = app.emit(
+        "localflow://native-dictation",
+        NativeDictationEvent {
+            phase: phase.to_string(),
+            message: message.to_string(),
+            level: Some(features.level),
+            pitch: Some(features.pitch),
+            brightness: Some(features.brightness),
+            voicing: Some(features.voicing),
+            bands: Some(features.bands.to_vec()),
+        },
+    );
+}
+
+/// Emit a real phase change: show or hide the overlay, record it, and arm the auto-hide.
+fn emit_phase_event(app: &AppHandle, phase: &str, message: &str) {
     let epoch = app
         .state::<NativeDictationRuntime>()
         .overlay_epoch
@@ -2303,29 +2324,27 @@ fn emit_native_event(
 
     match phase {
         "ready" | "listening" | "processing" | "refining" | "inserted" | "error" => {
-            show_overlay(app, features.is_none());
+            show_overlay(app, true);
         }
         _ => hide_overlay(app),
     }
 
-    // Audio-feature events arrive about 18 times a second. Only real phase changes are
-    // written to the health file, so the level meter never does disk I/O.
-    if features.is_none() {
-        crate::desktop_health::record_overlay_event(app, phase, message);
-    }
+    crate::desktop_health::record_overlay_event(app, phase, message);
 
     let _ = app.emit(
         "localflow://native-dictation",
         NativeDictationEvent {
             phase: phase.to_string(),
             message: message.to_string(),
-            level: features.map(|features| features.level),
-            pitch: features.map(|features| features.pitch),
-            brightness: features.map(|features| features.brightness),
+            level: None,
+            pitch: None,
+            brightness: None,
+            voicing: None,
+            bands: None,
         },
     );
 
-    if matches!(phase, "ready" | "inserted" | "error") && features.is_none() {
+    if matches!(phase, "ready" | "inserted" | "error") {
         schedule_overlay_hide(app.clone(), epoch);
     }
 }
@@ -2563,16 +2582,63 @@ mod tests {
     }
 
     #[test]
-    fn pitch_estimator_distinguishes_lower_and_higher_voice_tones() {
+    fn overlay_features_carry_the_spectrum_pitch_and_a_responsive_level() {
         let sample_rate = 48_000;
-        let low = sine_wave(120.0, sample_rate, 0.08);
-        let high = sine_wave(260.0, sample_rate, 0.08);
-        let low_pitch = estimate_pitch_normalized(&low, sample_rate, rms_level(&low)).unwrap();
-        let high_pitch = estimate_pitch_normalized(&high, sample_rate, rms_level(&high)).unwrap();
+        let mut analyzer = SpectrumAnalyzer::new(sample_rate);
+        let low = sine_wave(120.0, sample_rate, 0.5);
+        analyzer.push(&low);
+        let low_features = overlay_audio_features(&analyzer.analyze(), rms_level(&low));
 
-        assert!(high_pitch > low_pitch);
-        assert!(low_pitch < 0.3);
-        assert!(high_pitch > 0.45);
+        analyzer.reset();
+        let high = sine_wave(260.0, sample_rate, 0.5);
+        analyzer.push(&high);
+        let high_features = overlay_audio_features(&analyzer.analyze(), rms_level(&high));
+
+        // Higher voices read as higher pitch, as with the previous estimator.
+        assert!(high_features.pitch > low_features.pitch);
+        assert!(low_features.pitch < 0.3);
+        assert!(high_features.pitch > 0.45);
+        assert!(low_features.voicing > 0.8);
+        // The spectrum is present and the level follows the newest samples.
+        assert!(low_features.bands.iter().any(|band| *band > 200));
+        assert_eq!(low_features.level, display_level_from_rms(rms_level(&low)));
+    }
+
+    #[test]
+    fn outside_pulses_are_suppressed_only_while_recording() {
+        assert!(pulse_allowed(false));
+        assert!(!pulse_allowed(true));
+    }
+
+    #[test]
+    fn feature_events_serialise_bands_and_phase_events_omit_them() {
+        let with_features = serde_json::to_value(NativeDictationEvent {
+            phase: "listening".to_string(),
+            message: "Listening".to_string(),
+            level: Some(0.5),
+            pitch: Some(0.4),
+            brightness: Some(0.3),
+            voicing: Some(0.9),
+            bands: Some(vec![0, 128, 255]),
+        })
+        .unwrap();
+        assert_eq!(with_features["bands"], serde_json::json!([0, 128, 255]));
+        assert!((with_features["voicing"].as_f64().unwrap() - 0.9).abs() < 1e-6);
+
+        let phase_only = serde_json::to_value(NativeDictationEvent {
+            phase: "processing".to_string(),
+            message: "Transcribing".to_string(),
+            level: None,
+            pitch: None,
+            brightness: None,
+            voicing: None,
+            bands: None,
+        })
+        .unwrap();
+        // Exactly the shape older consumers already handle.
+        assert!(phase_only.get("bands").is_none());
+        assert!(phase_only.get("voicing").is_none());
+        assert!(phase_only["level"].is_null());
     }
 
     #[test]
