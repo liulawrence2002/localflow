@@ -116,6 +116,12 @@ pub fn is_active(app: &AppHandle) -> bool {
 /// The conversation hotkey or tray item: start, interrupt, or end, depending on the phase.
 pub fn toggle(app: &AppHandle) {
     if let Some(runtime) = app.try_state::<ConversationRuntime>() {
+        // Starting during a dictation would replace the dictation's overlay with the
+        // conversation's and then hide it. The microphone is in use: do nothing.
+        if !runtime.is_active() && crate::native_dictation::is_recording(app) {
+            tracing::info!("conversation hotkey ignored during a dictation");
+            return;
+        }
         runtime.core.send(Event::Toggle);
     }
 }
@@ -180,8 +186,10 @@ impl ConversationHost for TauriHost {
         if crate::native_dictation::is_recording(app) {
             return Err("Finish the dictation first, then start a conversation.".to_string());
         }
-        // Read-aloud and a conversation would talk over each other.
+        // Read-aloud and a conversation would talk over each other, and the conversation's
+        // microphone would take the reading for the user's words.
         crate::tts::stop(app);
+        crate::page_reader::stop(app);
 
         let model_dir = voice_model_dir(app).ok_or_else(|| {
             "The conversation voice is not installed. Run scripts\\Get-PhononModel.ps1.".to_string()

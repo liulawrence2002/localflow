@@ -264,6 +264,25 @@ Phase 1 (unify the production pipeline): in progress.
     discarded as echo. While the assistant is thinking, speech is still ignored.
   Next risks: an echo that slips through all three layers makes the assistant cut itself
   off; the canceller adds 28 ms of delay to the microphone path.
+- **Slice 23 -- code review fixes (done).** A review of the branch against `master` found
+  ten issues; seven were fixed, three are recorded below.
+  - Fixed: a conversation now stops a page reading when it starts, and read-aloud refuses to
+    start during a conversation, so neither can be heard by the conversation's microphone and
+    sent to the model. Starting a dictation stops read-aloud and page reading, which it would
+    otherwise record and paste. The conversation hotkey is ignored during a dictation and the
+    reading hotkey during a conversation, instead of replacing and then hiding the overlay.
+    A page reading cut off part-way through a paragraph's last sentence now reads that
+    paragraph again (`Spoken::finished_pieces`). A Stop pressed just as read-aloud synthesis
+    finished could be lost; it now always stops playback. Ollama error bodies, which can echo
+    the dictated text, no longer reach the log.
+  - Verified live in the app: read-aloud refused during a conversation; the reading hotkey
+    ignored without touching the overlay; a dictation stopping a page reading; read-aloud
+    working again afterwards. +1 Rust test (497 total, 7 ignored, plus all 7 real-model tests
+    passing).
+  - Not fixed, all present on `master` before this branch: the SDK's Tauri adapter calls
+    `mobile_start_dictation`/`mobile_stop_dictation`, which the app does not have; changing the
+    speech model while a transcription runs can shut that engine down mid-request; Win32 calls
+    in `asr/sidecar.rs` and `overlay.rs` sit outside `platform/` as AGENTS.md asks.
 - Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey.

@@ -210,6 +210,10 @@ fn resolve_engine(app: &AppHandle) -> Result<Arc<dyn TextToSpeechProvider>, TtsE
 /// continue on a worker thread and report through [`TTS_EVENT`]. A new request supersedes
 /// one in progress.
 pub fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
+    // A conversation's microphone would take the reading for the user and answer it.
+    if crate::conversation::is_active(app) {
+        return Err("Reading aloud is not available during a conversation.".to_string());
+    }
     let text = prepare_text_for_speech(text).ok_or_else(|| TtsError::NothingToSay.to_string())?;
     // Fail fast, before spawning anything, when no engine is installed.
     locate_install(app)?;
@@ -251,6 +255,12 @@ fn run_request(app: &AppHandle, generation: u64, text: &str) {
     let runtime = app.state::<TtsRuntime>();
     let stop = runtime.stop.clone();
     stop.store(false, Ordering::SeqCst);
+    // A stop that landed between the check above and clearing the flag would otherwise be
+    // lost, and the whole clip would play. `stop()` changes the generation before it sets the
+    // flag, so checking again here catches it; a stop after this point leaves the flag set.
+    if !is_current(app, generation) {
+        return;
+    }
     runtime.speaking.store(true, Ordering::SeqCst);
     emit(app, "speaking", "Reading aloud");
     tracing::info!(

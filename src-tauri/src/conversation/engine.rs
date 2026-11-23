@@ -183,8 +183,9 @@ pub trait PageSource: Send + Sync {
     /// An error is a fixed sentence to say instead, such as why the window may not be read.
     fn read(&self, what: ReadWhat) -> Result<Vec<String>, String>;
 
-    /// The first `pieces` pieces of the last [`PageSource::read`] were heard, so the reading
-    /// position can move on exactly that far.
+    /// The first `pieces` pieces of the last [`PageSource::read`] were heard to their end,
+    /// so the reading position can move on exactly that far. A piece cut off part-way is
+    /// not counted, so it is read again next time.
     fn heard(&self, pieces: usize);
 }
 
@@ -1184,8 +1185,8 @@ fn run_turn(context: TurnContext) {
                 ),
                 Ok(pieces) => {
                     let outcome = speak_reply(&context, &mut timings, Reply::Verbatim(pieces));
-                    // Move the reading position on by what was heard, even if cut short.
-                    context.page.heard(outcome.heard_pieces);
+                    // Move the reading position on by what was heard to the end.
+                    context.page.heard(outcome.finished_pieces);
                     SpokenOutcome {
                         // Page text is not kept: it must not reach a notice or the memory.
                         heard: String::new(),
@@ -1236,8 +1237,8 @@ enum Reply {
 struct SpokenOutcome {
     /// The pieces that began playing, joined. Empty when nothing was heard.
     heard: String,
-    /// How many pieces began playing.
-    heard_pieces: usize,
+    /// How many pieces played to their end.
+    finished_pieces: usize,
     /// A fixed sentence describing what went wrong, when the reply could not be spoken.
     failure: Option<String>,
 }
@@ -1335,6 +1336,7 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
 
         let spoken = voice_thread.join().unwrap_or_else(|_| Spoken {
             heard_pieces: 0,
+            finished_pieces: 0,
             heard_text: String::new(),
             error: Some(TtsError::Failed(
                 "The voice stopped unexpectedly.".to_string(),
@@ -1343,9 +1345,10 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
         (spoken, model_error)
     });
     let Spoken {
-        heard_pieces,
+        finished_pieces,
         heard_text: heard,
         error: voice_error,
+        ..
     } = spoken;
 
     let first_piece = *first_piece_at
@@ -1374,7 +1377,7 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
             return SpokenOutcome {
                 // A fixed error line is not part of the conversation.
                 heard: String::new(),
-                heard_pieces: 0,
+                finished_pieces: 0,
                 failure: None,
             };
         }
@@ -1382,7 +1385,7 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
     };
     SpokenOutcome {
         heard,
-        heard_pieces,
+        finished_pieces,
         failure,
     }
 }

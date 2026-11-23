@@ -17,6 +17,9 @@ use crate::{
 pub struct Spoken {
     /// Pieces that began playing, counted from the first.
     pub heard_pieces: usize,
+    /// Pieces that played to their end, counted from the first. Never more than
+    /// `heard_pieces`; fewer when playback was cut off part-way through a piece.
+    pub finished_pieces: usize,
     /// Those pieces joined with single spaces.
     pub heard_text: String,
     /// Why the voice stopped, if it failed.
@@ -38,8 +41,9 @@ pub fn speak_pieces(
     let gap = vec![0.0f32; (sentence_gap.as_secs_f64() * sink.sample_rate() as f64) as usize];
     let played_before = sink.played();
     let mut queued = 0u64;
-    // Where in the queued audio each piece starts, to work out afterwards what was heard.
-    let mut starts: Vec<(u64, String)> = Vec::new();
+    // Where in the queued audio each piece starts and, once all of its audio is queued, where
+    // it ends: to work out afterwards what was heard, and what was heard to the end.
+    let mut spans: Vec<(u64, Option<u64>, String)> = Vec::new();
     let mut scratch: Vec<f32> = Vec::new();
     let mut announced = false;
     let mut error = None;
@@ -58,14 +62,17 @@ pub fn speak_pieces(
                 on_first_audio();
             }
         });
-        starts.push((start, piece));
         if let Err(failed) = result {
+            spans.push((start, None, piece));
             error = Some(failed);
             break;
         }
         scratch.clear();
         to_device.flush(&mut scratch);
         queued += write_all(sink, &scratch, cancel);
+        // A piece whose synthesis was cut short has no end: it can never count as finished.
+        let end = (!cancel.is_cancelled()).then_some(queued);
+        spans.push((start, end, piece));
         queued += write_all(sink, &gap, cancel);
     }
 
@@ -80,13 +87,18 @@ pub fn speak_pieces(
     }
 
     let played = sink.played().saturating_sub(played_before);
-    let heard: Vec<&str> = starts
+    let heard: Vec<&str> = spans
         .iter()
-        .filter(|(start, _)| *start < played)
-        .map(|(_, piece)| piece.as_str())
+        .filter(|(start, _, _)| *start < played)
+        .map(|(_, _, piece)| piece.as_str())
         .collect();
+    let finished_pieces = spans
+        .iter()
+        .take_while(|(_, end, _)| end.is_some_and(|end| end <= played))
+        .count();
     Spoken {
         heard_pieces: heard.len(),
+        finished_pieces,
         heard_text: heard.join(" "),
         error,
     }
@@ -140,6 +152,7 @@ mod tests {
         );
 
         assert_eq!(spoken.heard_pieces, 3);
+        assert_eq!(spoken.finished_pieces, 3);
         assert_eq!(spoken.heard_text, "One. Two. Three.");
         assert_eq!(spoken.error, None);
         assert_eq!(
@@ -168,9 +181,73 @@ mod tests {
         );
 
         assert_eq!(spoken.heard_pieces, 0);
+        assert_eq!(spoken.finished_pieces, 0);
         assert_eq!(spoken.heard_text, "");
         assert!(speaker.flushes.load(Ordering::Relaxed) >= 1);
         assert_eq!(speaker.queued(), 0);
+    }
+
+    /// Plays everything written to it except the last `withheld` samples, as a speaker that
+    /// was stopped just before the end would.
+    struct NearlyPlayed {
+        rate: u32,
+        written: std::sync::atomic::AtomicU64,
+        withheld: u64,
+    }
+
+    impl AudioSink for NearlyPlayed {
+        fn sample_rate(&self) -> u32 {
+            self.rate
+        }
+
+        fn write(&self, samples: &[f32]) -> usize {
+            self.written
+                .fetch_add(samples.len() as u64, Ordering::SeqCst);
+            samples.len()
+        }
+
+        fn queued(&self) -> usize {
+            0
+        }
+
+        fn played(&self) -> u64 {
+            self.written
+                .load(Ordering::SeqCst)
+                .saturating_sub(self.withheld)
+        }
+
+        fn flush(&self) {}
+
+        fn healthy(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_piece_cut_off_before_its_end_was_heard_but_not_finished() {
+        let voice = MockVoice::default();
+        // Each piece is "One." = 4 characters of 160 samples, then a 10 ms gap of 160 samples.
+        // Withholding more than the gap leaves the last piece's final samples unplayed.
+        let speaker = NearlyPlayed {
+            rate: voice.sample_rate,
+            written: Default::default(),
+            withheld: 400,
+        };
+
+        let spoken = speak_pieces(
+            &voice,
+            &speaker,
+            pieces(&["One.", "Two."]),
+            &CancelFlag::default(),
+            Duration::from_millis(10),
+            &mut || {},
+        );
+
+        assert_eq!(spoken.heard_pieces, 2, "both pieces began playing");
+        assert_eq!(
+            spoken.finished_pieces, 1,
+            "the second was cut off before its end"
+        );
     }
 
     #[test]
@@ -219,6 +296,7 @@ mod tests {
             spoken,
             Spoken {
                 heard_pieces: 0,
+                finished_pieces: 0,
                 heard_text: String::new(),
                 error: None
             }

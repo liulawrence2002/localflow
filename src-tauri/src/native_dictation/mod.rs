@@ -384,6 +384,9 @@ fn start_recording(
     if session.is_some() {
         return Ok(());
     }
+    // Anything LocalFlow is reading aloud would be recorded and pasted with the user's words.
+    crate::tts::stop(app);
+    crate::page_reader::stop(app);
 
     // Capture the window that had focus when dictation started. Insertion is revalidated
     // against this before pasting so a transcript never lands in a different window (spec

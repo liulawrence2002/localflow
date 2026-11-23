@@ -82,13 +82,14 @@ pub(crate) fn request_ollama_generate(
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        // The body is not included: it can echo the prompt, which holds the dictated text,
+        // and this error is logged.
         if status.as_u16() == 404 {
             return Err(format!(
-                "Ollama model \"{model}\" was not found locally. {body}"
+                "Ollama model \"{model}\" was not found locally. Run: ollama pull {model}"
             ));
         }
-        return Err(format!("Ollama returned HTTP {status}: {body}"));
+        return Err(format!("Ollama returned HTTP {}.", status.as_u16()));
     }
 
     let payload: OllamaGenerateResponse = response

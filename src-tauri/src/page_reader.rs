@@ -266,8 +266,10 @@ pub fn toggle(app: &AppHandle) {
         return;
     }
     if crate::conversation::is_active(app) {
-        // The conversation owns the speaker; its own "read this page" does the same job.
-        emit_status(app, "error", "In a conversation, say \"read this page\".");
+        // The conversation owns the speaker and the overlay; its own "read this page" does the
+        // same job. An overlay message here would replace the conversation's phase and hide the
+        // overlay a moment later.
+        tracing::info!("reading hotkey ignored during a conversation");
         return;
     }
     if crate::native_dictation::is_recording(app) {
@@ -348,7 +350,7 @@ fn read_aloud(
     drop(tx);
     let spoken = speak_pieces(&voice, &speaker, rx, cancel, SENTENCE_GAP, &mut || {});
     if from_page {
-        reader.mark_heard(spoken.heard_pieces);
+        reader.mark_heard(spoken.finished_pieces);
     }
 
     match (spoken.error, refusal) {
