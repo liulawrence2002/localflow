@@ -189,6 +189,43 @@ Phase 1 (unify the production pipeline): in progress.
   Next risks: the in-process voice and voice detector add native code to the main process;
   the keep-warm requests keep the GPU awake while the user speaks; a model that does not
   fit in GPU memory will answer too slowly to be usable.
+- **Slice 21 -- read a window aloud (done; exercised on test pages, not yet on real sites by
+  a person).** `Ctrl+Alt+R` (fallback `Ctrl+Alt+Shift+R`) reads the focused window word for
+  word and stops when pressed again; in a conversation "read this page", "next paragraph",
+  "go back", "read that again" and "read from the top" do the same. No language model is
+  involved. See `../ARCHITECTURE.md` (Reading a Window Aloud) and `../PRIVACY.md`.
+  - New: `platform/uia/` (UI Automation reader on a dedicated thread with a deadline),
+    `context/page/{raw,types,policy,extract,cursor,speech}.rs`, `page_reader.rs`,
+    `conversation/speaking.rs` (shared by replies and reading), `examples/page_probe.rs`.
+    The reader and the extraction were written by two agents against a fixed data contract
+    and joined afterwards.
+  - Checked on real Microsoft Edge with a test article: 126 nodes read in 105-232 ms,
+    extraction in under 0.4 ms; the article's 18 blocks came out in order with navigation,
+    sidebar, search box, footer and cookie dialog excluded, and two pieces of deliberately
+    hidden text (a zero-size box and a screen-reader-only span) left out after a fix. The agent's own checks covered
+    Edge and Chrome: password fields flagged and never read, typed values absent.
+  - Checked in the running app by sending the real hotkey over test pages: the article was
+    read aloud and stopped on the second press; an InPrivate window and a page with its
+    password field focused were both refused with the reason shown and spoken.
+  +147 Rust tests (420 total, 6 ignored), +4 web tests (163 total).
+  Known limitations:
+  - Not tried on real websites by a person. Extraction on pages that do not mark their main
+    content is a heuristic: comments, "read more" links and small sidebars can be included.
+  - Hidden text: a block clipped in place, or laid one word per line over two other blocks, is
+    filtered. Not detected: hidden text inside a real paragraph, off-screen indents,
+    same-colour or transparent text, and clipped boxes that keep a normal width. The same rule
+    can skip real text in collapsed sections and non-current carousel slides.
+  - Private windows are detected from English window titles only.
+  - Pages above roughly 30,000 accessibility nodes time out (estimated from 15,000 working
+    in 1.8-3.3 s and 50,000 failing); the first read of a long page can also time out while
+    the browser builds its tree, and works when asked again.
+  - Google Docs without its screen-reader mode, scanned PDFs, canvas apps and elevated
+    windows expose nothing. Firefox, PDFs, frames and Electron apps were not tested.
+  - The reading hotkey is ignored during a conversation (say "read this page" instead).
+    Spoken reading commands are English phrases matched exactly.
+  - The page does not scroll or highlight as it is read.
+  Next risks: asking a browser for its accessibility tree switches that feature on in the
+  browser; `Ctrl+Alt+R` may clash with other software.
 - Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey.

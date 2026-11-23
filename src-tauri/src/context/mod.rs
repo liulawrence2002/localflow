@@ -1,3 +1,5 @@
+pub mod page;
+
 use serde::{Deserialize, Serialize};
 
 use crate::workflow::AppCategory;

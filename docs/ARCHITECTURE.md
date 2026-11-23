@@ -116,6 +116,44 @@ Rules the design enforces:
 
 Measurements are in `benchmarks/CONVERSATION_BENCHMARK.md`.
 
+## Reading a Window Aloud
+
+`Ctrl+Alt+R` (or `Ctrl+Alt+Shift+R`) over any window reads it aloud and stops when pressed
+again. In a conversation, "read this page", "next paragraph", "go back", "read that again"
+and "read from the top" do the same through the conversation's voice. No language model is
+involved: the page's own words go to the voice.
+
+```
+hotkey or spoken command -> focused window -> capture policy (program, title)
+    -> UI Automation tree (plain data) -> capture policy again (password focus)
+    -> main content -> blocks -> reading position -> sentence pieces -> voice -> speaker
+```
+
+- `src-tauri/src/platform/uia/`: reads one window's accessibility tree into plain data
+  (`context/page/raw.rs`). All COM work runs on one dedicated thread; callers wait with a
+  deadline, and a worker stuck in a hung application is abandoned and replaced. The tree is
+  fetched in one cached call. It never enters password or edit fields. `window_info` gives
+  a window's program, title and class through plain Win32, without reading its content.
+- `src-tauri/src/context/page/policy.rs`: whether a window may be read. Applied before any
+  content is fetched and again afterwards.
+- `context/page/extract.rs`: finds the main content (a `main` landmark, a single article,
+  otherwise the densest prose region), drops navigation, banners, footers, consent dialogs,
+  controls and hidden text, and cuts the rest into headings, paragraphs, list items, table
+  rows, quotes and image descriptions with stable ids.
+- `context/page/cursor.rs`: the reading position per page, in memory, for up to 16 pages.
+  It advances only by blocks that were heard to the end.
+- `context/page/speech.rs`: cuts a block into sentence-sized pieces without changing a
+  word; a property test checks the words out equal the words in.
+- `context/page/types.rs`: `VerbatimText` can only be made from page text, and its debug
+  output shows a length, never the text.
+- `src-tauri/src/page_reader.rs`: ties these to the hotkey, the voice and the speaker, and
+  implements the conversation's `PageSource`.
+- `conversation/speaking.rs`: speaks a sequence of pieces and reports how many were heard;
+  shared by conversation replies and page reading.
+
+`cargo run --release --example page_probe -- "<window title>"` shows what would be read from
+a window as counts and kinds (add `--show-text` only for pages you wrote yourself).
+
 ## Web UI Boundary
 
 The web UI is confined in two ways (`src-tauri/tauri.conf.json`, `src-tauri/capabilities/`):

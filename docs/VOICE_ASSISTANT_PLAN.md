@@ -168,7 +168,7 @@ Not yet measured: a person at a real microphone and speaker, and how the voice s
    time limits, Silero, a streaming cancellable chat client, the fast voice, a persistent
    playback queue, and a pure turn-taking state machine tested with scripted fakes. Interrupt
    by hotkey. Includes the end-to-end latency benchmark that replaces the estimates above.
-3. **Read this page.** UI Automation snapshot, the policy gate, verbatim reading with next
+3. **Read this page (done, see `development/PLAN.md` slice 21).** UI Automation snapshot, the policy gate, verbatim reading with next
    and back, chunked read-aloud, and the `PRIVACY.md` change. No language model involved.
 4. **Natural turn-taking.** Turn-completion model, decoding while the user speaks, spoken
    barge-in with echo cancellation, automatic fallback to hotkey interrupt.

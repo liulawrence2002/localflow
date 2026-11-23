@@ -27,7 +27,12 @@ import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
 import { defaultStatus, pinnedOllamaModel } from "./domain/defaults";
 import { serializeDiagnosticsExport } from "./domain/diagnostics";
-import { describeConversation, type ConversationStatus } from "./domain/conversation";
+import {
+  describeConversation,
+  describeScreenReading,
+  type ConversationStatus,
+  type ScreenReadingStatus,
+} from "./domain/conversation";
 import { hasOllamaModel, type OllamaConnectionStatus } from "./domain/ollama";
 import {
   addDictionaryEntry,
@@ -67,6 +72,7 @@ import {
   getStatus,
   checkLocalModels,
   getConversationStatus,
+  getScreenReadingStatus,
   getTtsStatus,
   saveSettings,
   speakLastTranscript,
@@ -123,6 +129,7 @@ export function App() {
   const [recoveryNotice, setRecoveryNotice] = useState("");
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
   const [conversation, setConversation] = useState<ConversationStatus | null>(null);
+  const [screenReading, setScreenReading] = useState<ScreenReadingStatus | null>(null);
 
   useEffect(() => {
     void getStatus().then(setStatus);
@@ -134,12 +141,18 @@ export function App() {
   // panel follows it by asking the native layer about once a second.
   useEffect(() => {
     let cancelled = false;
-    const refresh = () =>
+    const refresh = () => {
       void getConversationStatus().then((next) => {
         if (!cancelled) {
           setConversation(next);
         }
       });
+      void getScreenReadingStatus().then((next) => {
+        if (!cancelled) {
+          setScreenReading(next);
+        }
+      });
+    };
     refresh();
     const timer = window.setInterval(refresh, 1000);
     return () => {
@@ -418,6 +431,10 @@ export function App() {
                       </button>
                     </div>
                     {conversation ? <p className="field-hint">{conversation.detail}</p> : null}
+                    <p className="field-hint">{describeScreenReading(screenReading)}</p>
+                    {screenReading && !screenReading.available ? (
+                      <p className="field-hint">{screenReading.detail}</p>
+                    ) : null}
                   </>
                 );
               })()}

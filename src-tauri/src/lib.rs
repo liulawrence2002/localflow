@@ -2,7 +2,7 @@ mod app_state;
 pub mod asr;
 pub mod audio;
 pub mod cancel;
-mod context;
+pub mod context;
 pub mod conversation;
 mod desktop_health;
 mod hotkeys;
@@ -10,7 +10,8 @@ mod insertion;
 pub mod llm;
 mod native_dictation;
 mod overlay;
-mod platform;
+mod page_reader;
+pub mod platform;
 mod privacy;
 mod refinement;
 mod runtime_paths;
@@ -66,6 +67,7 @@ pub fn run() {
                 }
             }
 
+            app.manage(page_reader::ScreenReader::default());
             app.manage(conversation::ConversationRuntime::new(app.handle().clone()));
 
             build_tray(app)?;
@@ -96,7 +98,8 @@ pub fn run() {
             tts::stop_speaking,
             conversation::conversation_status,
             conversation::toggle_conversation,
-            llm::list_ollama_models
+            llm::list_ollama_models,
+            page_reader::screen_reading_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building LocalFlow")
@@ -104,6 +107,7 @@ pub fn run() {
             // Stop the ASR sidecar on the way out so no whisper process is left running.
             if let tauri::RunEvent::Exit = event {
                 conversation::end(app);
+                page_reader::stop(app);
                 asr::engine_select::shutdown(app);
                 tts::shutdown(app);
             }
@@ -164,7 +168,10 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     tracing::info!(error = %error, "read last transcript from tray failed");
                 }
             }
-            "stop_reading" => tts::stop(app),
+            "stop_reading" => {
+                tts::stop(app);
+                page_reader::stop(app);
+            }
             "conversation" => conversation::toggle(app),
             "quit" => app.exit(0),
             _ => {}

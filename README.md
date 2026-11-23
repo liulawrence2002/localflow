@@ -22,9 +22,17 @@ A hands-free spoken conversation with your local language model, as a second mod
 
 This is a first version. The assistant does not listen while it is speaking, so you interrupt with the hotkey, not by voice. The voice is English only. Measured response time on the development laptop is about 1.1 s from the end of your speech to the start of the reply ([benchmark](docs/benchmarks/CONVERSATION_BENCHMARK.md)).
 
+## Read a Window Aloud
+
+Press `Ctrl+Alt+R` (or `Ctrl+Alt+Shift+R`) over a web page, a document or most other windows and LocalFlow reads its main content aloud, word for word, with the conversation voice. Press it again to stop. In a conversation you can say "read this page", "next paragraph", "go back", "read that again" or "read from the top" instead.
+
+It reads the page's own words through Windows accessibility; no language model is involved and nothing is stored. It refuses private browsing windows, password managers and any window with a password field focused, and it never reads what is typed into a text box. Reading continues from where you last stopped on that page. See [privacy](docs/PRIVACY.md) for exactly what is read and its limits.
+
+Some windows expose little or nothing this way: Google Docs unless its screen-reader support is switched on, scanned PDFs, games, and windows running as administrator.
+
 ## What Is Next
 
-Screen-aware reading ("read this page", "summarize what I'm looking at"), a shorter wait before replies, and interrupting by voice are planned. None of them exists yet. The audit, measured baselines, technology choices and milestones are in [docs/VOICE_ASSISTANT_PLAN.md](docs/VOICE_ASSISTANT_PLAN.md).
+Summarising and explaining what is on screen, "what changed?", a shorter wait before replies, and interrupting by voice are planned. None of them exists yet. The audit, measured baselines, technology choices and milestones are in [docs/VOICE_ASSISTANT_PLAN.md](docs/VOICE_ASSISTANT_PLAN.md).
 
 ## Documentation
 

@@ -5,7 +5,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use crate::{
     conversation,
     desktop_health::{self, HotkeyRegistrationFailure},
-    native_dictation,
+    native_dictation, page_reader,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +39,23 @@ fn conversation_shortcuts() -> [(Shortcut, &'static str); 2] {
     ]
 }
 
+/// Shortcuts that read the focused window aloud (and stop reading), in order of preference.
+fn reading_shortcuts() -> [(Shortcut, &'static str); 2] {
+    [
+        (
+            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyR),
+            "Ctrl+Alt+R",
+        ),
+        (
+            Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+                Code::KeyR,
+            ),
+            "Ctrl+Alt+Shift+R",
+        ),
+    ]
+}
+
 pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
     let fallback_shortcut = Shortcut::new(
@@ -49,6 +66,7 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     let handler_fallback_shortcut = fallback_shortcut.clone();
     let handler_escape_shortcut = escape_cancel_shortcut();
     let handler_conversation_shortcuts = conversation_shortcuts();
+    let handler_reading_shortcuts = reading_shortcuts();
 
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
@@ -71,6 +89,18 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                     // Start, interrupt or end, decided by the conversation's own state.
                     if matches!(event.state(), ShortcutState::Pressed) {
                         conversation::toggle(app);
+                    }
+                    return;
+                }
+
+                if handler_reading_shortcuts
+                    .iter()
+                    .any(|(candidate, _)| candidate == shortcut)
+                {
+                    // Acted on at key-down, while the window the user means still has
+                    // the focus.
+                    if matches!(event.state(), ShortcutState::Pressed) {
+                        page_reader::toggle(app);
                     }
                     return;
                 }
@@ -156,6 +186,21 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
         }
     }
     conversation::set_hotkey_label(app, conversation_hotkey);
+
+    let mut reading_hotkey = None;
+    for (shortcut, label) in reading_shortcuts() {
+        match app.global_shortcut().register(shortcut) {
+            Ok(()) => {
+                tracing::info!(hotkey = label, "registered reading hotkey");
+                reading_hotkey = Some(label.to_string());
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(hotkey = label, error = %error, "reading hotkey unavailable");
+            }
+        }
+    }
+    page_reader::set_hotkey_label(app, reading_hotkey);
 
     if registered.is_empty() {
         native_dictation::show_error_pulse(

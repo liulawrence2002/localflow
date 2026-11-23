@@ -18,6 +18,7 @@
     "allow-stop-speaking",
     "allow-conversation-status",
     "allow-toggle-conversation",
-    "allow-list-ollama-models"
+    "allow-list-ollama-models",
+    "allow-screen-reading-status"
   ]
 }

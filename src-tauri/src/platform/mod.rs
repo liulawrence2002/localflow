@@ -1,3 +1,5 @@
+pub mod uia;
+
 pub trait StartupRegistration: Send + Sync {
     fn set_enabled(&self, enabled: bool) -> Result<(), String>;
     fn is_enabled(&self) -> Result<bool, String>;

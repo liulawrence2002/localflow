@@ -40,6 +40,8 @@
   (shared TS layer; the native path now supersedes stale sessions via `SessionRegistry`).
 - The web UI runs under a content security policy: scripts and styles from the app only, connections only to the app's IPC. It has no other network access; the native layer asks local Ollama which models are installed.
 - Conversation mode gives the language model no tools. Fixed phrases are matched in code before the model is asked, and the model's output is only ever spoken, so nothing it reads or writes can trigger an action.
+- A window is read aloud only on the user's own request at that moment, only the focused window, and only after a capture policy has refused private browsing windows, password managers, credential prompts, LocalFlow's own windows and windows with a password field focused. Password and edit fields are never entered.
+- Text read from a window goes only to the voice. It cannot reach the language model, the conversation memory, a log or an event: the type that carries it can only be created from page text, hides its content in debug output, and tests check that no page text appears in engine notices or in the next model request.
 - While the assistant is thinking or speaking, microphone audio is discarded, so its own voice cannot be taken for the user's.
 - Tauri capabilities are per window. The settings window may call the app's declared commands; the overlay window may only listen for events. The opener and global-shortcut web permissions are not granted.
 - Logs use redaction helpers for dictated content.

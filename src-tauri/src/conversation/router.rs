@@ -16,9 +16,107 @@ pub enum TurnIntent {
     Quiet,
     /// Say the previous reply again.
     Repeat,
+    /// Read what is in the focused window aloud, word for word.
+    Read(ReadWhat),
     /// Anything else: answer it.
     Ask(String),
 }
+
+/// Which part of the focused window to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadWhat {
+    /// Carry on from where reading last stopped, or start with what is on screen.
+    FromHere,
+    /// Start again from the top of the page.
+    FromStart,
+    /// Just the next paragraph.
+    Next,
+    /// Just the paragraph before the last one read.
+    Previous,
+    /// The last paragraph read, again.
+    Again,
+}
+
+const READ_HERE_PHRASES: &[&str] = &[
+    "read this page",
+    "read the page",
+    "read this page to me",
+    "read the page to me",
+    "read this",
+    "read this to me",
+    "read this aloud",
+    "read this out loud",
+    "read it to me",
+    "read it aloud",
+    "read that",
+    "read that to me",
+    "read this article",
+    "read the article",
+    "read this window",
+    "read the screen",
+    "read whats on the screen",
+    "read what is on the screen",
+    "can you read this page",
+    "can you read this page to me",
+    "can you read this to me",
+    "can you read this",
+    "could you read this page",
+    "could you read this page to me",
+    "start reading",
+    "keep reading",
+    "continue reading",
+    "carry on reading",
+    "continue",
+    "go on",
+    "read on",
+];
+const READ_START_PHRASES: &[&str] = &[
+    "read from the top",
+    "read from the start",
+    "read from the beginning",
+    "read it from the top",
+    "read it from the start",
+    "read it from the beginning",
+    "read this page from the top",
+    "read this page from the start",
+    "read this page from the beginning",
+    "start from the top",
+    "start from the beginning",
+    "start over",
+    "from the top",
+];
+const READ_NEXT_PHRASES: &[&str] = &[
+    "next",
+    "next paragraph",
+    "the next paragraph",
+    "read the next paragraph",
+    "read next paragraph",
+    "read the next one",
+    "next one",
+    "read the next part",
+    "next part",
+    "skip",
+];
+const READ_PREVIOUS_PHRASES: &[&str] = &[
+    "previous",
+    "previous paragraph",
+    "the previous paragraph",
+    "read the previous paragraph",
+    "go back",
+    "back",
+    "go back one",
+    "go back a paragraph",
+    "read the last paragraph again",
+    "the one before",
+];
+const READ_AGAIN_PHRASES: &[&str] = &[
+    "read that again",
+    "read it again",
+    "read this again",
+    "read that paragraph again",
+    "again",
+    "one more time",
+];
 
 const END_PHRASES: &[&str] = &[
     "goodbye",
@@ -66,7 +164,7 @@ const POLITE_WORDS: &[&str] = &[
     "please", "thanks", "thank", "you", "ok", "okay", "hey", "um", "uh",
 ];
 /// Control phrases are short. A longer utterance that merely contains one is a question.
-const MAX_COMMAND_WORDS: usize = 6;
+const MAX_COMMAND_WORDS: usize = 8;
 
 pub fn route_turn(transcript: &str) -> TurnIntent {
     let normalized = normalize(transcript);
@@ -86,6 +184,17 @@ pub fn route_turn(transcript: &str) -> TurnIntent {
             }
             if REPEAT_PHRASES.contains(&candidate) {
                 return TurnIntent::Repeat;
+            }
+            for (phrases, what) in [
+                (READ_START_PHRASES, ReadWhat::FromStart),
+                (READ_NEXT_PHRASES, ReadWhat::Next),
+                (READ_PREVIOUS_PHRASES, ReadWhat::Previous),
+                (READ_AGAIN_PHRASES, ReadWhat::Again),
+                (READ_HERE_PHRASES, ReadWhat::FromHere),
+            ] {
+                if phrases.contains(&candidate) {
+                    return TurnIntent::Read(what);
+                }
             }
         }
     }
@@ -158,6 +267,37 @@ mod tests {
             "What does goodbye mean in French?",
             "Can you repeat that last number and then add seven to it for me?",
             "When should I say goodbye at a party?",
+        ] {
+            assert!(
+                matches!(route_turn(question), TurnIntent::Ask(_)),
+                "{question}"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_requests_are_recognised_with_what_to_read() {
+        for (phrase, what) in [
+            ("Read this page to me.", ReadWhat::FromHere),
+            ("Can you read this page to me, please?", ReadWhat::FromHere),
+            ("Keep reading.", ReadWhat::FromHere),
+            ("Read from the top", ReadWhat::FromStart),
+            ("Read the next paragraph.", ReadWhat::Next),
+            ("Next.", ReadWhat::Next),
+            ("Go back.", ReadWhat::Previous),
+            ("Read that again, please.", ReadWhat::Again),
+        ] {
+            assert_eq!(route_turn(phrase), TurnIntent::Read(what), "{phrase}");
+        }
+    }
+
+    #[test]
+    fn talking_about_reading_is_still_a_question() {
+        for question in [
+            "What should I read next?",
+            "Can you read me the news from this morning and tell me what you think about it?",
+            "How do I go back to the previous commit in git?",
+            "Is it worth reading this book again?",
         ] {
             assert!(
                 matches!(route_turn(question), TurnIntent::Ask(_)),

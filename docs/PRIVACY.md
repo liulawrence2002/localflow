@@ -39,6 +39,46 @@ It ends when you press the hotkey while the assistant is not talking, say goodby
 the app, after 45 seconds without speech, after 10 minutes in total, or if the microphone
 stops working. The microphone is closed in every case.
 
+## Reading a Window Aloud
+
+LocalFlow can read the window you are looking at aloud, word for word. It does this only
+when you ask, at that moment: by pressing the reading hotkey over the window, or by saying
+"read this page" (or "next paragraph", "go back") during a conversation. It never reads
+a window in the background, on a timer, or because of something a program or a web page did.
+
+How the window is read:
+
+- Through Windows UI Automation, the interface screen readers use. No screenshot is taken.
+- Only the window that has the focus when you ask.
+- The text goes straight to the local voice. No language model sees it, it is not added to
+  a conversation's memory, and it is not written to the database, a file, a log, or sent to
+  the overlay or the settings window. Logs record counts and timings only.
+- What LocalFlow remembers afterwards is where you stopped: an identifier computed from
+  the page and the paragraph, for up to 16 pages, in memory until the app closes. It cannot
+  be turned back into the page's address or text.
+
+What it refuses to read, saying so aloud:
+
+- A window while a password field has the keyboard focus. Password fields are never read
+  in any window, and neither is anything typed into a text box.
+- Private browsing windows (InPrivate, Incognito, Private Browsing).
+- Password managers and authenticator apps, and Windows credential prompts.
+- LocalFlow's own windows, and any window whose program it cannot identify.
+
+Limits you should know about:
+
+- Private windows are recognised by the English words in their title. A browser in another
+  language, or one not on the list, is not recognised as private.
+- Password managers are recognised by program name. A password vault open in an ordinary
+  browser tab is read like any other page if you ask for it.
+- Asking a browser for its accessibility information switches that feature on in the
+  browser, which has a small ongoing cost there, and a browser that reports usage statistics
+  to its maker may include the fact that an accessibility client connected.
+- A page can contain text meant only for screen readers. Most text hidden by clipping is
+  filtered out, but not every way of hiding text can be detected, so hidden text may
+  occasionally be read aloud. Since nothing but your ears receives it, the harm is limited
+  to hearing it.
+
 ## Stored Fields
 
 Milestone 1 initializes SQLite tables for:

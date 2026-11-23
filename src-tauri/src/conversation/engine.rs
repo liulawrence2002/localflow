@@ -28,7 +28,8 @@ use std::{
 use super::{
     chunker::SentenceChunker,
     memory::ConversationMemory,
-    router::{route_turn, TurnIntent},
+    router::{route_turn, ReadWhat, TurnIntent},
+    speaking::{speak_pieces, Spoken},
     state::{transition, ConversationState, Effect, Event, Phase, StopReason, TurnOutcome},
 };
 use crate::{
@@ -53,6 +54,8 @@ pub struct Resources {
     pub asr: Arc<dyn SpeechToTextProvider>,
     pub chat: Arc<dyn ChatProvider>,
     pub voice: Arc<dyn StreamingTextToSpeech>,
+    /// Reads the focused window when the user asks for it.
+    pub page: Arc<dyn PageSource>,
     /// The local model to answer with.
     pub model: String,
     /// Language code for speech recognition.
@@ -143,6 +146,31 @@ pub enum Notice {
     Turn(TurnTimings),
 }
 
+/// Reads what is in the focused window so it can be spoken word for word.
+///
+/// The text it returns goes straight to the voice. It is never shown to the language model,
+/// never added to the conversation's memory, and never placed in a notice or a log.
+pub trait PageSource: Send + Sync {
+    /// The pieces to speak, in order. An empty list means there is nothing further to read.
+    /// An error is a fixed sentence to say instead, such as why the window may not be read.
+    fn read(&self, what: ReadWhat) -> Result<Vec<String>, String>;
+
+    /// The first `pieces` pieces of the last [`PageSource::read`] were heard, so the reading
+    /// position can move on exactly that far.
+    fn heard(&self, pieces: usize);
+}
+
+/// A page source for hosts that cannot read windows.
+pub struct NoPageSource;
+
+impl PageSource for NoPageSource {
+    fn read(&self, _what: ReadWhat) -> Result<Vec<String>, String> {
+        Err("Reading the screen isn't available here.".to_string())
+    }
+
+    fn heard(&self, _pieces: usize) {}
+}
+
 /// Supplies devices and models, and receives notices.
 pub trait ConversationHost: Send + Sync + 'static {
     /// Open the microphone, the speaker and the models. Called on a worker thread.
@@ -155,6 +183,7 @@ const MODEL_DOWN_LINE: &str = "I can't reach the language model. Check that Olla
 const MODEL_MISSING_LINE: &str = "The language model isn't installed yet.";
 const MODEL_FAILED_LINE: &str = "Sorry, I couldn't work out a reply.";
 const NOTHING_TO_REPEAT_LINE: &str = "I haven't said anything yet.";
+const END_OF_PAGE_LINE: &str = "That's the end of the page.";
 
 enum Message {
     Event(Event),
@@ -191,6 +220,7 @@ struct Session {
     asr: Arc<dyn SpeechToTextProvider>,
     chat: Arc<dyn ChatProvider>,
     voice: Arc<dyn StreamingTextToSpeech>,
+    page: Arc<dyn PageSource>,
     model: String,
     language: String,
 }
@@ -314,6 +344,7 @@ fn run_loop(
                         asr: active.asr.clone(),
                         chat: active.chat.clone(),
                         voice: active.voice.clone(),
+                        page: active.page.clone(),
                         model: active.model.clone(),
                         language: active.language.clone(),
                         memory: memory.clone(),
@@ -400,6 +431,7 @@ fn open_session(
         asr,
         chat,
         voice,
+        page,
         model,
         language,
     } = resources;
@@ -415,6 +447,7 @@ fn open_session(
         asr,
         chat,
         voice,
+        page,
         model,
         language,
     };
@@ -744,6 +777,7 @@ struct TurnContext {
     asr: Arc<dyn SpeechToTextProvider>,
     chat: Arc<dyn ChatProvider>,
     voice: Arc<dyn StreamingTextToSpeech>,
+    page: Arc<dyn PageSource>,
     model: String,
     language: String,
     memory: Arc<Mutex<ConversationMemory>>,
@@ -831,6 +865,33 @@ fn run_turn(context: TurnContext) {
             // Said again exactly as it was said; the model is not involved.
             speak_reply(&context, &mut timings, Reply::Fixed(line))
         }
+        TurnIntent::Read(what) => {
+            context.send(Event::TurnRouted {
+                turn,
+                outcome: TurnOutcome::Reply,
+            });
+            // The model is not needed for reading; stop nudging it.
+            context.keep_model_warm.store(false, Ordering::SeqCst);
+            match context.page.read(what) {
+                Ok(pieces) if pieces.is_empty() => speak_reply(
+                    &context,
+                    &mut timings,
+                    Reply::Fixed(END_OF_PAGE_LINE.to_string()),
+                ),
+                Ok(pieces) => {
+                    let outcome = speak_reply(&context, &mut timings, Reply::Verbatim(pieces));
+                    // Move the reading position on by what was heard, even if cut short.
+                    context.page.heard(outcome.heard_pieces);
+                    SpokenOutcome {
+                        // Page text is not kept: it must not reach a notice or the memory.
+                        heard: String::new(),
+                        ..outcome
+                    }
+                }
+                // Why the window cannot be read, said aloud.
+                Err(sentence) => speak_reply(&context, &mut timings, Reply::Fixed(sentence)),
+            }
+        }
         TurnIntent::Ask(question) => {
             context.send(Event::TurnRouted {
                 turn,
@@ -862,6 +923,8 @@ fn run_turn(context: TurnContext) {
 enum Reply {
     /// Speak this text as it is.
     Fixed(String),
+    /// Speak these pieces of page text exactly as they are, in order.
+    Verbatim(Vec<String>),
     /// Ask the model and speak its answer as it arrives.
     FromModel(Vec<crate::llm::chat::ChatMessage>),
 }
@@ -869,6 +932,8 @@ enum Reply {
 struct SpokenOutcome {
     /// The pieces that began playing, joined. Empty when nothing was heard.
     heard: String,
+    /// How many pieces began playing.
+    heard_pieces: usize,
     /// A fixed sentence describing what went wrong, when the reply could not be spoken.
     failure: Option<String>,
 }
@@ -881,7 +946,7 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
     let first_piece_at: Mutex<Option<Instant>> = Mutex::new(None);
     let first_audio_at: Mutex<Option<Instant>> = Mutex::new(None);
 
-    let (heard, voice_error, model_error) = thread::scope(|scope| {
+    let (spoken, model_error) = thread::scope(|scope| {
         let first_audio = &first_audio_at;
         let voice_thread = scope.spawn(move || voice_pieces(context, piece_rx, first_audio));
 
@@ -896,6 +961,11 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
         let mut model_error: Option<LlmError> = None;
         match reply {
             Reply::Fixed(line) => send_piece(line),
+            Reply::Verbatim(pieces) => {
+                for piece in pieces {
+                    send_piece(piece);
+                }
+            }
             Reply::FromModel(messages) => {
                 // The real question takes over from the keep-warm requests.
                 context.keep_model_warm.store(false, Ordering::SeqCst);
@@ -945,16 +1015,20 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
         // Closing the channel tells the voice there is nothing more to say.
         drop(piece_tx);
 
-        let (heard, voice_error) = voice_thread.join().unwrap_or_else(|_| {
-            (
-                String::new(),
-                Some(TtsError::Failed(
-                    "The voice stopped unexpectedly.".to_string(),
-                )),
-            )
+        let spoken = voice_thread.join().unwrap_or_else(|_| Spoken {
+            heard_pieces: 0,
+            heard_text: String::new(),
+            error: Some(TtsError::Failed(
+                "The voice stopped unexpectedly.".to_string(),
+            )),
         });
-        (heard, voice_error, model_error)
+        (spoken, model_error)
     });
+    let Spoken {
+        heard_pieces,
+        heard_text: heard,
+        error: voice_error,
+    } = spoken;
 
     let first_piece = *first_piece_at
         .lock()
@@ -982,100 +1056,39 @@ fn speak_reply(context: &TurnContext, timings: &mut TurnTimings, reply: Reply) -
             return SpokenOutcome {
                 // A fixed error line is not part of the conversation.
                 heard: String::new(),
+                heard_pieces: 0,
                 failure: None,
             };
         }
         (None, None) => None,
     };
-    SpokenOutcome { heard, failure }
+    SpokenOutcome {
+        heard,
+        heard_pieces,
+        failure,
+    }
 }
 
-/// The voice side of a reply: speak each piece into the speaker as it arrives. Returns the
-/// pieces that began playing and the voice's error, if it failed.
+/// The voice side of a reply: speak each piece into the speaker as it arrives, announcing
+/// the first audio to the state machine.
 fn voice_pieces(
     context: &TurnContext,
     pieces: mpsc::Receiver<String>,
     first_audio_at: &Mutex<Option<Instant>>,
-) -> (String, Option<TtsError>) {
-    let sink = &context.sink;
-    let cancel = &context.cancel;
-    let mut to_device = StreamResampler::new(context.voice.sample_rate(), sink.sample_rate());
-    let gap = vec![
-        0.0f32;
-        (context.limits.sentence_gap.as_secs_f64() * sink.sample_rate() as f64) as usize
-    ];
-    let played_before = sink.played();
-    let mut queued = 0u64;
-    // Where in the queued audio each piece starts, to work out afterwards what was heard.
-    let mut starts: Vec<(u64, String)> = Vec::new();
-    let mut scratch: Vec<f32> = Vec::new();
-    let mut announced = false;
-    let mut error = None;
-
-    for piece in pieces {
-        if cancel.is_cancelled() {
-            break;
-        }
-        starts.push((queued, piece.clone()));
-        let result = context
-            .voice
-            .synthesize_stream(&piece, cancel, &mut |audio| {
-                scratch.clear();
-                to_device.process(audio, &mut scratch);
-                queued += write_all(sink.as_ref(), &scratch, cancel);
-                if !announced && !scratch.is_empty() {
-                    announced = true;
-                    *first_audio_at
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
-                    context.send(Event::ReplyAudioStarted { turn: context.turn });
-                }
-            });
-        if let Err(failed) = result {
-            error = Some(failed);
-            break;
-        }
-        scratch.clear();
-        to_device.flush(&mut scratch);
-        queued += write_all(sink.as_ref(), &scratch, cancel);
-        queued += write_all(sink.as_ref(), &gap, cancel);
-    }
-
-    if cancel.is_cancelled() {
-        // Anything written in the instant between the stop and this thread noticing it.
-        sink.flush();
-    } else {
-        // Let the queued speech play out before the microphone is listened to again.
-        while sink.queued() > 0 && !cancel.is_cancelled() && sink.healthy() {
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    let played = sink.played().saturating_sub(played_before);
-    let heard = starts
-        .iter()
-        .filter(|(start, _)| *start < played)
-        .map(|(_, piece)| piece.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    (heard, error)
-}
-
-/// Write all of `samples`, waiting while the speaker's queue is full. Returns how many
-/// samples were written, which is fewer than asked only when cancelled or the device failed.
-fn write_all(sink: &dyn AudioSink, samples: &[f32], cancel: &CancelFlag) -> u64 {
-    let mut written = 0usize;
-    while written < samples.len() {
-        if cancel.is_cancelled() || !sink.healthy() {
-            break;
-        }
-        let taken = sink.write(&samples[written..]);
-        written += taken;
-        if taken == 0 {
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-    written as u64
+) -> Spoken {
+    speak_pieces(
+        context.voice.as_ref(),
+        context.sink.as_ref(),
+        pieces,
+        &context.cancel,
+        context.limits.sentence_gap,
+        &mut || {
+            *first_audio_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+            context.send(Event::ReplyAudioStarted { turn: context.turn });
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1147,12 +1160,55 @@ mod tests {
         }
     }
 
+    /// A page whose paragraphs are given by the test. Each read returns what the reading
+    /// position calls for and records the request.
+    #[derive(Default)]
+    struct ScriptedPage {
+        paragraphs: Mutex<Vec<String>>,
+        /// Index of the next unread paragraph.
+        position: Mutex<usize>,
+        /// How many paragraphs the last read returned.
+        last_read: Mutex<usize>,
+        requests: Mutex<Vec<ReadWhat>>,
+        refuse_with: Mutex<Option<String>>,
+    }
+
+    impl ScriptedPage {
+        fn showing(&self, paragraphs: &[&str]) {
+            *self.paragraphs.lock().unwrap() = paragraphs.iter().map(|p| p.to_string()).collect();
+        }
+    }
+
+    impl PageSource for ScriptedPage {
+        fn read(&self, what: ReadWhat) -> Result<Vec<String>, String> {
+            self.requests.lock().unwrap().push(what);
+            if let Some(reason) = self.refuse_with.lock().unwrap().clone() {
+                return Err(reason);
+            }
+            let paragraphs = self.paragraphs.lock().unwrap();
+            let position = *self.position.lock().unwrap();
+            let pieces: Vec<String> = match what {
+                ReadWhat::FromStart => paragraphs.clone(),
+                ReadWhat::FromHere => paragraphs[position.min(paragraphs.len())..].to_vec(),
+                ReadWhat::Next => paragraphs.get(position).cloned().into_iter().collect(),
+                _ => Vec::new(),
+            };
+            *self.last_read.lock().unwrap() = pieces.len();
+            Ok(pieces)
+        }
+
+        fn heard(&self, pieces: usize) {
+            *self.position.lock().unwrap() += pieces.min(*self.last_read.lock().unwrap());
+        }
+    }
+
     struct TestHost {
         mic: Arc<ScriptedMic>,
         speaker: Arc<RecordingSpeaker>,
         asr: Arc<ScriptedAsr>,
         chat: Arc<MockChat>,
         voice: Arc<MockVoice>,
+        page: Arc<ScriptedPage>,
         fail_open: Option<String>,
         notices: Mutex<Vec<Notice>>,
         opens: AtomicUsize,
@@ -1166,6 +1222,7 @@ mod tests {
                 asr: Arc::new(asr),
                 chat: Arc::new(chat),
                 voice: Arc::new(voice),
+                page: Arc::new(ScriptedPage::default()),
                 fail_open: None,
                 notices: Mutex::new(Vec::new()),
                 opens: AtomicUsize::new(0),
@@ -1246,6 +1303,7 @@ mod tests {
                 asr: self.asr.clone(),
                 chat: self.chat.clone(),
                 voice: self.voice.clone(),
+                page: self.page.clone(),
                 model: "test-model".to_string(),
                 language: "en".to_string(),
             })
@@ -1800,6 +1858,176 @@ mod tests {
             thread::sleep(Duration::from_millis(30));
         }
         assert_eq!(warm(), after_turn);
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn a_page_is_read_word_for_word_without_the_model_or_the_memory() {
+        let host = TestHost::new(
+            ScriptedAsr::saying(&["Read this page to me.", "What did I just ask?"]),
+            MockChat::replying(&["You asked me something."]),
+            MockVoice {
+                sample_rate: RATE,
+                ..MockVoice::default()
+            },
+        );
+        host.page.showing(&[
+            "First paragraph, with **stars** and a [link](x).",
+            "Second paragraph.",
+        ]);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("the page to be read", || {
+            host.phases()
+                .ends_with(&[Phase::Speaking, Phase::Listening])
+        });
+
+        // Spoken exactly as the page has it: no cleaning, no rewording.
+        assert_eq!(
+            *host.voice.spoken.lock().unwrap(),
+            vec![
+                "First paragraph, with **stars** and a [link](x).",
+                "Second paragraph."
+            ]
+        );
+        assert!(
+            host.chat.requests.lock().unwrap().is_empty(),
+            "the model was asked"
+        );
+        assert_eq!(
+            *host.page.position.lock().unwrap(),
+            2,
+            "position moved past what was heard"
+        );
+
+        // The page text is not in what the model is told next.
+        host.notices.lock().unwrap().clear();
+        host.user_turn();
+        wait_for("the follow-up", || {
+            host.chat.requests.lock().unwrap().len() == 1
+        });
+        let requests = host.chat.requests.lock().unwrap();
+        let sent = format!("{:?}", requests[0]);
+        assert!(!sent.contains("paragraph"));
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn page_text_never_appears_in_a_notice() {
+        let host = TestHost::new(
+            ScriptedAsr::saying(&["Read this page."]),
+            MockChat::replying(&[]),
+            MockVoice {
+                sample_rate: RATE,
+                ..MockVoice::default()
+            },
+        );
+        host.page
+            .showing(&["The quarterly figures show a zebra-striped loss."]);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("the page to be read", || {
+            host.phases()
+                .ends_with(&[Phase::Speaking, Phase::Listening])
+        });
+        core.send(Event::EndRequested);
+        wait_for("off", || core.phase() == Phase::Off);
+
+        let everything = format!("{:?}", host.notices.lock().unwrap());
+        assert!(!everything.contains("zebra"));
+        assert!(!everything.contains("quarterly"));
+    }
+
+    #[test]
+    fn interrupting_a_reading_keeps_the_place_at_what_was_heard() {
+        let host = TestHost::new(
+            ScriptedAsr::saying(&["Read this page."]),
+            MockChat::replying(&[]),
+            MockVoice {
+                sample_rate: RATE,
+                chunk_delay: Duration::from_millis(15),
+                ..MockVoice::default()
+            },
+        );
+        host.page
+            .showing(&["Paragraph one.", "Paragraph two.", "Paragraph three."]);
+        // Nothing actually plays, so nothing counts as heard.
+        host.speaker.hold.store(true, Ordering::Relaxed);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("speaking", || core.phase() == Phase::Speaking);
+        core.send(Event::Toggle);
+        wait_for("the interruption", || core.phase() == Phase::Listening);
+        thread::sleep(Duration::from_millis(150));
+
+        assert_eq!(*host.page.position.lock().unwrap(), 0);
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn a_window_that_may_not_be_read_is_explained_aloud() {
+        let host = TestHost::new(
+            ScriptedAsr::saying(&["Read this page."]),
+            MockChat::replying(&[]),
+            MockVoice {
+                sample_rate: RATE,
+                ..MockVoice::default()
+            },
+        );
+        *host.page.refuse_with.lock().unwrap() =
+            Some("I don't read private browsing windows.".to_string());
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("the explanation", || {
+            host.phases()
+                .ends_with(&[Phase::Speaking, Phase::Listening])
+        });
+
+        assert_eq!(
+            *host.voice.spoken.lock().unwrap(),
+            vec!["I don't read private browsing windows."]
+        );
+        assert_eq!(core.phase(), Phase::Listening);
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn the_end_of_the_page_is_announced() {
+        let host = TestHost::new(
+            ScriptedAsr::saying(&["Next paragraph.", "Next."]),
+            MockChat::replying(&[]),
+            MockVoice {
+                sample_rate: RATE,
+                ..MockVoice::default()
+            },
+        );
+        host.page.showing(&["The only paragraph."]);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("the paragraph", || {
+            host.phases()
+                .ends_with(&[Phase::Speaking, Phase::Listening])
+        });
+        host.notices.lock().unwrap().clear();
+        host.user_turn();
+        wait_for("the announcement", || {
+            host.phases()
+                .ends_with(&[Phase::Speaking, Phase::Listening])
+        });
+
+        assert_eq!(
+            *host.voice.spoken.lock().unwrap(),
+            vec!["The only paragraph.", END_OF_PAGE_LINE]
+        );
+        assert_eq!(
+            *host.page.requests.lock().unwrap(),
+            vec![ReadWhat::Next, ReadWhat::Next]
+        );
         core.send(Event::EndRequested);
     }
 

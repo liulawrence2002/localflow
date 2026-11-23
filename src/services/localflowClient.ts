@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { localModelsToStatus, type ConversationStatus } from "../domain/conversation";
+import {
+  localModelsToStatus,
+  type ConversationStatus,
+  type ScreenReadingStatus,
+} from "../domain/conversation";
 import { defaultStatus } from "../domain/defaults";
 import { runMockDictation } from "../domain/mockPipeline";
 import {
@@ -98,6 +102,11 @@ export async function speakLastTranscript(): Promise<void> {
 /** Conversation mode status, or `null` outside the desktop app. */
 export async function getConversationStatus(): Promise<ConversationStatus | null> {
   return invokeOrFallback<ConversationStatus | null>("conversation_status", {}, () => null);
+}
+
+/** Whether windows can be read aloud and with which hotkey, or `null` outside the desktop app. */
+export async function getScreenReadingStatus(): Promise<ScreenReadingStatus | null> {
+  return invokeOrFallback<ScreenReadingStatus | null>("screen_reading_status", {}, () => null);
 }
 
 /** Start, interrupt or end the conversation: the same action as the conversation hotkey. */

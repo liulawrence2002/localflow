@@ -17,6 +17,7 @@ pub mod chunker;
 pub mod engine;
 pub mod memory;
 pub mod router;
+pub mod speaking;
 pub mod state;
 
 use std::sync::{Arc, Mutex};
@@ -25,7 +26,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use self::{
-    engine::{ConversationCore, ConversationHost, Limits, Notice, Resources, TurnTimings},
+    engine::{
+        ConversationCore, ConversationHost, Limits, NoPageSource, Notice, Resources, TurnTimings,
+    },
     state::{Event, Phase, StopReason},
 };
 use crate::{
@@ -135,7 +138,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Folder holding the conversation voice, if a runtime folder has one.
-fn voice_model_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+pub(crate) fn voice_model_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     runtime_candidates(app)
         .into_iter()
         .map(|runtime| runtime.join("models").join(PHONON_MODEL_DIR))
@@ -212,6 +215,11 @@ impl ConversationHost for TauriHost {
             asr: asr.provider,
             chat,
             voice,
+            // "Read this page" reads whatever window has the focus when it is said.
+            page: match app.try_state::<crate::page_reader::ScreenReader>() {
+                Some(reader) => Arc::new(reader.inner().clone()),
+                None => Arc::new(NoPageSource),
+            },
             model,
             language,
         })

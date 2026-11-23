@@ -16,6 +16,7 @@ const APP_COMMANDS: &[&str] = &[
     "conversation_status",
     "toggle_conversation",
     "list_ollama_models",
+    "screen_reading_status",
 ];
 
 fn main() {

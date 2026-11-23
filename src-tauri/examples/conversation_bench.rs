@@ -34,7 +34,10 @@ use localflow_lib::{
     },
     cancel::CancelFlag,
     conversation::{
-        engine::{ConversationCore, ConversationHost, Limits, Notice, Resources, TurnTimings},
+        engine::{
+            ConversationCore, ConversationHost, Limits, NoPageSource, Notice, Resources,
+            TurnTimings,
+        },
         state::{Event, Phase},
     },
     llm::chat::{ChatProvider, OllamaChat},
@@ -203,6 +206,7 @@ impl ConversationHost for BenchHost {
             asr: self.asr.clone(),
             chat: self.chat.clone(),
             voice: self.voice.clone(),
+            page: Arc::new(NoPageSource),
             model: self.model.clone(),
             language: "en".to_string(),
         })

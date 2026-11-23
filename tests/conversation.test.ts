@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeConversation,
+  describeScreenReading,
   localModelsToStatus,
   type ConversationPhase,
   type ConversationStatus,
@@ -62,6 +63,32 @@ describe("describeConversation", () => {
 
     expect(view.buttonDisabled).toBe(true);
     expect(view.microphoneOpen).toBe(false);
+  });
+});
+
+describe("describeScreenReading", () => {
+  const base = { available: true, detail: "", hotkey: "Ctrl+Alt+R", reading: false };
+
+  it("tells the user the hotkey and the spoken alternative", () => {
+    const text = describeScreenReading(base);
+
+    expect(text).toContain("Ctrl+Alt+R");
+    expect(text).toContain("read this page");
+  });
+
+  it("says how to stop while reading", () => {
+    expect(describeScreenReading({ ...base, reading: true })).toContain("to stop");
+  });
+
+  it("falls back to the spoken command when no hotkey is registered", () => {
+    const text = describeScreenReading({ ...base, hotkey: null });
+
+    expect(text).toContain("read this page");
+    expect(text).not.toContain("null");
+  });
+
+  it("says the desktop app is needed in a browser", () => {
+    expect(describeScreenReading(null)).toContain("desktop app");
   });
 });
 

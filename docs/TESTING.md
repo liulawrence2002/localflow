@@ -99,10 +99,10 @@ Current verification on this workstation:
 
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 159 passing tests.
+- `npm run test` with 163 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test --release --lib` with 273 passing tests and 6 ignored (2026-11-22, with conversation mode).
+- `cargo test --release --lib` with 420 passing tests and 6 ignored (2026-11-22, with conversation mode and page reading).
 - `cargo test --release --lib real_phonon -- --ignored` and `real_silero -- --ignored`, both passing with the models installed.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.

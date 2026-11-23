@@ -14,6 +14,33 @@ export interface ConversationStatus {
   hotkey: string | null;
 }
 
+/** Reading the focused window aloud, as the native layer reports it. */
+export interface ScreenReadingStatus {
+  available: boolean;
+  detail: string;
+  hotkey: string | null;
+  reading: boolean;
+}
+
+/** One sentence telling the user how to have a window read aloud. */
+export function describeScreenReading(status: ScreenReadingStatus | null): string {
+  if (!status) {
+    return "Reading a window aloud needs the desktop app.";
+  }
+  if (status.reading) {
+    return status.hotkey
+      ? `Reading a window aloud. Press ${status.hotkey} to stop.`
+      : "Reading a window aloud.";
+  }
+  if (status.hotkey) {
+    return (
+      `Press ${status.hotkey} over any window to hear it read word for word, ` +
+      'or say "read this page" in a conversation.'
+    );
+  }
+  return 'Say "read this page" in a conversation to hear the focused window read aloud.';
+}
+
 export interface ConversationView {
   /** One line saying what is happening now. */
   headline: string;
