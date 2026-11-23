@@ -136,6 +136,138 @@ fn build_polyphase_kernels(
     kernels
 }
 
+/// A stateful resampler for audio that arrives in pieces: microphone frames on the way to
+/// the voice detector, and synthesised speech on the way to the speaker.
+///
+/// It uses the same windowed-sinc filter as [`resample`], and away from the very start and
+/// end it produces the same samples, however the input is cut up. The start is treated as
+/// preceded by silence, and [`StreamResampler::flush`] treats the end as followed by silence.
+/// It delays the signal by half the filter length (under a millisecond at 24 to 48 kHz).
+#[derive(Debug, Clone)]
+pub struct StreamResampler {
+    passthrough: bool,
+    step_numerator: u64,
+    step_denominator: u64,
+    half_taps: isize,
+    taps_per_phase: usize,
+    phase_count: usize,
+    kernels: Vec<f32>,
+    /// Input still needed by future output samples. `buffer[0]` is input index `buffer_start`.
+    buffer: Vec<f32>,
+    buffer_start: i64,
+    /// Index of the next output sample.
+    next_output: u64,
+}
+
+impl StreamResampler {
+    pub fn new(input_rate: u32, output_rate: u32) -> Self {
+        let passthrough = input_rate == output_rate || input_rate == 0 || output_rate == 0;
+        let (input_rate, output_rate) = if passthrough {
+            (1, 1)
+        } else {
+            (input_rate, output_rate)
+        };
+
+        let divisor = greatest_common_divisor(input_rate as u64, output_rate as u64);
+        let step_numerator = input_rate as u64 / divisor;
+        let step_denominator = output_rate as u64 / divisor;
+        let ratio = input_rate as f64 / output_rate as f64;
+        let cutoff = 0.5 * PASSBAND_FRACTION * (1.0_f64).min(1.0 / ratio);
+        let half_width = (SINC_ZERO_CROSSINGS / (2.0 * cutoff)).ceil();
+        let half_taps = half_width as isize;
+        let taps_per_phase = (2 * half_taps) as usize;
+        let phase_count = step_denominator.min(MAX_PHASES) as usize;
+        let kernels = if passthrough {
+            Vec::new()
+        } else {
+            build_polyphase_kernels(phase_count, taps_per_phase, half_taps, cutoff, half_width)
+        };
+
+        let mut resampler = Self {
+            passthrough,
+            step_numerator,
+            step_denominator,
+            half_taps,
+            taps_per_phase,
+            phase_count,
+            kernels,
+            buffer: Vec::new(),
+            buffer_start: 0,
+            next_output: 0,
+        };
+        resampler.reset();
+        resampler
+    }
+
+    /// Forget everything heard so far and start a new stream.
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+        self.next_output = 0;
+        if self.passthrough {
+            self.buffer_start = 0;
+        } else {
+            // The first output sample's filter reaches back before the first input sample.
+            let lead = (self.half_taps - 1) as usize;
+            self.buffer.resize(lead, 0.0);
+            self.buffer_start = -(lead as i64);
+        }
+    }
+
+    /// Add `input` and append every output sample that can now be computed to `output`.
+    pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        if self.passthrough {
+            output.extend_from_slice(input);
+            return;
+        }
+        self.buffer.extend_from_slice(input);
+
+        loop {
+            let scaled = self.next_output * self.step_numerator;
+            let whole = (scaled / self.step_denominator) as i64;
+            let first = whole - self.half_taps as i64 + 1;
+            let offset = (first - self.buffer_start) as usize;
+            if offset + self.taps_per_phase > self.buffer.len() {
+                break;
+            }
+
+            let remainder = scaled % self.step_denominator;
+            let phase = if self.phase_count as u64 == self.step_denominator {
+                remainder as usize
+            } else {
+                ((remainder * self.phase_count as u64) / self.step_denominator) as usize
+            };
+            let kernel =
+                &self.kernels[phase * self.taps_per_phase..(phase + 1) * self.taps_per_phase];
+            let window = &self.buffer[offset..offset + self.taps_per_phase];
+            let value = window
+                .iter()
+                .zip(kernel)
+                .map(|(sample, weight)| sample * weight)
+                .sum::<f32>();
+            output.push(value.clamp(-1.0, 1.0));
+            self.next_output += 1;
+        }
+
+        // Drop input that no future output sample can reach.
+        let scaled = self.next_output * self.step_numerator;
+        let next_first = (scaled / self.step_denominator) as i64 - self.half_taps as i64 + 1;
+        let drop = (next_first - self.buffer_start).clamp(0, self.buffer.len() as i64) as usize;
+        if drop > 0 {
+            self.buffer.drain(..drop);
+            self.buffer_start += drop as i64;
+        }
+    }
+
+    /// The stream has ended: emit the samples still held back by the filter, then reset.
+    pub fn flush(&mut self, output: &mut Vec<f32>) {
+        if !self.passthrough {
+            let tail = vec![0.0; self.half_taps as usize];
+            self.process(&tail, output);
+        }
+        self.reset();
+    }
+}
+
 fn windowed_sinc(offset: f64, cutoff: f64, half_width: f64) -> f64 {
     if offset.abs() > half_width {
         return 0.0;
@@ -186,6 +318,108 @@ mod tests {
     fn steady_state_rms(samples: &[f32]) -> f32 {
         let margin = samples.len() / 8;
         rms(&samples[margin..samples.len() - margin])
+    }
+
+    /// Feed `input` through a [`StreamResampler`] in pieces of the given sizes, cycling.
+    fn stream_in_pieces(input: &[f32], from: u32, to: u32, sizes: &[usize]) -> Vec<f32> {
+        let mut resampler = StreamResampler::new(from, to);
+        let mut output = Vec::new();
+        let mut position = 0;
+        let mut turn = 0;
+        while position < input.len() {
+            let end = (position + sizes[turn % sizes.len()]).min(input.len());
+            resampler.process(&input[position..end], &mut output);
+            position = end;
+            turn += 1;
+        }
+        resampler.flush(&mut output);
+        output
+    }
+
+    #[test]
+    fn streaming_gives_the_same_samples_as_resampling_the_whole_buffer() {
+        // The rate pairs conversation mode uses: microphone to detector, voice to speaker.
+        for (from, to) in [
+            (48_000, 16_000),
+            (44_100, 16_000),
+            (24_000, 48_000),
+            (24_000, 44_100),
+        ] {
+            let input: Vec<f32> = sine(330.0, from, 0.25, 0.4)
+                .iter()
+                .zip(sine(1_900.0, from, 0.25, 0.2))
+                .map(|(a, b)| a + b)
+                .collect();
+            let whole = resample(&input, from, to);
+
+            for sizes in [&[1usize][..], &[7, 480, 3], &[1_000], &[input.len()]] {
+                let streamed = stream_in_pieces(&input, from, to, sizes);
+
+                // Same length to within the samples the end-of-stream padding can add.
+                assert!(
+                    streamed.len() >= whole.len() && streamed.len() <= whole.len() + 4,
+                    "{from}->{to} {sizes:?}: {} vs {}",
+                    streamed.len(),
+                    whole.len()
+                );
+                // Identical away from the edges, where the two differ only in what they
+                // assume lies beyond the audio (silence here, a held sample there).
+                let margin = 200;
+                for index in margin..whole.len() - margin {
+                    assert!(
+                        (streamed[index] - whole[index]).abs() < 1e-5,
+                        "{from}->{to} {sizes:?} sample {index}: {} vs {}",
+                        streamed[index],
+                        whole[index]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_stream_resampler_can_be_reused_after_a_flush() {
+        let input = sine(440.0, 24_000, 0.1, 0.5);
+        let mut resampler = StreamResampler::new(24_000, 48_000);
+        let mut first = Vec::new();
+        resampler.process(&input, &mut first);
+        resampler.flush(&mut first);
+
+        let mut second = Vec::new();
+        resampler.process(&input, &mut second);
+        resampler.flush(&mut second);
+
+        assert_eq!(first, second);
+        assert!((first.len() as i64 - 2 * input.len() as i64).abs() <= 4);
+    }
+
+    #[test]
+    fn equal_rates_pass_audio_through_untouched_and_without_delay() {
+        let input = sine(440.0, 48_000, 0.01, 0.5);
+        let mut resampler = StreamResampler::new(48_000, 48_000);
+        let mut output = Vec::new();
+
+        resampler.process(&input[..100], &mut output);
+        assert_eq!(output, &input[..100]);
+        resampler.process(&input[100..], &mut output);
+        resampler.flush(&mut output);
+
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn a_stream_resampler_holds_only_the_input_its_filter_needs() {
+        let mut resampler = StreamResampler::new(48_000, 16_000);
+        let mut output = Vec::new();
+        let frame = vec![0.1f32; 480];
+
+        for _ in 0..1_000 {
+            resampler.process(&frame, &mut output);
+        }
+
+        // Ten seconds went through; the buffer is still a filter's width, not ten seconds.
+        assert!(resampler.buffer.len() < 2 * resampler.taps_per_phase + frame.len());
+        assert!((output.len() as i64 - 160_000).abs() < 200);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub mod engine_select;
 pub mod metrics;
 pub mod provider;
 pub mod sidecar;

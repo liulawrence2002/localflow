@@ -56,7 +56,7 @@ Run:
 - Engine planning (`plan_asr_engine`): GGUF models in-process, Whisper models in the server, low-resource mode, and missing pieces.
 - Read-aloud: text preparation and bounding, synthesis deadlines, the Fish S2 request against a stand-in HTTP server (text sent, WAV decoded, error status reported without the response body, junk audio rejected), missing-engine handling, install discovery, and playback sample preparation.
 
-Three Rust tests are ignored by default because they need local assets or a release build:
+Six Rust tests are ignored by default because they need local assets or a release build:
 
 ```powershell
 cd src-tauri
@@ -99,10 +99,11 @@ Current verification on this workstation:
 
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 135 passing tests.
+- `npm run test` with 159 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test --release --lib` with 142 passing tests and 3 ignored (2026-11-22).
+- `cargo test --release --lib` with 273 passing tests and 6 ignored (2026-11-22, with conversation mode).
+- `cargo test --release --lib real_phonon -- --ignored` and `real_silero -- --ignored`, both passing with the models installed.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
 - `.\scripts\Start-LocalFlow.ps1`, launching the release app without Vite.

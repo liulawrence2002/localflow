@@ -3,6 +3,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use crate::{
+    conversation,
     desktop_health::{self, HotkeyRegistrationFailure},
     native_dictation,
 };
@@ -20,6 +21,24 @@ pub fn escape_cancel_shortcut() -> Shortcut {
     Shortcut::new(None, Code::Escape)
 }
 
+/// Shortcuts that toggle conversation mode, in order of preference. The second is tried
+/// when another program already holds the first.
+fn conversation_shortcuts() -> [(Shortcut, &'static str); 2] {
+    [
+        (
+            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT),
+            "Ctrl+Alt+T",
+        ),
+        (
+            Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+                Code::KeyT,
+            ),
+            "Ctrl+Alt+Shift+T",
+        ),
+    ]
+}
+
 pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
     let fallback_shortcut = Shortcut::new(
@@ -29,6 +48,7 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     let handler_default_shortcut = default_shortcut.clone();
     let handler_fallback_shortcut = fallback_shortcut.clone();
     let handler_escape_shortcut = escape_cancel_shortcut();
+    let handler_conversation_shortcuts = conversation_shortcuts();
 
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
@@ -40,6 +60,17 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                         if let Err(error) = native_dictation::handle_hotkey(app.clone(), "cancel") {
                             tracing::warn!(error = %error, "escape-to-cancel handling failed");
                         }
+                    }
+                    return;
+                }
+
+                if handler_conversation_shortcuts
+                    .iter()
+                    .any(|(candidate, _)| candidate == shortcut)
+                {
+                    // Start, interrupt or end, decided by the conversation's own state.
+                    if matches!(event.state(), ShortcutState::Pressed) {
+                        conversation::toggle(app);
                     }
                     return;
                 }
@@ -65,6 +96,11 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                             state: state.to_string(),
                         },
                     );
+                    // One microphone, one mode: dictation waits while a conversation is on.
+                    if conversation::is_active(app) {
+                        tracing::info!("dictation hotkey ignored during a conversation");
+                        return;
+                    }
                     if let Err(error) = native_dictation::handle_hotkey(app.clone(), state) {
                         tracing::warn!(error = %error, "native dictation hotkey handling failed");
                     }
@@ -105,6 +141,21 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
     }
 
     desktop_health::record_hotkey_registration(app, registered.clone(), failed);
+
+    let mut conversation_hotkey = None;
+    for (shortcut, label) in conversation_shortcuts() {
+        match app.global_shortcut().register(shortcut) {
+            Ok(()) => {
+                tracing::info!(hotkey = label, "registered conversation hotkey");
+                conversation_hotkey = Some(label.to_string());
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(hotkey = label, error = %error, "conversation hotkey unavailable");
+            }
+        }
+    }
+    conversation::set_hotkey_label(app, conversation_hotkey);
 
     if registered.is_empty() {
         native_dictation::show_error_pulse(

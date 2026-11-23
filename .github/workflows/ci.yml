@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+
+  rust:
+    name: Rust checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The Tauri build script embeds the built web UI and copies the bundled speech runtime.
+      # Neither is in the repository, so build the first and stand in empty files for the
+      # second. No test runs these binaries: tests that need real engines are `#[ignore]`d.
+      - run: npm ci
+      - run: npm run build
+      - name: Create placeholder runtime files
+        shell: pwsh
+        run: |
+          $release = ".localflow-runtime/whisper/Release"
+          New-Item -ItemType Directory -Force $release, ".localflow-runtime/models" | Out-Null
+          foreach ($name in "whisper-cli.exe", "whisper-server.exe", "placeholder.dll") {
+            New-Item -ItemType File -Force (Join-Path $release $name) | Out-Null
+          }
+          New-Item -ItemType File -Force ".localflow-runtime/models/ggml-tiny.en-q5_1.bin" | Out-Null
+
+      - name: Format check
+        working-directory: src-tauri
+        run: cargo fmt --check
+      # Release profile: the in-process speech engine compiles C++ and the debug cache is huge.
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --release --lib

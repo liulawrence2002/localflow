@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { localModelsToStatus, type ConversationStatus } from "../domain/conversation";
 import { defaultStatus } from "../domain/defaults";
 import { runMockDictation } from "../domain/mockPipeline";
+import {
+  checkOllamaStatus,
+  defaultOllamaApiBaseUrl,
+  type OllamaConnectionStatus,
+} from "../domain/ollama";
 import { applyHistoryRetention } from "../domain/privacy";
 import { normalizeSettings } from "../domain/settings";
 import { transition } from "../domain/stateMachine";
@@ -87,6 +93,44 @@ export async function speakLastTranscript(): Promise<void> {
   // Deliberately not wrapped in the fallback helper: the caller shows the native reason
   // (engine not built, model missing, nothing to read) instead of a silent no-op.
   await invoke<void>("speak_last_transcript", {});
+}
+
+/** Conversation mode status, or `null` outside the desktop app. */
+export async function getConversationStatus(): Promise<ConversationStatus | null> {
+  return invokeOrFallback<ConversationStatus | null>("conversation_status", {}, () => null);
+}
+
+/** Start, interrupt or end the conversation: the same action as the conversation hotkey. */
+export async function toggleConversation(): Promise<void> {
+  await invokeOrFallback<void>("toggle_conversation", {}, async () => {
+    // Browser dev fallback: there is no native conversation to toggle.
+  });
+}
+
+/**
+ * Which local Ollama models are installed. In the desktop app the native layer asks Ollama,
+ * because Ollama refuses requests that come from the app window's own address; in a browser
+ * the page asks directly.
+ */
+export async function checkLocalModels(): Promise<OllamaConnectionStatus> {
+  if (!isDesktopApp()) {
+    return checkOllamaStatus();
+  }
+  try {
+    const names = await invoke<string[]>("list_ollama_models", {});
+    return localModelsToStatus(names, defaultOllamaApiBaseUrl);
+  } catch (error) {
+    return {
+      ok: false,
+      baseUrl: defaultOllamaApiBaseUrl,
+      code: "unavailable",
+      message: typeof error === "string" ? error : "Local Ollama could not be reached.",
+    };
+  }
+}
+
+function isDesktopApp(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 export async function stopSpeaking(): Promise<void> {

@@ -49,6 +49,27 @@ The native hotkey path resamples the recording to mono 16 kHz, transcribes it wi
 
 Still pending: streaming partial transcripts, GPU acceleration for the speech model, and unloading the speech model after a period without use.
 
+## Conversation mode models
+
+Conversation mode needs two more small models. Both are explicit, hash-verified downloads
+from a pinned revision; LocalFlow never downloads anything itself.
+
+```powershell
+.\scripts\Get-PhononModel.ps1     # the conversation voice, about 65 MB (required)
+.\scripts\Get-VadModel.ps1        # voice-activity detection, 1.2 MB (recommended)
+```
+
+| Model | Used for | Licence | Where it runs |
+|---|---|---|---|
+| Gradium Phonon 31m, q8 (`models\phonon\`) | the assistant's voice, English | Apache-2.0 | in-process, at most four CPU threads, about 300 MB of memory while a conversation is on |
+| Silero VAD v6.2 (`models\silero-vad-v6.2-F32.gguf`) | telling speech from other sound, finding the end of a turn | MIT | in-process, through the speech library |
+
+Without the voice, conversation mode will not start and says which script to run. Without
+the Silero model it starts with a loudness rule instead, which any loud sound can trigger.
+The language model is the Ollama model chosen in Settings > Models (default `llama3.2:3b`),
+the same one dictation cleanup uses. Models that do not fit entirely in GPU memory answer
+too slowly for conversation.
+
 ## Read-aloud voice (Fish Audio S2 Pro)
 
 LocalFlow can read the last transcript aloud with Fish Audio S2 Pro running locally through

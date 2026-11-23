@@ -16,6 +16,29 @@ The current native hotkey path writes a temporary WAV file under the OS temp dir
 
 The floating overlay receives listening/processing/refining/inserted/error state and microphone level values. It does not receive or display transcript text.
 
+## Conversation Mode
+
+Conversation mode is off until you switch it on with its hotkey, the tray, or the Home
+screen, and it says when the microphone is open: the overlay stays on screen for the whole
+conversation and the Home screen states the microphone's state in words.
+
+While it is on:
+
+- The microphone stays open, and audio is processed only on this computer: voice detection,
+  speech recognition, the language model (Ollama on `127.0.0.1`) and the voice all run
+  locally. Nothing is sent anywhere else, and there is no fallback that could.
+- Audio is held in memory only for the turn being spoken, plus 0.4 s before it so the
+  first word is not clipped. It is discarded once transcribed. No audio file is written.
+- What you and the assistant said is held in memory for the length of the conversation so
+  the assistant can follow it, and is cleared when the conversation ends. It is not written
+  to the database, to a file, or to a log, and it is not sent to the overlay or the
+  settings window.
+- While the assistant is thinking or speaking the microphone's audio is discarded.
+
+It ends when you press the hotkey while the assistant is not talking, say goodbye, quit
+the app, after 45 seconds without speech, after 10 minutes in total, or if the microphone
+stops working. The microphone is closed in every case.
+
 ## Stored Fields
 
 Milestone 1 initializes SQLite tables for:

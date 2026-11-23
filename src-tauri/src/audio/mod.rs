@@ -1,5 +1,11 @@
+pub mod capture;
+pub mod devices;
 pub mod resample;
+pub mod ring;
 pub mod spectrum;
+pub mod speech_detector;
+pub mod turn_segmenter;
+pub mod vad;
 pub mod wav;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

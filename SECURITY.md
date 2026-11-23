@@ -38,10 +38,13 @@
   `insertionPlan` layer (used by the mock/verification path).
 - Duplicate insertion guard prevents repeating the same generated text for one session
   (shared TS layer; the native path now supersedes stale sessions via `SessionRegistry`).
-- Tauri capabilities are limited to default window, opener, and global shortcut permissions.
+- The web UI runs under a content security policy: scripts and styles from the app only, connections only to the app's IPC. It has no other network access; the native layer asks local Ollama which models are installed.
+- Conversation mode gives the language model no tools. Fixed phrases are matched in code before the model is asked, and the model's output is only ever spoken, so nothing it reads or writes can trigger an action.
+- While the assistant is thinking or speaking, microphone audio is discarded, so its own voice cannot be taken for the user's.
+- Tauri capabilities are per window. The settings window may call the app's declared commands; the overlay window may only listen for events. The opener and global-shortcut web permissions are not granted.
 - Logs use redaction helpers for dictated content.
 - Diagnostics export excludes dictated content and local model paths by default.
-- Native clipboard paste fallback restores prior text clipboard content after a short delay. The dictated text is placed on the clipboard with the Windows flags that exclude it from clipboard history (Win+V) and cloud clipboard sync.
+- Native clipboard paste fallback restores prior text clipboard content after a short delay, clears the dictated text when there was no text to restore, and leaves the clipboard alone if something else was copied in between. "Copy last transcript" uses the same history and cloud-sync exclusion as the paste. The dictated text is placed on the clipboard with the Windows flags that exclude it from clipboard history (Win+V) and cloud clipboard sync.
 - A microphone that stops delivering audio no longer leaves a session listening: the end-of-speech, no-speech, and maximum-length timeouts run on silence too.
 - The waveform overlay receives phase and audio-level metadata, not transcript text.
 

@@ -28,7 +28,20 @@ Status reflects the spec-driven upgrade. See `development/PLAN.md` for per-slice
 - Read-aloud wiring for Fish Audio S2 Pro through s2.cpp (implemented and unit-tested; the
   engine itself not yet built or verified).
 
+- Dictation code split into shared modules (`audio/capture`, `audio/vad`, `asr/engine_select`,
+  `llm`, `insertion`, `overlay`, `runtime_paths`); settings tolerate missing fields; content
+  security policy and per-window command permissions; clipboard tidy-up; CI workflow.
+
+- Conversation mode, first version: hotkey-toggled hands-free conversation with the local
+  model (Silero voice detection, Parakeet, streaming Ollama chat, Phonon voice), interrupt by
+  hotkey, time limits, and a reproducible end-to-end benchmark
+  (`benchmarks/CONVERSATION_BENCHMARK.md`).
+
 ## Now
+
+- Try conversation mode with a real microphone and speaker; judge the voice.
+- Screen-aware reading and the remaining conversation milestones: see `VOICE_ASSISTANT_PLAN.md` for
+  the audit, measured baselines, technology choices and milestones.
 
 - Manually verify native dictation in Notepad, a browser field, and VS Code (needs hardware).
 - Wire the streaming event contract into the native coordinator behind a feature flag.
@@ -52,6 +65,4 @@ Status reflects the spec-driven upgrade. See `development/PLAN.md` for per-slice
 
 - Apply style profiles to the cleanup prompt; command mode and selected-text transforms.
 - Startup-at-login, crash recovery, sleep/resume, and full manual acceptance testing.
-- Split `native_dictation.rs` into `audio`/`asr`/`insertion`/`dictation` modules behind the
-  provider traits.
 - Package and sign the Windows installer.

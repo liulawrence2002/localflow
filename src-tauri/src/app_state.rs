@@ -57,8 +57,13 @@ pub struct AppStatus {
     pub diagnostics: Vec<DiagnosticMetric>,
 }
 
+/// Persisted user settings.
+///
+/// Every settings struct is `#[serde(default)]`: a field that is missing from stored JSON
+/// takes its default instead of failing the whole load. Without that, the first release that
+/// adds a field would discard the user's saved dictionary, replacements and snippets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct SettingsSnapshot {
     pub hotkeys: HotkeySettings,
     pub models: ModelSettings,
@@ -71,7 +76,7 @@ pub struct SettingsSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct HotkeySettings {
     pub default_hotkey: String,
     pub activation_mode: ActivationMode,
@@ -79,7 +84,7 @@ pub struct HotkeySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct ModelSettings {
     pub whisper_model_path: String,
     pub language: String,
@@ -89,7 +94,7 @@ pub struct ModelSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct MicrophoneSettings {
     pub selected_device_id: String,
     pub selected_device_name: String,
@@ -99,7 +104,7 @@ pub struct MicrophoneSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct PrivacySettings {
     pub history_retention: String,
     pub delete_after: String,
@@ -110,8 +115,8 @@ pub struct PrivacySettings {
     pub delete_audio_after_processing: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct DictionaryEntry {
     pub id: String,
     pub phrase: String,
@@ -120,8 +125,8 @@ pub struct DictionaryEntry {
     pub case_sensitive: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ReplacementRule {
     pub id: String,
     pub incorrect: String,
@@ -129,8 +134,8 @@ pub struct ReplacementRule {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Snippet {
     pub id: String,
     pub trigger: String,
@@ -139,8 +144,8 @@ pub struct Snippet {
     pub allow_cleanup: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct StyleProfile {
     pub id: String,
     pub name: String,
@@ -199,6 +204,7 @@ fn build_status(
     }
     if let Some(app) = app {
         diagnostics.extend(crate::desktop_health::diagnostics(app));
+        diagnostics.extend(crate::conversation::diagnostics(app));
     }
 
     Ok(AppStatus {
@@ -361,27 +367,46 @@ impl From<crate::workflow::SessionHistoryItem> for HistoryItem {
 }
 
 pub fn default_settings() -> SettingsSnapshot {
-    SettingsSnapshot {
-        hotkeys: HotkeySettings {
+    SettingsSnapshot::default()
+}
+
+impl Default for HotkeySettings {
+    fn default() -> Self {
+        Self {
             default_hotkey: "Ctrl+Alt+Space".to_string(),
             activation_mode: ActivationMode::PushToTalk,
             command_hotkey: "Ctrl+Alt+Shift+Space".to_string(),
-        },
-        models: ModelSettings {
+        }
+    }
+}
+
+impl Default for ModelSettings {
+    fn default() -> Self {
+        Self {
             whisper_model_path: String::new(),
             language: "auto".to_string(),
             asr_threads: 4,
             ollama_model: "llama3.2:3b".to_string(),
             low_resource_mode: false,
-        },
-        microphone: MicrophoneSettings {
+        }
+    }
+}
+
+impl Default for MicrophoneSettings {
+    fn default() -> Self {
+        Self {
             selected_device_id: "default".to_string(),
             selected_device_name: "Default microphone".to_string(),
             vad_enabled: true,
             end_of_speech_ms: 900,
             max_recording_seconds: 120,
-        },
-        privacy: PrivacySettings {
+        }
+    }
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
             history_retention: "original_and_cleaned".to_string(),
             delete_after: "7d".to_string(),
             active_app_detection: true,
@@ -389,43 +414,54 @@ pub fn default_settings() -> SettingsSnapshot {
             selected_text_transforms: false,
             context_retention: false,
             delete_audio_after_processing: true,
-        },
-        dictionary: vec![DictionaryEntry {
-            id: "dict-pytorch".to_string(),
-            phrase: "PyTorch".to_string(),
-            pronunciation_hint: Some("pie torch".to_string()),
-            category: "technical".to_string(),
-            case_sensitive: false,
-        }],
-        replacements: vec![ReplacementRule {
-            id: "replace-pytorch".to_string(),
-            incorrect: "pie torch".to_string(),
-            correct: "PyTorch".to_string(),
-            enabled: true,
-        }],
-        snippets: vec![Snippet {
-            id: "snippet-signature".to_string(),
-            trigger: "insert my signature".to_string(),
-            expansion: "Best,\nLocalFlow".to_string(),
-            enabled: true,
-            allow_cleanup: false,
-        }],
-        styles: vec![StyleProfile {
-            id: "style-work".to_string(),
-            name: "Work messages".to_string(),
-            category: "work_messaging".to_string(),
-            cleanup_level: "balanced".to_string(),
-            conciseness: 6,
-            formality: 6,
-            contractions: true,
-            emoji: "preserve".to_string(),
-            paragraph_length: "short".to_string(),
-            bullet_preference: "preserve".to_string(),
-            greeting_behavior: "preserve".to_string(),
-            sign_off_behavior: "preserve".to_string(),
-            aggressive_filler_removal: false,
-            allow_sentence_fragments: true,
-        }],
+        }
+    }
+}
+
+impl Default for SettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            hotkeys: HotkeySettings::default(),
+            models: ModelSettings::default(),
+            microphone: MicrophoneSettings::default(),
+            privacy: PrivacySettings::default(),
+            dictionary: vec![DictionaryEntry {
+                id: "dict-pytorch".to_string(),
+                phrase: "PyTorch".to_string(),
+                pronunciation_hint: Some("pie torch".to_string()),
+                category: "technical".to_string(),
+                case_sensitive: false,
+            }],
+            replacements: vec![ReplacementRule {
+                id: "replace-pytorch".to_string(),
+                incorrect: "pie torch".to_string(),
+                correct: "PyTorch".to_string(),
+                enabled: true,
+            }],
+            snippets: vec![Snippet {
+                id: "snippet-signature".to_string(),
+                trigger: "insert my signature".to_string(),
+                expansion: "Best,\nLocalFlow".to_string(),
+                enabled: true,
+                allow_cleanup: false,
+            }],
+            styles: vec![StyleProfile {
+                id: "style-work".to_string(),
+                name: "Work messages".to_string(),
+                category: "work_messaging".to_string(),
+                cleanup_level: "balanced".to_string(),
+                conciseness: 6,
+                formality: 6,
+                contractions: true,
+                emoji: "preserve".to_string(),
+                paragraph_length: "short".to_string(),
+                bullet_preference: "preserve".to_string(),
+                greeting_behavior: "preserve".to_string(),
+                sign_off_behavior: "preserve".to_string(),
+                aggressive_filler_removal: false,
+                allow_sentence_fragments: true,
+            }],
+        }
     }
 }
 
@@ -433,7 +469,7 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
     vec![
         DiagnosticMetric {
             label: "Dictation pipeline".to_string(),
-            value: "Native cpal capture -> whisper.cpp -> deterministic quick insert -> background local Ollama cleanup".to_string(),
+            value: "Native cpal capture -> local speech engine (Parakeet in-process, Whisper fallback) -> deterministic quick insert -> background local Ollama cleanup".to_string(),
             status: "ok".to_string(),
         },
         DiagnosticMetric {
@@ -453,7 +489,7 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
         },
         DiagnosticMetric {
             label: "Streaming ASR".to_string(),
-            value: "One-shot whisper.cpp per utterance; persistent/streaming runtime is planned".to_string(),
+            value: "Whole-utterance transcription on a model kept loaded; streaming partials are planned".to_string(),
             status: "warning".to_string(),
         },
     ]
@@ -461,4 +497,59 @@ fn default_diagnostics() -> Vec<DiagnosticMetric> {
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "LocalFlow runtime state lock was poisoned.".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_saved_before_a_field_existed_still_load() {
+        // Stored JSON from an older build: `models` lacks `lowResourceMode`, the whole
+        // `microphone` section is absent, and a replacement lacks `enabled`.
+        let stored = r#"{
+            "hotkeys": {"defaultHotkey": "Ctrl+Alt+Space", "commandHotkey": "Ctrl+Alt+Shift+Space"},
+            "models": {"whisperModelPath": "", "language": "de", "asrThreads": 2, "ollamaModel": "custom:1b"},
+            "privacy": {"historyRetention": "off"},
+            "dictionary": [{"id": "d1", "phrase": "LocalFlow", "category": "product", "caseSensitive": true}],
+            "replacements": [{"id": "r1", "incorrect": "local flow", "correct": "LocalFlow"}],
+            "snippets": [],
+            "styles": []
+        }"#;
+
+        let settings: SettingsSnapshot =
+            serde_json::from_str(stored).expect("older settings should still load");
+
+        // What the user saved is kept...
+        assert_eq!(settings.models.language, "de");
+        assert_eq!(settings.models.ollama_model, "custom:1b");
+        assert_eq!(settings.privacy.history_retention, "off");
+        assert_eq!(settings.dictionary.len(), 1);
+        assert_eq!(settings.dictionary[0].phrase, "LocalFlow");
+        assert_eq!(settings.replacements[0].correct, "LocalFlow");
+        assert!(settings.snippets.is_empty());
+        // ...and everything that was missing takes its default.
+        assert!(!settings.models.low_resource_mode);
+        assert_eq!(settings.privacy.delete_after, "7d");
+        assert_eq!(settings.microphone.selected_device_id, "default");
+    }
+
+    #[test]
+    fn unknown_fields_from_a_newer_build_are_ignored() {
+        let stored = r#"{"models": {"ollamaModel": "x:1b", "fieldFromTheFuture": 3}, "conversation": {"enabled": true}}"#;
+
+        let settings: SettingsSnapshot =
+            serde_json::from_str(stored).expect("newer settings should still load");
+
+        assert_eq!(settings.models.ollama_model, "x:1b");
+    }
+
+    #[test]
+    fn defaults_round_trip_unchanged() {
+        let defaults = default_settings();
+        let json = serde_json::to_string(&defaults).unwrap();
+        let loaded: SettingsSnapshot = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), json);
+    }
 }

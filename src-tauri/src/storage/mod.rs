@@ -10,6 +10,8 @@ use tauri::{AppHandle, Manager};
 use crate::app_state::SettingsSnapshot;
 
 pub const SETTINGS_KEY: &str = "settings.v1";
+/// Where a settings row that could not be parsed is copied before defaults replace it.
+pub const UNREADABLE_SETTINGS_KEY: &str = "settings.v1.unreadable";
 
 pub fn initialize(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
@@ -62,6 +64,35 @@ pub fn save_settings(
     settings: &SettingsSnapshot,
 ) -> Result<(), Box<dyn std::error::Error>> {
     save_settings_to_path(&database_path(app)?, settings)
+}
+
+/// Copy the stored settings row aside. Called when it cannot be parsed, because the app then
+/// runs on defaults and the next save overwrites the row: without the copy, the user's
+/// dictionary, replacements and snippets would be gone for good.
+pub fn preserve_unreadable_settings(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    preserve_unreadable_settings_at(&database_path(app)?)
+}
+
+pub fn preserve_unreadable_settings_at(
+    database_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let connection = Connection::open(database_path)?;
+    connection.execute(
+        "
+            INSERT INTO settings (key, value_json, updated_at)
+            SELECT ?2, value_json, ?3 FROM settings WHERE key = ?1
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            ",
+        params![
+            SETTINGS_KEY,
+            UNREADABLE_SETTINGS_KEY,
+            Utc::now().to_rfc3339()
+        ],
+    )?;
+
+    Ok(())
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -152,6 +183,45 @@ mod tests {
             )
             .expect("settings row should be countable");
         assert_eq!(row_count, 1);
+
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn an_unreadable_settings_row_is_kept_before_defaults_replace_it() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "localflow-storage-unreadable-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let database_path = initialize_at(&test_dir).expect("storage should initialize");
+        let broken = r#"{"dictionary": "this is not a list"}"#;
+        Connection::open(&database_path)
+            .expect("database should open")
+            .execute(
+                "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+                params![SETTINGS_KEY, broken, Utc::now().to_rfc3339()],
+            )
+            .expect("broken row should insert");
+
+        assert!(load_settings_from_path(&database_path).is_err());
+        preserve_unreadable_settings_at(&database_path).expect("row should be copied aside");
+        // The app now saves defaults over the main row, as it does after a failed load.
+        save_settings_to_path(&database_path, &crate::app_state::default_settings())
+            .expect("defaults should save");
+
+        let kept: String = Connection::open(&database_path)
+            .expect("database should open")
+            .query_row(
+                "SELECT value_json FROM settings WHERE key = ?1",
+                params![UNREADABLE_SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .expect("the copy should exist");
+        assert_eq!(kept, broken);
+        assert!(load_settings_from_path(&database_path)
+            .expect("defaults should load")
+            .is_some());
 
         let _ = fs::remove_dir_all(test_dir);
     }

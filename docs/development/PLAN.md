@@ -127,9 +127,71 @@ Phase 1 (unify the production pipeline): in progress.
   Known limitations: the look was checked with generated speech-like input in a browser, not
   with a live microphone in the packaged overlay; the mirrored layout is decorative rather
   than a calibrated analyser.
+- **Slice 19 -- foundations for conversation mode (done; packaged app not launched).** No
+  intended behaviour change to dictation. See `../VOICE_ASSISTANT_PLAN.md` for the audit and
+  roadmap this starts.
+  - `native_dictation.rs` (3,122 lines) split into `audio/capture.rs`, `audio/vad.rs`,
+    `asr/engine_select.rs`, `llm/ollama.rs`, `llm/cleanup.rs`, `insertion/target.rs`,
+    `insertion/clipboard_paste.rs`, `overlay.rs`, `runtime_paths.rs`, and
+    `native_dictation/{mod,session,latency}.rs`. The loaded speech engine and the overlay
+    epoch moved into their own Tauri states (`AsrEngines`, `OverlayRuntime`). Code and tests
+    were moved, not rewritten.
+  - Settings structs are `#[serde(default)]`, so adding a field no longer makes stored
+    settings fail to load. A row that still cannot be parsed is copied to
+    `settings.v1.unreadable` before defaults overwrite it.
+  - Web UI confinement: a content security policy, per-window capabilities (the overlay can
+    only listen for events), commands declared in `build.rs`, the unused opener plugin and
+    web global-shortcut permissions removed.
+  - Clipboard: dictated text is cleared when there was no earlier text to restore, a newer
+    copy by the user is not overwritten (clipboard sequence number), and "Copy last
+    transcript" is excluded from clipboard history and cloud sync.
+  - Removed unused `thiserror` and `tauri-plugin-opener` crates and two unused npm packages;
+    fixed diagnostics text that still described whisper.cpp as the engine; added
+    `.github/workflows/ci.yml`.
+  - Measured local model latency for conversation (in `../VOICE_ASSISTANT_PLAN.md`).
+  +8 Rust tests (175 total, 4 ignored); 152 web tests unchanged.
+  Known limitations: the packaged app was not rebuilt or launched, so the security policy,
+  the per-window command permissions and the clipboard changes have not been exercised in
+  the real window. The policy was checked by loading the built web UI in headless Edge with
+  the same header (main, overlay and overlay-demo views rendered with no violations), which
+  does not cover Tauri IPC. The CI workflow has not run on GitHub. `cargo check` in the
+  debug profile was not run (tests ran in release).
+  Next risks: a command added without its `build.rs` and `capabilities/main.json` entries
+  fails only at run time in the web UI; clearing the clipboard after a paste removes an
+  image or file that was there before, which the paste had already replaced.
+- **Slice 20 -- conversation mode, first version (done; not yet tried by a person).** A
+  second mode beside dictation, toggled by `Ctrl+Alt+T` (fallback `Ctrl+Alt+Shift+T`), the
+  tray, or the Home screen. See `../ARCHITECTURE.md` (Conversation Mode) and
+  `../benchmarks/CONVERSATION_BENCHMARK.md`.
+  - New: `conversation/{state,engine,router,chunker,memory,mod}.rs`, `llm/chat.rs`,
+    `tts/{stream,phonon}.rs`, `audio/{devices,ring,speech_detector,turn_segmenter}.rs`,
+    `cancel.rs`, a stateful `StreamResampler`, `scripts/Get-PhononModel.ps1` and
+    `Get-VadModel.ps1` (pinned revisions, SHA-256 verified), and three benchmark examples.
+  - Models: Phonon 31m voice on at most four CPU threads; Silero VAD v6.2 with a loudness
+    fallback; the configured Ollama model with streaming, cancellation and no tools.
+  - Safety: the microphone is acted on only while listening; 45 s idle, 10 min total and
+    60 s per turn limits; device loss ends the conversation; dictation is ignored while a
+    conversation is on; nothing said is logged, stored or sent in an event.
+  - Also: the Models screen asks the native layer for installed Ollama models (the web
+    check never worked in the packaged app because Ollama refuses the window's origin), and
+    the packaged web UI's policy no longer allows any network connection.
+  - Measured: median 1,090 ms from end of speech to first reply audio (slowest 1,859 ms),
+    down from 1,860 ms before the model was kept awake during the user's turn.
+  +98 Rust tests (273 total, 6 ignored), +7 web tests (159 total).
+  Known limitations: no person has yet spoken to it through a real microphone and speaker,
+  and nobody has judged the voice; the benchmark's questions are synthetic speech delivered
+  digitally. Interrupting is by hotkey only, because the microphone is ignored while the
+  assistant speaks. English only. The 700 ms end-of-turn wait and whole-utterance
+  transcription dominate the delay. The overlay reuses dictation's phases ("listening",
+  "processing", "refining") rather than having its own, and the tray icon does not change.
+  History is trimmed, not summarised. The voice and Silero models are read from the dev
+  runtime folder and are not in the installer. `Ctrl+Alt+T` may clash with other software.
+  Next risks: the in-process voice and voice detector add native code to the main process;
+  the keep-warm requests keep the GPU awake while the user speaks; a model that does not
+  fit in GPU memory will answer too slowly to be usable.
 - Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
-  hotkey; module split of `native_dictation.rs`.
+  hotkey.
 
 ## Milestone 1: Foundation
 

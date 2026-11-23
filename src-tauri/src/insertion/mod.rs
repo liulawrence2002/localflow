@@ -1,3 +1,6 @@
+pub mod clipboard_paste;
+pub mod target;
+
 pub trait TextInserter: Send + Sync {
     fn insert_text(&self, text: &str) -> Result<String, String>;
 }

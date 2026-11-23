@@ -27,7 +27,8 @@ import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
 import { defaultStatus, pinnedOllamaModel } from "./domain/defaults";
 import { serializeDiagnosticsExport } from "./domain/diagnostics";
-import { checkOllamaStatus, hasOllamaModel, type OllamaConnectionStatus } from "./domain/ollama";
+import { describeConversation, type ConversationStatus } from "./domain/conversation";
+import { hasOllamaModel, type OllamaConnectionStatus } from "./domain/ollama";
 import {
   addDictionaryEntry,
   addReplacementRule,
@@ -64,9 +65,12 @@ import {
   finishMockSession,
   getLastTranscript,
   getStatus,
+  checkLocalModels,
+  getConversationStatus,
   getTtsStatus,
   saveSettings,
   speakLastTranscript,
+  toggleConversation,
   stopSpeaking,
   type TtsStatus,
 } from "./services/localflowClient";
@@ -118,11 +122,30 @@ export function App() {
   const [revealTranscript, setRevealTranscript] = useState(false);
   const [recoveryNotice, setRecoveryNotice] = useState("");
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
+  const [conversation, setConversation] = useState<ConversationStatus | null>(null);
 
   useEffect(() => {
     void getStatus().then(setStatus);
     void getLastTranscript().then(setLastTranscript);
     void getTtsStatus().then(setTtsStatus);
+  }, []);
+
+  // Conversation mode changes phase on its own (speech, replies, time limits), so the
+  // panel follows it by asking the native layer about once a second.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () =>
+      void getConversationStatus().then((next) => {
+        if (!cancelled) {
+          setConversation(next);
+        }
+      });
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   const settings = status.settings;
@@ -223,9 +246,14 @@ export function App() {
 
   async function checkLocalOllama() {
     setIsCheckingOllama(true);
-    const nextStatus = await checkOllamaStatus();
+    const nextStatus = await checkLocalModels();
     setOllamaStatus(nextStatus);
     setIsCheckingOllama(false);
+  }
+
+  async function pressConversationButton() {
+    await toggleConversation();
+    setConversation(await getConversationStatus());
   }
 
   async function refreshStatus() {
@@ -362,6 +390,38 @@ export function App() {
                 </div>
               </>
             ) : null}
+
+            <div className="panel">
+              <div className="panel-heading">
+                <h2>Conversation</h2>
+              </div>
+              {(() => {
+                const view = describeConversation(conversation);
+                return (
+                  <>
+                    <p className="field-hint">
+                      Talk with the local language model hands-free. Everything runs on this
+                      computer and nothing that is said is stored.
+                    </p>
+                    <output className="transcript-output" aria-live="polite">
+                      {view.headline}
+                    </output>
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        onClick={() => void pressConversationButton()}
+                        disabled={view.buttonDisabled}
+                        title={conversation?.detail ?? view.headline}
+                      >
+                        <Mic size={16} aria-hidden="true" />
+                        {view.buttonLabel}
+                      </button>
+                    </div>
+                    {conversation ? <p className="field-hint">{conversation.detail}</p> : null}
+                  </>
+                );
+              })()}
+            </div>
 
             <div className="panel">
               <div className="panel-heading">

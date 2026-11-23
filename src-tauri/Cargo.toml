@@ -21,16 +21,20 @@ tauri-build = { version = "2", features = [] }
 arboard = "3"
 cpal = "0.15"
 hound = "3"
+# The conversation voice (Phonon), in-process on the CPU. Pinned exactly: its API changed in
+# each of 0.5, 0.6 and 0.7. Only `hf` (the tokenizer) is enabled; without `hub` the library
+# cannot download anything.
+ptts = { version = "=0.7.1", default-features = false, features = ["hf"] }
+# The voice library's tensor backend, named only to set its thread count (see tts/phonon.rs).
+xn = "0.2.15"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
-tauri-plugin-opener = "2"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
 tracing = "0.1"
 # In-process speech-to-text (ggml). CPU build: default features would enable Metal only.
 transcribe-cpp = { version = "0.4.2", default-features = false }
@@ -41,6 +45,7 @@ windows = { version = "0.61", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_System_DataExchange",
     "Win32_System_JobObjects",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

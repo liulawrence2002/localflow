@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Settings window: may call the app's commands and listen for events.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-get-status",
+    "allow-save-settings",
+    "allow-begin-mock-session",
+    "allow-finish-mock-session",
+    "allow-cancel-session",
+    "allow-get-last-transcript",
+    "allow-copy-last-transcript",
+    "allow-tts-status",
+    "allow-speak-text",
+    "allow-speak-last-transcript",
+    "allow-stop-speaking",
+    "allow-conversation-status",
+    "allow-toggle-conversation",
+    "allow-list-ollama-models"
+  ]
+}

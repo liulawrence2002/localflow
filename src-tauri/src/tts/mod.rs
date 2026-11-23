@@ -6,8 +6,10 @@
 //! voice models are large. It never logs or emits the text being spoken.
 
 pub mod fish_s2;
+pub mod phonon;
 pub mod playback;
 pub mod provider;
+pub mod stream;
 
 use std::{
     path::{Path, PathBuf},
@@ -154,7 +156,7 @@ fn locate_fish_install(runtime: &Path) -> Result<FishInstall, String> {
 
 fn locate_install(app: &AppHandle) -> Result<FishInstall, String> {
     let mut last_reason = "No LocalFlow runtime folder was found.".to_string();
-    for runtime in crate::native_dictation::runtime_candidates(app) {
+    for runtime in crate::runtime_paths::runtime_candidates(app) {
         match locate_fish_install(&runtime) {
             Ok(install) => return Ok(install),
             Err(reason) => last_reason = reason,

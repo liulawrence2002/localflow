@@ -11,7 +11,9 @@ Reference and design documentation for LocalFlow. Start with the [project README
 
 ## Research & Benchmarks
 
+- [VOICE_ASSISTANT_PLAN.md](VOICE_ASSISTANT_PLAN.md) — audit, measured baselines, technology choices and milestones for the hands-free conversation mode and screen-aware reading.
 - [research/VOICE_PIPELINE_REVIEW.md](research/VOICE_PIPELINE_REVIEW.md) — audit of the voice pipeline, survey of current speech models, decisions, and roadmap.
+- [benchmarks/CONVERSATION_BENCHMARK.md](benchmarks/CONVERSATION_BENCHMARK.md) — measured end-to-end latency of conversation mode, what was found, and how to reproduce it.
 - [benchmarks/ASR_BENCHMARK.md](benchmarks/ASR_BENCHMARK.md) — before-and-after speech-to-text measurements and how to reproduce them.
 - [research/appendix/](research/appendix/) — the underlying research reports with sources.
 

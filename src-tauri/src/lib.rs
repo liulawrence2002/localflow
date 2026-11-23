@@ -1,14 +1,19 @@
 mod app_state;
 pub mod asr;
 pub mod audio;
+pub mod cancel;
 mod context;
+pub mod conversation;
 mod desktop_health;
 mod hotkeys;
 mod insertion;
+pub mod llm;
 mod native_dictation;
+mod overlay;
 mod platform;
 mod privacy;
 mod refinement;
+mod runtime_paths;
 mod storage;
 mod transcript;
 pub mod tts;
@@ -32,9 +37,10 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(LocalFlowRuntime::default())
         .manage(native_dictation::NativeDictationRuntime::default())
+        .manage(asr::engine_select::AsrEngines::default())
+        .manage(overlay::OverlayRuntime::default())
         .manage(tts::TtsRuntime::default())
         .setup(|app| {
             let database_path = storage::initialize(app.handle())?;
@@ -53,8 +59,14 @@ pub fn run() {
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "could not load persisted settings; using defaults");
+                    // The next save overwrites the stored row, so keep a copy of it first.
+                    if let Err(error) = storage::preserve_unreadable_settings(app.handle()) {
+                        tracing::warn!(error = %error, "could not keep a copy of the unreadable settings");
+                    }
                 }
             }
+
+            app.manage(conversation::ConversationRuntime::new(app.handle().clone()));
 
             build_tray(app)?;
             desktop_health::record_app_start(app.handle());
@@ -81,14 +93,18 @@ pub fn run() {
             tts::tts_status,
             tts::speak_text,
             tts::speak_last_transcript,
-            tts::stop_speaking
+            tts::stop_speaking,
+            conversation::conversation_status,
+            conversation::toggle_conversation,
+            llm::list_ollama_models
         ])
         .build(tauri::generate_context!())
         .expect("error while building LocalFlow")
         .run(|app, event| {
             // Stop the ASR sidecar on the way out so no whisper process is left running.
             if let tauri::RunEvent::Exit = event {
-                native_dictation::shutdown(app);
+                conversation::end(app);
+                asr::engine_select::shutdown(app);
                 tts::shutdown(app);
             }
         });
@@ -106,8 +122,25 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let stop_reading = MenuItem::with_id(app, "stop_reading", "Stop reading", true, None::<&str>)?;
+    let conversation = MenuItem::with_id(
+        app,
+        "conversation",
+        "Start or stop conversation",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &copy_last, &read_last, &stop_reading, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &conversation,
+            &copy_last,
+            &read_last,
+            &stop_reading,
+            &quit,
+        ],
+    )?;
 
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
@@ -132,6 +165,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
             }
             "stop_reading" => tts::stop(app),
+            "conversation" => conversation::toggle(app),
             "quit" => app.exit(0),
             _ => {}
         })

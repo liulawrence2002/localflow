@@ -11,6 +11,21 @@ On the native path LocalFlow:
 - **Inserts safely** — each dictation has a session id; it never pastes into a different window than where you started, a superseded dictation never inserts, and **Escape cancels** while you are speaking.
 - **Never loses a transcript** — if insertion is skipped (focus changed) or the LLM is unavailable, the transcript is recoverable with "Copy last transcript" (tray or Home) and the deterministically formatted text is used as a fallback.
 
+## Conversation Mode
+
+A hands-free spoken conversation with your local language model, as a second mode beside dictation. Everything runs on this computer and nothing that is said is stored.
+
+1. Install its two small models once: `.\scripts\Get-PhononModel.ps1` (the voice, about 65 MB) and `.\scripts\Get-VadModel.ps1` (voice detection, 1.2 MB). Ollama must be running.
+2. Press `Ctrl+Alt+T` (or `Ctrl+Alt+Shift+T` if another app holds that), or use the tray item or the Home screen button. The overlay appears and stays for the whole conversation.
+3. Talk. Pause when you have finished and the assistant answers aloud.
+4. Press the hotkey while the assistant is talking to interrupt it. Press it at any other time, or say "goodbye", to end the conversation. It also ends after 45 seconds of silence or 10 minutes in total.
+
+This is a first version. The assistant does not listen while it is speaking, so you interrupt with the hotkey, not by voice. The voice is English only. Measured response time on the development laptop is about 1.1 s from the end of your speech to the start of the reply ([benchmark](docs/benchmarks/CONVERSATION_BENCHMARK.md)).
+
+## What Is Next
+
+Screen-aware reading ("read this page", "summarize what I'm looking at"), a shorter wait before replies, and interrupting by voice are planned. None of them exists yet. The audit, measured baselines, technology choices and milestones are in [docs/VOICE_ASSISTANT_PLAN.md](docs/VOICE_ASSISTANT_PLAN.md).
+
 ## Documentation
 
 Full documentation lives in [docs/](docs/README.md), including [architecture](docs/ARCHITECTURE.md), [model setup](docs/MODEL_SETUP.md), [testing](docs/TESTING.md), [troubleshooting](docs/TROUBLESHOOTING.md), [privacy](docs/PRIVACY.md), and the [roadmap](docs/ROADMAP.md). Security policy is in [SECURITY.md](SECURITY.md).
