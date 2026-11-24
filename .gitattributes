@@ -1,0 +1,16 @@
+# Text files are checked out with LF everywhere, including on Windows where core.autocrlf
+# would otherwise turn them into CRLF. Prettier and rustfmt expect LF, so without this
+# `npm run format` fails on every Windows checkout (the CI runner and local clones alike).
+* text=auto eol=lf
+
+# Files Windows itself runs keep CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets.
+*.png binary
+*.ico binary
+*.icns binary
+*.wav binary
+*.gguf binary
+*.onnx binary
