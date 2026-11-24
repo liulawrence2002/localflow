@@ -51,7 +51,10 @@ use crate::{
         turn_segmenter::{SegmentEvent, SegmenterConfig, TurnSegmenter},
     },
     cancel::CancelFlag,
-    coding_agents::{speech as agent_speech, AgentCommand, ExecutionOutcome, CONFIRMATION_TIMEOUT},
+    coding_agents::{
+        agent::AskOutcome, speech as agent_speech, AgentCommand, ExecutionOutcome,
+        CONFIRMATION_TIMEOUT,
+    },
     llm::chat::{ChatProvider, LlmError},
     tts::{provider::TtsError, stream::StreamingTextToSpeech},
 };
@@ -1399,6 +1402,7 @@ impl Ear {
                 };
                 self.carry_out(actions, &mut hearing, &jobs);
                 // A hold that has lasted too long, or a silence after which nothing was decided.
+                self.refresh_agent_hold(&mut hearing);
                 if let Stage::Holding { held, .. } = &mut hearing.stage {
                     let decision = held.tick(hearing.clock);
                     self.decide(&mut hearing, decision);
@@ -1466,6 +1470,9 @@ impl Ear {
             Some(_) => HeldReply::while_agent_works(config, hearing.clock, over_reply),
             None => HeldReply::new(config, hearing.clock, over_reply),
         };
+        // The turn the reply answers was a "yes" to a coding-agent command: what the user says
+        // now is never the rest of it.
+        let said = if job.is_some() { String::new() } else { said };
         hearing.stage = Stage::Holding { held, said, job };
         // The stricter rule may have confirmed it; the ordinary one must report the pause.
         hearing.segmenter.assume_speaking();
@@ -1491,11 +1498,37 @@ impl Ear {
             .iter()
             .any(|action| matches!(action, Action::Transcribe { .. }));
         let speaking = self.speaking_text();
+        self.refresh_agent_hold(hearing);
         let Stage::Holding { held, .. } = &mut hearing.stage else {
             return;
         };
         let decision = held.heard(hearing.assembler.text(), &speaking, more_coming);
         self.decide(hearing, decision);
+    }
+
+    /// Whether `job` is still what the reply waits on.
+    fn agent_still_working(&self, job: &AgentJob) -> bool {
+        self.agent_job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|current| current.turn == job.turn)
+    }
+
+    /// A hold begun while a coding agent worked keeps the agent rules only while it still
+    /// works. Once the answer is in it is about to be spoken, and the hold is judged as over
+    /// any reply: "stop that" then stops the answer, rather than an agent that has finished.
+    fn refresh_agent_hold(&self, hearing: &mut Hearing) {
+        let Stage::Holding { held, job, .. } = &mut hearing.stage else {
+            return;
+        };
+        if job
+            .as_ref()
+            .is_some_and(|job| !self.agent_still_working(job))
+        {
+            held.agent_finished();
+            *job = None;
+        }
     }
 
     fn decide(&self, hearing: &mut Hearing, decision: HoldDecision) {
@@ -1506,7 +1539,15 @@ impl Ear {
                 self.dismiss(hearing);
             }
             HoldDecision::StopAgent => {
-                if let Some(job) = self.dismiss(hearing) {
+                // The agent may have answered in the moment since the words were judged:
+                // then it is its answer that must not be spoken.
+                let working = matches!(
+                    &hearing.stage,
+                    Stage::Holding { job: Some(job), .. } if self.agent_still_working(job)
+                );
+                if !working {
+                    self.confirm(hearing);
+                } else if let Some(job) = self.dismiss(hearing) {
                     tracing::info!(turn = job.turn, "coding agent question stopped by voice");
                     job.stop();
                 }
@@ -1600,6 +1641,7 @@ impl Ear {
                     waited,
                     sounded_finished,
                 } => {
+                    self.refresh_agent_hold(hearing);
                     if let Stage::Holding { held, .. } = &mut hearing.stage {
                         // The user has finished: this is all there is to judge.
                         let decision = held.finished(&text, &self.speaking_text());
@@ -1987,17 +2029,26 @@ fn carry_out_command(
     timings: &mut TurnTimings,
     command: &AgentCommand,
 ) -> Option<(SpokenOutcome, bool)> {
+    // A question is registered before anything is said about it, so that speech over
+    // "Asking Claude..." is judged by the agent rules: it can stop the question or ask for a
+    // reminder, but it never cancels the turn and loses the confirmed question.
+    let job = matches!(command, AgentCommand::Ask { .. }).then(|| {
+        let job = AgentJob::new(context.turn);
+        *context.agent_job() = Some(job.clone());
+        job
+    });
     if let Some(line) = agent_speech::starting(command) {
         speak_reply(context, timings, Reply::Fixed(line));
     }
     if context.cancel.is_cancelled() {
+        unregister_job(context);
         return None;
     }
-    let outcome = match command {
-        // Opening returns at once.
-        AgentCommand::Open { .. } => context.agents.execute(command, &context.cancel),
+    let outcome = match job {
         // A question takes a while, and the user can stop it.
-        AgentCommand::Ask { .. } => wait_for_agent(context, timings, command)?,
+        Some(job) => wait_for_agent(context, timings, command, job)?,
+        // Opening returns at once.
+        None => context.agents.execute(command, &context.cancel),
     };
     if context.cancel.is_cancelled() {
         return None;
@@ -2008,16 +2059,32 @@ fn carry_out_command(
     Some((spoken, outcome.ends_conversation(command)))
 }
 
+/// The reply no longer waits on a coding agent: holds from now on follow the ordinary rules.
+fn unregister_job(context: &TurnContext) {
+    let mut registered = context.agent_job();
+    if registered
+        .as_ref()
+        .is_some_and(|job| job.turn == context.turn)
+    {
+        *registered = None;
+    }
+}
+
 /// Run a background question, keeping the floor but listening, until it answers, the user
 /// says "stop that", or the turn is cancelled. Reminds the user how to stop it if they talk
-/// meanwhile. `None` when the turn was cancelled.
+/// meanwhile. `job` is already registered; a stop or a reminder asked for while the starting
+/// sentence played takes effect here. `None` when the turn was cancelled.
 fn wait_for_agent(
     context: &TurnContext,
     timings: &mut TurnTimings,
     command: &AgentCommand,
+    job: AgentJob,
 ) -> Option<ExecutionOutcome> {
-    let job = AgentJob::new(context.turn);
-    *context.agent_job() = Some(job.clone());
+    if job.cancel_flag().is_cancelled() {
+        // "Stop that" while "Asking Claude..." played: the question is never sent.
+        unregister_job(context);
+        return Some(ExecutionOutcome::Answered(AskOutcome::Cancelled));
+    }
     context.send(Event::ReplyWaiting { turn: context.turn });
 
     let (done_tx, done_rx) = mpsc::channel();
@@ -2049,14 +2116,8 @@ fn wait_for_agent(
             }
         }
     };
-    let mut registered = context.agent_job();
-    if registered
-        .as_ref()
-        .is_some_and(|job| job.turn == context.turn)
-    {
-        *registered = None;
-    }
-    drop(registered);
+    // Before the answer is spoken: a hold over it is judged as over any reply.
+    unregister_job(context);
     if context.cancel.is_cancelled() {
         return None;
     }
@@ -4462,6 +4523,114 @@ mod tests {
         assert!(still_open_after_a_while(&host, &core));
         host.silence(Duration::from_millis(200));
         wait_for("the turn to end", || asked(&host) == 1);
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn talking_over_asking_claude_never_loses_the_confirmed_question() {
+        let agents = FakeAgents::answering(Some("The tests check the overlay."));
+        let host = interruptible(&[ASK, "Yes.", "Yes, and check the tests too."], &[])
+            .with_agents(&agents);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("the read-back", || core.phase() == Phase::Speaking);
+        host.speaker.release();
+        wait_for("the read-back to finish", || {
+            core.phase() == Phase::Listening
+        });
+        // Playback slow again, so "Asking Claude..." is still playing when the user talks.
+        host.speaker.hold.store(true, Ordering::SeqCst);
+        host.user_turn();
+        wait_for("Asking Claude", || {
+            spoken(&host).contains(&STARTING.to_string()) && core.phase() == Phase::Speaking
+        });
+
+        // Two words of substance over it would cancel an ordinary reply.
+        host.user_speaks(Duration::from_millis(600));
+        host.silence(Duration::from_millis(900));
+        wait_for("the talk to be judged", || {
+            host.speaker.resumes.load(Ordering::SeqCst) >= 1
+        });
+        assert_eq!(core.phase(), Phase::Speaking, "the turn was cancelled");
+
+        host.speaker.release();
+        wait_for("Claude's answer", || {
+            spoken(&host)
+                .iter()
+                .any(|line| line == "Claude says: The tests check the overlay.")
+        });
+        wait_for("the turn to end", || core.phase() == Phase::Listening);
+
+        // The confirmed question was asked, and the user was told how to stop it.
+        match &agents.executed()[..] {
+            [AgentCommand::Ask { question, .. }] => {
+                assert_eq!(question, "what the overlay code in localflow does")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(spoken(&host).contains(&STILL_WORKING.to_string()));
+        assert!(
+            host.chat.requests.lock().unwrap().is_empty(),
+            "the remark went to the model instead"
+        );
+        core.send(Event::EndRequested);
+    }
+
+    #[test]
+    fn stop_that_said_as_claude_answers_stops_the_answer_being_spoken() {
+        let agents = FakeAgents::answering(Some("A long answer about the overlay."));
+        // "Stop that" is slow to transcribe, so Claude answers while it is being judged.
+        let asr = ScriptedAsr::saying(&[ASK, "Yes.", "Stop that."]).taking(&[
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_millis(500),
+        ]);
+        let host = TestHost::new(
+            asr,
+            MockChat::replying(&[]),
+            MockVoice {
+                sample_rate: RATE,
+                ..MockVoice::default()
+            },
+        )
+        .with_agents(&agents);
+        let core = started(&host);
+
+        host.user_turn();
+        wait_for("the read-back", || reply_done(&host));
+        host.user_turn();
+        wait_for("Claude to be working", || {
+            agents.question_started.load(Ordering::SeqCst) && core.phase() == Phase::Thinking
+        });
+        let heard_before = host.speaker.heard.lock().unwrap().len();
+        let flushes_before = host.speaker.flushes.load(Ordering::SeqCst);
+
+        // The user starts talking while Claude works; Claude answers before the words are in.
+        host.user_speaks(Duration::from_millis(600));
+        host.silence(Duration::from_millis(900));
+        wait_for("the answer to be ready", || {
+            spoken(&host)
+                .iter()
+                .any(|line| line.starts_with("Claude says:"))
+        });
+        wait_for("the floor to come back", || {
+            core.phase() == Phase::Listening
+        });
+
+        assert!(
+            !agents.stopped.load(Ordering::SeqCst),
+            "Claude had already answered"
+        );
+        assert_eq!(
+            host.speaker.heard.lock().unwrap().len(),
+            heard_before,
+            "the answer was spoken over the user"
+        );
+        assert!(host.speaker.flushes.load(Ordering::SeqCst) > flushes_before);
+        // "Stop that" asked for quiet; it is not a question for the model.
+        thread::sleep(Duration::from_millis(100));
+        assert!(host.chat.requests.lock().unwrap().is_empty());
         core.send(Event::EndRequested);
     }
 }

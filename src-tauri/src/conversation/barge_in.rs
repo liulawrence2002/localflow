@@ -297,6 +297,14 @@ impl HeldReply {
         self.agent_working
     }
 
+    /// The coding agent has answered while the user was talking: its answer is about to be
+    /// spoken, so from now on what they say is judged as over any reply. "Stop that" then
+    /// stops the answer being spoken, where it would only have stopped an agent that had
+    /// already finished.
+    pub fn agent_finished(&mut self) {
+        self.agent_working = false;
+    }
+
     /// The latest judgment of what was said, for diagnostics. Never contains any words.
     pub fn verdict(&self) -> Option<Interruption> {
         self.verdict
@@ -712,6 +720,33 @@ mod tests {
         // Talking on and on lets the agent carry on rather than cutting it off.
         let mut hold = HeldReply::while_agent_works(config, ms(10_000), false);
         assert_eq!(hold.tick(ms(16_000)), HoldDecision::Resume);
+    }
+
+    #[test]
+    fn once_the_agent_has_answered_the_hold_is_judged_as_over_any_reply() {
+        let config = HoldConfig {
+            sample_rate: RATE as u32,
+            false_interruption_timeout: Duration::from_millis(1_500),
+            max_hold: Duration::from_secs(6),
+        };
+        // "Stop that" now stops the answer being spoken: a real interruption.
+        let mut hold = HeldReply::while_agent_works(config, ms(10_000), false);
+        hold.agent_finished();
+        assert!(!hold.agent_working());
+        assert_eq!(hold.heard("Stop that.", "", true), HoldDecision::Interrupt);
+        assert_eq!(hold.finished("Stop that.", ""), HoldDecision::Interrupt);
+        // Something else is a question again, and long talk cancels as over any reply.
+        let mut hold = HeldReply::while_agent_works(config, ms(10_000), false);
+        hold.agent_finished();
+        assert_eq!(
+            hold.finished("What's the weather?", ""),
+            HoldDecision::Interrupt
+        );
+        assert_eq!(hold.tick(ms(16_000)), HoldDecision::Interrupt);
+        let mut hold = HeldReply::while_agent_works(config, ms(10_000), false);
+        hold.agent_finished();
+        hold.user_paused(ms(10_500));
+        assert_eq!(hold.heard("Mm-hmm.", "", false), HoldDecision::Resume);
     }
 
     #[test]

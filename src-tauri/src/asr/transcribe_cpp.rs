@@ -129,8 +129,9 @@ pub struct TranscribeCppOptions {
     /// Preferred discrete GPU, matched against the device description without regard to case.
     /// Any other discrete GPU is still used when none matches.
     pub preferred_gpu: Option<String>,
-    /// Run one short transcription of quiet noise when the model loads, so the first real
-    /// phrase does not pay one-time costs (GPU shader compiles, first touch of the weights).
+    /// Let `warm_up` (called when a conversation opens) transcribe a few clips of quiet
+    /// noise, so the first real phrase does not pay one-time costs (GPU kernel preparation,
+    /// first touch of the weights). `prepare` only ever loads the model.
     pub warm_up: bool,
 }
 
@@ -342,7 +343,16 @@ impl TranscribeCppProvider {
                 initial_prompt: None,
             };
             // The text is discarded: it is noise, and it is never logged.
-            self.run_with_cpu_retry(guard, &request)?;
+            if let Err(error) = self.run_with_cpu_retry(guard, &request) {
+                if guard.is_none() {
+                    // The model could not even be reloaded: speech recognition is unusable.
+                    return Err(error);
+                }
+                // The model is loaded and usable; a slow or failed warm-up only means the
+                // first phrase may pay the one-time costs. It must not stop a conversation.
+                tracing::warn!(error = %error, "transcribe.cpp warm-up did not finish");
+                return Ok(());
+            }
         }
         if let Some(loaded) = guard.as_mut() {
             loaded.warmed_up = true;
@@ -637,23 +647,26 @@ impl SpeechToTextProvider for TranscribeCppProvider {
         description
     }
 
+    /// Load the model only. Dictation calls this as recording starts, and a warm-up here
+    /// would hold the model lock while the user's own first phrase waits.
     fn prepare(&self) -> Result<(), AsrError> {
+        let mut guard = self.lock();
+        self.ensure_loaded(&mut guard).map(|_| ())
+    }
+
+    /// Load the model if needed and, when [`TranscribeCppOptions::warm_up`] is set (the
+    /// default), transcribe a few clips of quiet noise (2 s on the CPU; 2, 4 and 10 s on a
+    /// GPU), so the next real phrase does not pay one-time costs: GPU kernel preparation
+    /// (seconds on first use) and the first touch of the memory-mapped weights. Only the
+    /// first call after a load does any work. Called when a conversation opens. A warm-up
+    /// that fails or times out is logged and ignored, as long as the model is loaded.
+    fn warm_up(&self) -> Result<(), AsrError> {
         let mut guard = self.lock();
         if self.options.warm_up {
             self.warm_up_locked(&mut guard)
         } else {
             self.ensure_loaded(&mut guard).map(|_| ())
         }
-    }
-
-    /// Load the model if needed and run one two-second transcription of quiet noise, so the
-    /// next real phrase does not pay one-time costs: GPU shader compiles (seconds on first
-    /// use) and the first touch of the memory-mapped weights. Only the first call after a
-    /// load does any work. `prepare` already does this when [`TranscribeCppOptions::warm_up`]
-    /// is set (the default).
-    fn warm_up(&self) -> Result<(), AsrError> {
-        let mut guard = self.lock();
-        self.warm_up_locked(&mut guard)
     }
 
     fn transcribe(&self, request: &TranscriptionRequest<'_>) -> Result<Transcription, AsrError> {

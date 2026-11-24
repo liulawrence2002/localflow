@@ -267,7 +267,8 @@ fn main() {
             .join("models")
             .join("parakeet-tdt-0.6b-v3-Q5_K_M.gguf"),
     }));
-    asr.prepare().expect("the speech model should load");
+    // As the app does when a conversation opens: load and warm up.
+    asr.warm_up().expect("the speech model should load");
     let chat = Arc::new(OllamaChat::new().expect("chat client"));
     chat.prepare(&model)
         .expect("Ollama should be running with the model installed");

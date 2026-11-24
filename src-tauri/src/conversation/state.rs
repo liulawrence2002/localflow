@@ -36,16 +36,12 @@ pub enum Phase {
 
 impl Phase {
     /// Whether the user has the floor: the assistant is waiting for them or hearing them.
+    ///
+    /// The microphone is listened to beyond that: while a reply is prepared, so that carrying
+    /// on speaking holds it, and while it is spoken, to catch the user talking over it when
+    /// the assistant's own voice can be removed. The ear decides that from its own stage.
     pub fn user_has_floor(self) -> bool {
         matches!(self, Self::Listening | Self::UserSpeaking)
-    }
-
-    /// Whether microphone audio is listened to for the user. Always while they have the
-    /// floor, and while a reply is being prepared, so that carrying on speaking holds the
-    /// reply instead of being lost. While a reply is spoken the microphone is only watched
-    /// for the user talking over it, and only when the assistant's own voice can be removed.
-    pub fn listens(self) -> bool {
-        matches!(self, Self::Listening | Self::UserSpeaking | Self::Thinking)
     }
 
     pub fn is_active(self) -> bool {
@@ -565,16 +561,9 @@ mod tests {
     }
 
     #[test]
-    fn the_microphone_is_listened_to_while_the_user_has_the_floor_or_a_reply_is_prepared() {
-        // Changed by design: thinking used to be deaf, which lost whatever the user said
-        // after a pause that ended their turn too soon.
-        for phase in [Phase::Listening, Phase::UserSpeaking, Phase::Thinking] {
-            assert!(phase.listens(), "{phase:?}");
-        }
-        for phase in [Phase::Off, Phase::Starting, Phase::Speaking] {
-            assert!(!phase.listens(), "{phase:?}");
-        }
-        // The floor is the user's only while waiting for or hearing them.
+    fn the_user_has_the_floor_only_while_waited_for_or_heard() {
+        // Not while a reply is prepared or spoken, even though the ear listens then: speech
+        // there holds the reply (`BargeIn`) rather than starting a turn.
         assert!(Phase::Listening.user_has_floor());
         assert!(Phase::UserSpeaking.user_has_floor());
         for phase in [
@@ -584,6 +573,19 @@ mod tests {
             Phase::Speaking,
         ] {
             assert!(!phase.user_has_floor(), "{phase:?}");
+        }
+        // And it is the floor that decides whether speech starts a turn or holds a reply.
+        for prefix in [listening(), thinking(), speaking()] {
+            let (before, _) = run(&prefix);
+            let (after_start, _) = transition(before, Event::SpeechStarted { conversation: 1 });
+            let (after_barge, _) = transition(before, Event::BargeIn { conversation: 1 });
+            if before.phase.user_has_floor() {
+                assert_eq!(after_start.phase, Phase::UserSpeaking);
+                assert_eq!(after_barge, before);
+            } else {
+                assert_eq!(after_start, before);
+                assert!(after_barge.held);
+            }
         }
     }
 

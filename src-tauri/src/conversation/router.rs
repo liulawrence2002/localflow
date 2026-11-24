@@ -138,6 +138,8 @@ const END_PHRASES: &[&str] = &[
 ];
 const QUIET_PHRASES: &[&str] = &[
     "stop",
+    "stop that",
+    "cancel that",
     "be quiet",
     "quiet",
     "never mind",
@@ -258,6 +260,9 @@ mod tests {
         assert_eq!(route_turn("Say that again, please."), TurnIntent::Repeat);
         assert_eq!(route_turn("Stop."), TurnIntent::Quiet);
         assert_eq!(route_turn("Never mind"), TurnIntent::Quiet);
+        // As the coding-agent dialog has it ("say stop that to cancel").
+        assert_eq!(route_turn("Stop that."), TurnIntent::Quiet);
+        assert_eq!(route_turn("Cancel that, please."), TurnIntent::Quiet);
     }
 
     #[test]

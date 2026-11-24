@@ -104,14 +104,22 @@ fn check_terminal_path(path: &Path) -> Result<(), LaunchFailure> {
 
 /// Refuse any argument list that could skip permission checks: the skip flags in any form,
 /// a permission mode other than the normal, plan or don't-ask modes, or the names of the
-/// permissive modes anywhere at all (inside a `--settings` JSON, for example).
+/// permissive modes inside an option's value (a `--settings` JSON, for example).
+///
+/// Folder and program paths are not searched for those words: they are never parsed as
+/// options (they are absolute paths, so they cannot start with `-`), and a project folder
+/// such as `C:\work\dangerously-fast-ui` must still open.
 pub fn check_no_permission_skipping(args: &[OsString]) -> Result<(), LaunchFailure> {
     let lowered: Vec<String> = args
         .iter()
         .map(|arg| arg.to_string_lossy().to_ascii_lowercase())
         .collect();
     for (index, arg) in lowered.iter().enumerate() {
-        if FORBIDDEN_TEXT.iter().any(|text| arg.contains(text)) {
+        let is_option = arg.starts_with('-');
+        let is_option_value = index > 0
+            && lowered[index - 1].starts_with("--")
+            && !Path::new(&args[index]).is_absolute();
+        if (is_option || is_option_value) && FORBIDDEN_TEXT.iter().any(|text| arg.contains(text)) {
             return Err(LaunchFailure::Refused);
         }
         let mode = if arg == "--permission-mode" {
@@ -299,6 +307,37 @@ mod tests {
         assert!(!refused(&["--permission-mode", "default"]));
         assert!(!refused(&["--permission-mode", "dontAsk"]));
         assert!(!refused(&[r"C:\work\automation"]));
+    }
+
+    /// A folder whose name happens to contain one of the forbidden words is a path, not an
+    /// option, and must still open: Settings accepts it, so refusing it later would leave a
+    /// project that can never be used.
+    #[test]
+    fn folder_names_containing_forbidden_words_still_open() {
+        for name in [
+            r"C:\work\dangerously-fast-ui",
+            r"C:\work\acceptEdits demo",
+            r"C:\Users\bypassPermissions\app",
+        ] {
+            let folder = PathBuf::from(name);
+            let args = terminal_args(&folder, Path::new(CLAUDE), "default")
+                .unwrap_or_else(|failure| panic!("{name}: {failure:?}"));
+            assert!(strings(&args)
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "default"]));
+            assert!(cursor_args(&folder).is_ok(), "{name}");
+        }
+        // The words are still refused wherever they could be read as an option or its value.
+        let refused = |args: &[&str]| {
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            check_no_permission_skipping(&args) == Err(LaunchFailure::Refused)
+        };
+        assert!(refused(&[
+            "-d",
+            r"C:\work\app",
+            "--dangerously-skip-permissions"
+        ]));
+        assert!(refused(&["--settings", r#"{"x":"bypassPermissions"}"#]));
     }
 
     #[test]

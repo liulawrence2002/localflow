@@ -441,7 +441,8 @@ fn run_config(spec: &str, args: &Args, corpus: &[Utterance]) -> Result<ConfigRes
     let provider = engine.provider();
 
     let prepare_started = Instant::now();
-    provider.prepare().map_err(|error| error.to_string())?;
+    // As a conversation opens: load, then warm up unless --no-warm-up.
+    provider.warm_up().map_err(|error| error.to_string())?;
     let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
 
     let mut latencies_ms = Vec::new();

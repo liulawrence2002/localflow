@@ -125,12 +125,12 @@ pub fn check_path_text(path: &str) -> Result<(), FolderProblem> {
 /// Terminal can be given. Forward slashes become backslashes and a trailing separator is
 /// dropped (except on a drive root), so the same folder is always stored the same way.
 pub fn validate_folder(input: &str) -> Result<PathBuf, FolderProblem> {
-    let trimmed = input.trim();
-    check_path_text(trimmed)?;
-    let mut normalized = trimmed.replace('/', "\\");
+    // Normalise first and check what will be stored: "//?/C:/x" is a device path too.
+    let mut normalized = input.trim().replace('/', "\\");
     while normalized.len() > 3 && normalized.ends_with('\\') {
         normalized.pop();
     }
+    check_path_text(&normalized)?;
     let path = PathBuf::from(&normalized);
     if !path.is_absolute() {
         return Err(FolderProblem::NotAbsolute);
@@ -415,6 +415,15 @@ mod tests {
         );
         assert_eq!(
             validate_folder(r"\\?\C:\Windows"),
+            Err(FolderProblem::DevicePath)
+        );
+        // Typed with forward slashes, it is the same device path once normalised.
+        assert_eq!(
+            validate_folder("//?/C:/Windows"),
+            Err(FolderProblem::DevicePath)
+        );
+        assert_eq!(
+            validate_folder("//./C:/Windows"),
             Err(FolderProblem::DevicePath)
         );
 
