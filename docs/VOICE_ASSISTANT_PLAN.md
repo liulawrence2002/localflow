@@ -22,6 +22,16 @@ Taken by the project owner on 2026-11-22:
 | Tools                         | The language model gets none. Every action comes from a hotkey or a fixed match on the user's own speech.                                                     |
 | Privacy document              | `PRIVACY.md` will change when page reading ships: window text is read only on the user's hotkey, and screenshots are a separate opt-in.                       |
 
+Revised by the project owner on 2026-11-23, for milestone 5:
+
+| Question       | Decision                                                                                                                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coding agents  | Voice commands may hand a task to a coding agent the user subscribes to (Claude Code now; Codex and Cursor Agent once their command-line tools are installed). This is an explicit exception to "no cloud model", recorded in `AGENTS.md` and `PRIVACY.md` when it ships. |
+| Confirmation   | Every launch is repeated back and needs a spoken "yes". Only the task the user spoke is passed on, only to the tool they named.                                                                                                                                           |
+| How agents run | Tasks open a visible Windows Terminal tab, where the agent asks for its own permissions as usual. Questions run read-only in the background and the answer is spoken.                                                                                                     |
+| Folders        | Only folders the user has added in Settings, each with a spoken name.                                                                                                                                                                                                     |
+| Page summaries | Summarise, explain and "what changed?" move to milestone 6.                                                                                                                                                                                                               |
+
 ## Where the code stands
 
 Dictation is sound: a stale or cancelled session never pastes, the paste fails closed when
@@ -172,10 +182,68 @@ Not yet measured: a person at a real microphone and speaker, and how the voice s
    and back, chunked read-aloud, and the `PRIVACY.md` change. No language model involved.
 4. **Natural turn-taking (done, see `development/PLAN.md` slice 22).** Turn-completion model, decoding while the user speaks, spoken
    barge-in with echo cancellation, automatic fallback to hotkey interrupt.
-5. **Summarise, explain, what changed.** Page text passed to the model as quoted data, a
-   snapshot diff kept in memory only, and a fixture corpus of malicious pages.
-6. **Charts and release hardening.** Screenshot plus local vision as an opt-in, integrity
+5. **Voice commands for coding agents.** In a conversation, say "open Claude Code in
+   localflow and fix the failing tests". LocalFlow repeats it back, and on "yes" opens a
+   Windows Terminal tab in that folder running Claude Code with the task already given.
+   Detailed below.
+6. **Summarise, explain, what changed.** Page text passed to the local model as quoted data,
+   a snapshot diff kept in memory only, and a fixture corpus of malicious pages.
+7. **Charts and release hardening.** Screenshot plus local vision as an opt-in, integrity
    checks on bundled binaries, a release log file, an installer smoke test.
+
+### Milestone 5 in detail
+
+What is installed on the development machine (checked 2026-11-23): the Claude Code CLI
+(2.1.170), Windows Terminal, the Cursor editor and its `cursor` command, and the Codex desktop
+app. The Codex CLI and the Cursor Agent CLI are not installed, so those two cannot take a
+task yet.
+
+Commands, all said in a conversation:
+
+| Say                                                       | What happens                                                                              |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| "Open Claude Code in localflow and fix the failing tests" | Confirmed, then a terminal tab opens in that folder running `claude` with the task        |
+| "Open Claude Code in localflow"                           | Confirmed, then the same with no task                                                     |
+| "Ask Claude what the overlay code in localflow does"      | Confirmed, then a read-only background run; the answer is spoken, starting "Claude says:" |
+| "Open localflow in Cursor"                                | Opens the folder in the Cursor editor (no task is passed, nothing is sent)                |
+| "Stop that" / "cancel"                                    | Cancels a background question, or declines a pending confirmation                         |
+| "Yes" / "no"                                              | Answers a confirmation; anything else, or 15 s of silence, declines it                    |
+
+How it is built:
+
+- **Recognition by fixed rules.** A command is an action word ("open", "start", "launch",
+  "ask"), a known agent name, and one of the user's project names; the rest is the task.
+  Project names are matched forgivingly ("local flow" matches "localflow"), but a name that
+  matches no project, or more than one, is asked about rather than guessed. The local
+  language model is not involved in deciding what to run.
+- **Only the user's own speech can trigger it.** Page text, model replies and the assistant's
+  own voice never reach the command matcher. The local model still has no tools.
+- **Confirmation** is a new conversation state: the command is spoken back word for word,
+  and only "yes" (or "go ahead", "do it") launches it.
+- **Launching** uses `wt.exe` with the folder as the working directory and the agent and task
+  as separate arguments, never through a shell, with Windows Terminal's own separator
+  characters escaped. LocalFlow never types into the terminal or answers the agent's prompts.
+  The agent is launched in its normal permission mode; LocalFlow never passes options that
+  skip permission checks.
+- **Background questions** run `claude -p` in the folder in read-only plan mode, with a time
+  limit, are cancelled by "stop that", and only the final answer is spoken. The answer is
+  treated like any reply: spoken, never acted on.
+- **Agents behind one interface** (`CodingAgent`: detect, open with a task, ask a question),
+  so Codex and Cursor Agent can be added once their command-line tools are installed.
+- **Settings** gets a "Coding agents" section: project folders with their spoken names, and
+  which agents were found.
+- **Privacy.** The task or question goes to the agent's company through the user's own
+  subscription, which is the reason for the confirmation. LocalFlow itself still makes no
+  network connection. Logs record which agent and which project name, never the task.
+
+Tests: the command grammar against a corpus of phrasings and near-misses, the confirmation
+states, argument building with hostile task text (quotes, `;`, `&`, newlines, very long
+text), a fake agent for the background path, and a check that page text and model replies
+cannot produce a command. Live check: one confirmed launch in a test folder.
+
+Risks: a misheard task is sent as heard (the read-back is the defence); Windows Terminal
+argument parsing needs care; the background question's output format depends on the Claude
+Code version installed.
 
 ## Known risks
 
