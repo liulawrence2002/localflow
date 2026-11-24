@@ -961,25 +961,41 @@ pub(crate) mod tests {
         assert_eq!(status.agents.len(), 4);
     }
 
-    /// The live check of the visible launch, through the real Windows Terminal, with a
-    /// stand-in for `claude.exe` that writes down what it received and exits. Opens a
-    /// Windows Terminal tab on the screen for a moment. Set:
-    /// - `LOCALFLOW_WT_PROBE`: the stand-in program;
-    /// - `LOCALFLOW_WT_PROBE_OUT`: the file it writes (`cwd=...`, then `arg<n>=[...]`);
-    /// - `LOCALFLOW_WT_PROBE_FOLDER`: the folder the tab should open in (a space in it tests
-    ///   Windows Terminal's re-quoting).
+    /// The live check of the visible launch, through the real Windows Terminal, with
+    /// `examples/wt_probe.rs` standing in for `claude.exe`: it writes down what it received
+    /// and exits. It opens a Windows Terminal tab on the screen for a moment, so it does
+    /// nothing unless `LOCALFLOW_LIVE_WT=1` is set (so `-- --ignored` runs stay quiet):
+    ///
+    /// ```text
+    /// cargo build --release --example wt_probe
+    /// $env:LOCALFLOW_LIVE_WT = "1"
+    /// cargo test --release --lib live_windows_terminal -- --ignored --nocapture
+    /// ```
     #[test]
-    #[ignore = "opens a Windows Terminal tab; needs LOCALFLOW_WT_PROBE and friends"]
-    fn real_windows_terminal_passes_the_folder_and_arguments_through() {
+    #[ignore = "opens a Windows Terminal tab; set LOCALFLOW_LIVE_WT=1 and build the wt_probe example"]
+    fn live_windows_terminal_passes_the_folder_and_arguments_through() {
         use crate::coding_agents::{
             args::terminal_args,
             detect::{file_exists, find_windows_terminal, SearchPaths},
         };
-        let var = |name: &str| PathBuf::from(std::env::var_os(name).expect(name));
-        let probe = var("LOCALFLOW_WT_PROBE");
-        let out = var("LOCALFLOW_WT_PROBE_OUT");
-        let folder = var("LOCALFLOW_WT_PROBE_FOLDER");
+        if std::env::var_os("LOCALFLOW_LIVE_WT").as_deref() != Some("1".as_ref()) {
+            println!("skipped: set LOCALFLOW_LIVE_WT=1 to open a Windows Terminal tab");
+            return;
+        }
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+        let probe = target.join("release").join("examples").join("wt_probe.exe");
+        assert!(
+            probe.is_file(),
+            "build it first: cargo build --release --example wt_probe ({})",
+            probe.display()
+        );
+        let out = probe.with_file_name("wt_probe_received.txt");
         let _ = std::fs::remove_file(&out);
+        // A space in the folder tests Windows Terminal's re-quoting of the command line.
+        let folder = std::env::temp_dir().join("localflow wt probe");
+        std::fs::create_dir_all(&folder).expect("test folder");
 
         let wt = find_windows_terminal(&SearchPaths::from_environment(), file_exists)
             .expect("Windows Terminal is installed");

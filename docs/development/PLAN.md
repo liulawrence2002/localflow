@@ -359,8 +359,12 @@ Phase 1 (unify the production pipeline): in progress.
     inside quotes and expands `%NAME%`.
   Verified live: the real Windows Terminal opens the tab in a folder whose path has spaces
   and hands the program exactly `--permission-mode default`
-  (`real_windows_terminal_passes_the_folder_and_arguments_through`, with a stand-in for
-  `claude.exe`). Known limitations: Claude Code and Cursor themselves have not been launched
+  (`live_windows_terminal_passes_the_folder_and_arguments_through`, with `examples/wt_probe.rs`
+  standing in for `claude.exe`; opt-in with `LOCALFLOW_LIVE_WT=1`). A review of PR #2 found
+  and fixed: a confirmed question lost when the user talked over "Asking Claude"; "stop that"
+  not stopping an answer that arrived during a hold; folders whose path contains
+  "dangerously" or "acceptEdits" refused at launch; `//?/` paths accepted then failing; the
+  warm-up holding the model lock for dictation. Known limitations: Claude Code and Cursor themselves have not been launched
   by voice yet; a real `claude -p` answer and its sign-in failure wording are unverified; an
   answer begun within 150 ms of the read-back ending is ignored, and the user hears the
   time-out line; "say that again" while a read-back waits declines it; Windows may not bring

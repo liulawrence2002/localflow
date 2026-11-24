@@ -60,7 +60,7 @@ rebuild. The GPU build imports `vulkan-1.dll`, so it does not start on a compute
 Vulkan loader; that is why the feature is off by default.
 
 ```text
-.\scripts\Bench-AsrSpeed.ps1 -SweepThreads 4,6,8,10,12   # thread sweep, 3 passes, then GPU
+.\scripts\Bench-AsrSpeed.ps1 -SweepThreads "4,6,8,10,12"   # thread sweep, 3 passes, then GPU (quote the list)
 .\scripts\Bench-AsrSpeed.ps1 -Part Gpu                   # GPU against CPU only
 ```
 

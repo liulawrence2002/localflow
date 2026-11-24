@@ -1,261 +1,688 @@
 # Architecture
 
-LocalFlow is split into a Tauri native layer and a React settings/history interface.
+LocalFlow is a Tauri 2 app. The Rust native layer in `src-tauri` owns everything that touches
+audio, models, hotkeys, other windows and other programs. The React web UI in `src` is the
+settings window and the overlay; it shows state and edits settings, and it can only reach
+the native layer through declared Tauri commands.
 
-## Native Layer
+Four features share the native parts: dictation, conversation, reading a window aloud, and
+voice commands for coding agents. The user-facing description is in
+[USER_GUIDE.md](USER_GUIDE.md); this document is about how the code is arranged.
 
-- `src-tauri/src/workflow`: explicit dictation state machine. **Note:** this reducer is
-  currently exercised only by the mock-session Tauri commands, not by the live hotkey path.
-  See `REPO_AUDIT.md` §2 for the three current session representations and the plan to
-  unify them.
-- `src-tauri/src/audio`: microphone capture interface and mock capture, plus the audio code on the live path: `capture.rs` (the `cpal` input stream, single-channel downmix with a locked channel choice, capture statistics), `vad.rs` (`EndOfSpeechDetector`: loudness-based voice activity, end-of-speech, no-speech and maximum-length timeouts), `resample.rs` (band-limited windowed-sinc resampling to 16 kHz), `wav.rs` (in-memory 16-bit PCM WAV encoding), and `spectrum.rs` (the overlay's real-time analyser: a Hann-windowed FFT pooled into 32 mel-spaced bands from 70 Hz to 8 kHz, mapped to 0..1 against an adaptive noise floor, plus pitch from autocorrelation and brightness from the spectral centroid).
-- `src-tauri/src/asr`: the speech-to-text provider boundary used by the live path. `provider.rs` defines `SpeechToTextProvider`, the typed `AsrError`, the per-utterance deadline, and `FallbackProvider`. Engines: `whisper_server.rs` (persistent `whisper-server.exe`, model kept loaded, loopback only), `whisper_cli.rs` (one process per utterance; fallback and low-resource engine), and `parakeet_cli.rs` (opt-in Parakeet TDT accuracy engine). `sidecar.rs` holds hidden-process launch, the Windows kill-on-close job object, and memory measurement. The older `AsrProvider` mock trait and the streaming foundation remain for the mock sessions and future streaming work.
-- `src-tauri/src/llm`: the local language model. `ollama.rs` is the loopback-only Ollama client (no proxy, no redirects, cloud-hosted model tags refused, one fixed context size so the model is never reloaded between calls) and the warm-up; `cleanup.rs` is dictation cleanup (prompt, strict JSON contract, one repair attempt).
-- `src-tauri/src/refinement`: refinement provider trait and mock provider used by the mock sessions.
-- `src-tauri/src/context`: local context snapshot interface.
-- `src-tauri/src/insertion`: `target.rs` (the window focused when dictation started, and the fail-closed check before pasting), `clipboard_paste.rs` (transient clipboard write, Ctrl+V, and the tidy-up afterwards: restore the earlier text, clear the dictated text when there is nothing to restore, and leave the clipboard alone if the user copied something else meanwhile), plus the mock inserter.
-- `src-tauri/src/hotkeys`: global hotkey registration through Tauri's global-shortcut plugin.
-- `src-tauri/src/overlay.rs`: the floating voice overlay: phase and audio-feature events on `localflow://native-dictation`, show/hide with the auto-hide timer, and placement above the taskbar.
-- `src-tauri/src/runtime_paths.rs`: where local binaries and models are looked for (packaged resources, then `.localflow-runtime/`).
-- `src-tauri/src/native_dictation`: the live push-to-talk coordinator: the recorder loop, hotkey tap/hold handling, the level meter, and the transcribe/format/paste worker. It composes `audio`, `asr`, `llm`, `insertion` and `overlay`; `session.rs` holds `SessionRegistry` and `latency.rs` the per-dictation timing snapshots. Carries a native `SessionRegistry` (session identity + supersede/cancel guard); the transcribe/refine/insert tail runs on a worker thread and revalidates the session before every side effect so a superseded or cancelled session never inserts.
-- `src-tauri/src/transcript`: **authoritative** deterministic formatting for the native path — spoken punctuation, explicit self-corrections, filler/stutter cleanup, sentence capitalization, user replacements/snippets, and URL/email/decimal protection. Runs before the LLM and is the fallback when the LLM is unavailable.
-- `src-tauri/src/storage`: SQLite schema initialization and the settings row. A row that cannot be parsed is copied to `settings.v1.unreadable` before defaults replace it.
-- `src-tauri/src/privacy`: redaction helpers for logs and diagnostics.
+## Module map
 
-The native dictation pipeline is: capture (`cpal`, one locked channel per recording) →
-band-limited resample to 16 kHz → local speech-to-text through the provider chain (dictionary
-terms bias Whisper through its prompt) → deterministic formatting (`transcript`) seeded from
-the user's settings (replacements, snippets) → session + target-window revalidation →
-clipboard paste (excluded from clipboard history and cloud sync) → background local Ollama
-cleanup with the configured model. Each recording carries a session id; the transcribe/refine/
-insert tail runs on a worker thread that never inserts for a superseded, cancelled
-(Escape), or focus-changed session, and the last transcript is recoverable.
-
-The workflow is state-driven:
-
-`Idle -> Preparing -> Listening -> Transcribing -> Refining -> Inserting -> Complete`
-
-Cancellation and errors are terminal states until reset. Overlapping sessions are rejected with immediate warning state.
-
-## Frontend Layer
-
-- `src/domain`: shared state machine, deterministic cleanup, transcript stabilization, insertion spacing, and response validation.
-- `src/domain/audio.ts`: bounded PCM buffers, RMS/VAD, mono downmixing, and linear resampling helpers.
-- `src/domain/asrWindows.ts`: rolling-window planning for overlapped ASR hypotheses.
-- `src/domain/whisperSidecar.ts`: shared `whisper.cpp` command planning, vocabulary prompt building, and JSON transcript parsing.
-- `src/domain/refinementPipeline.ts`: strict local-LLM JSON contract runner with repair retry and deterministic fallback.
-- `src/domain/context.ts`: context snapshot privacy policy, application categorization, and cleanup input mapping.
-- `src/domain/privacy.ts`: history retention and redaction helpers.
-- `src/domain/diagnostics.ts`: redacted diagnostics export assembly for support bundles.
-- `src/domain/performance.ts`: latency and peak-memory measurement helpers with diagnostic formatting.
-- `src/domain/settings.ts`: typed personalization and style-profile mutations used by the UI and local fallback.
-- `src/domain/commandMode.ts`: selected-text command planning, OS-command rejection, preview decisions, and command response parsing.
-- `src/domain/insertionPlan.ts`: target validation, insertion method ordering, clipboard fallback restoration timing, and duplicate insertion guards.
-- `src/domain/undo.ts`: deterministic/raw restore helpers for undoing cleanup.
-- `src/domain/networkPolicy.ts`: local-only network allowlist for ordinary dictation provider URLs.
-- `src/domain/ollama.ts`: shared local Ollama discovery and cleanup provider with localhost-only enforcement.
-- `src/services/localflowClient.ts`: Tauri command adapter with a browser fallback for frontend development.
-- `src/components`: focused UI components.
-- `src/components/VoiceOverlay.tsx`: compact overlay rendered in the Tauri `overlay` window. Subscribes to `localflow://native-dictation`. Phase events flow through React state; audio-feature events (about 36 a second, carrying level, pitch, brightness and 32 spectrum bands) only update a ref polled by the renderer, so React never re-renders at microphone-event frequency and a late feature event can never change the phase.
-- `packages/localflow-sdk/src/react/topology/`: the renderer behind `LocalFlowOverlay`, a mirrored ridgeline spectrogram. The front ridge is the live spectrum (low frequencies at the centre, highs toward both ends) and each ridge behind it is the spectrum a little earlier, so sound recedes into the distance. `spectrumMath.ts` (pure, deterministic: band conditioning, attack/release smoothing, Catmull-Rom interpolation, a synthetic spectrum for consumers without real bands, layout and colour helpers), `audioFeatureSmoothing.ts` (frame-rate-independent smoothing and the `SpectrumHistory` ring), `overlayStateVisuals.ts` (dictation phase to visual parameters, including freezing the captured spectrum while processing, and reduced-motion variants), and `topologyRenderer.ts` (single-rAF Canvas 2D loop with preallocated typed arrays, hidden-line occlusion, DPI handling, visibility pause, and full listener cleanup). The renderer contains no dictation business logic. `?view=overlay-demo` previews it in a browser with generated speech-like input.
-- `src/App.tsx`: settings, status, history, diagnostics, and mock workflow controls.
-
-## Conversation Mode
-
-A second mode beside dictation: a hotkey (`Ctrl+Alt+T`, or `Ctrl+Alt+Shift+T` when that is
-taken) switches on a hands-free spoken conversation with the local language model. The same
-hotkey interrupts a reply, or ends the conversation when the assistant is not talking.
-Dictation is ignored while a conversation is on, so the two never share the microphone.
-
-```
-microphone (kept open) -> echo canceller -> voice detector -> pauses
-    -> turn assembler <-> Parakeet (each phrase, while the user is still speaking)
-    -> command matcher --(goodbye, repeat, quiet, read this page)--> fixed action
-                       --(anything else)----------> Ollama chat, streaming
-    -> sentence chunker -> Phonon voice -> speaker queue
+```mermaid
+flowchart LR
+  subgraph entry["Entry points"]
+    hotkeys["hotkeys"]
+    lib["lib.rs: tray, commands"]
+  end
+  subgraph features["Features"]
+    dictation["native_dictation"]
+    conversation["conversation"]
+    reader["page_reader"]
+    agents["coding_agents"]
+    readaloud["tts: read-aloud, Fish S2"]
+  end
+  subgraph shared["Shared parts"]
+    audio["audio"]
+    asr["asr"]
+    llm["llm"]
+    voice["tts: phonon, stream"]
+    transcript["transcript"]
+    insertion["insertion"]
+    overlay["overlay"]
+  end
+  subgraph platform["Platform and storage"]
+    page["context/page"]
+    uia["platform/uia"]
+    process["platform/process"]
+    storage["storage, app_state"]
+    paths["runtime_paths"]
+  end
+  hotkeys --> dictation
+  hotkeys --> conversation
+  hotkeys --> reader
+  lib --> conversation
+  lib --> readaloud
+  lib --> agents
+  dictation --> audio
+  dictation --> asr
+  dictation --> transcript
+  dictation --> llm
+  dictation --> insertion
+  dictation --> overlay
+  conversation --> audio
+  conversation --> asr
+  conversation --> llm
+  conversation --> voice
+  conversation --> agents
+  conversation --> reader
+  conversation --> overlay
+  reader --> page
+  reader --> uia
+  reader --> voice
+  agents --> process
+  asr --> paths
+  conversation --> paths
+  conversation --> storage
 ```
 
-- `src-tauri/src/conversation/state.rs`: the turn-taking state machine, a pure function
-  from (state, event) to (state, effects). Phases: off, starting, listening, user speaking,
-  thinking, speaking. A conversation counter and a turn counter make late results from a
-  cancelled turn or a closed conversation harmless.
-- `conversation/engine.rs`: the threads that run a conversation, written against traits so
-  the whole lifecycle is tested with scripted audio and fake models. The loop applies
-  events; the ear reads the microphone, finds turn boundaries and enforces the limits; a
-  worker per turn transcribes, routes and answers. The model streams into the voice and the
-  voice into the speaker, so the first sentence is heard while later ones are being written.
-- `conversation/router.rs`: fixed phrases handled without the model. The model is given no
-  tools; nothing it reads or writes can trigger an action.
-- `conversation/chunker.rs`: cuts the streamed reply into speakable pieces (first piece at a
-  clause, later ones at sentence ends) and removes markup a voice would read aloud.
-- `conversation/memory.rs`: the history sent to the model. In memory only, bounded to fit the
-  fixed context size, cleared when the conversation ends. An interrupted reply is remembered
-  only as far as it was heard.
-- `conversation/mod.rs`: opens the real devices and models, and connects the engine to the
-  hotkey, the tray, the overlay and the settings window.
-- `audio/devices.rs`: `MicStream` and `SpeakerStream`, long-lived `cpal` streams whose
-  callbacks neither allocate nor lock (`audio/ring.rs`). The speaker can be told to stop: it
-  fades out over 6 ms and discards what was queued.
-- `audio/speech_detector.rs` and `audio/turn_segmenter.rs`: Silero VAD (through the speech
-  library already linked), with loudness against an adaptive noise floor as the fallback,
-  and a frame-counted segmenter: 96 ms of speech starts a turn and 250 ms of silence is
-  reported as a pause.
-- `conversation/assembler.rs`: decides which pause ends the turn (pure, counted in audio
-  samples). At each pause the speech not yet transcribed is sent to the recogniser; if the
-  user carries on, that text is kept and only what follows is sent next time, so a long
-  turn costs no more than its last phrase. Once everything said is transcribed, the
-  silence needed to end the turn depends on how finished it reads: 400 ms after a complete
-  question or statement, 700 ms when unsure, 1.4 s after something that trails off.
-- `conversation/turn_completion.rs`: judges a transcript as complete, incomplete or unsure
-  from its words (English). Tuned so that it does not call an unfinished sentence finished;
-  when in doubt it says unsure.
-- `audio/echo.rs`: `EchoCanceller` and a pure-Rust port of the WebRTC canceller (`sonora`).
-  It is given what the speaker actually played (`AudioSink::take_played`) and removes it
-  from the microphone. Where the audio driver already does this, it detects that and
-  passes the microphone through.
-- `conversation/echo_guard.rs`: the last check on an interruption: if its transcript is
-  just a stretch of what the assistant was saying, it was the assistant's own voice.
-- `llm/chat.rs`: `ChatProvider` and the streaming Ollama client. Loopback only, cancellable
-  by closing the connection, same context size as dictation cleanup.
-- `tts/stream.rs` and `tts/phonon.rs`: `StreamingTextToSpeech` and the Phonon 31m voice,
-  in-process on at most four CPU threads.
+## Native modules
 
-Rules the design enforces:
+- `hotkeys`: global hotkeys through Tauri's global-shortcut plugin. Dictation registers both
+  `Ctrl+Alt+Space` and `Ctrl+Alt+Shift+Space`; conversation (`Ctrl+Alt+T`) and reading
+  (`Ctrl+Alt+R`) each try the plain combination first and the `Shift` variant only if it is
+  taken. `Escape` is registered only while a dictation records. Dictation is ignored during
+  a conversation, and the conversation and reading hotkeys check the other modes, so only
+  one thing uses the microphone or the speaker.
+- `native_dictation`: the live push-to-talk coordinator: the recorder loop, tap and hold
+  handling, the level meter, and the transcribe, format and paste worker. `session.rs` holds
+  `SessionRegistry` (session identity and the supersede/cancel guard) and `latency.rs` the
+  per-dictation timings. The worker revalidates the session before every side effect, so a
+  superseded or cancelled session never pastes.
+- `workflow`: an explicit dictation state machine. It is exercised only by the mock-session
+  commands, not the live hotkey path; see `REPO_AUDIT.md` §2.
+- `audio`: `capture.rs` (dictation's `cpal` input, one locked channel), `vad.rs` (dictation's
+  loudness end-of-speech detector), `resample.rs` (band-limited resampling to 16 kHz, plus a
+  stateful `StreamResampler`), `wav.rs`, `spectrum.rs` (the overlay's analyser), and the
+  conversation parts: `devices.rs` (`MicStream`, `SpeakerStream`), `ring.rs`, `echo.rs`,
+  `speech_detector.rs`, `turn_segmenter.rs` and `smart_turn.rs`.
+- `asr`: the speech-to-text boundary and its engines (see [Speech recognition](#speech-recognition)).
+  `streaming.rs`, `stabilizer.rs` and `windows.rs` are an unused streaming foundation kept for
+  later work; only their tests run.
+- `llm`: `ollama.rs` (the loopback-only client: no proxy, no redirects, cloud model tags
+  refused, one fixed `num_ctx` of 4096 so the model is never reloaded between callers),
+  `cleanup.rs` (dictation clean-up: prompt, strict JSON contract, one repair attempt) and
+  `chat.rs` (`ChatProvider` and the streaming, cancellable `OllamaChat` for conversation).
+- `transcript`: the authoritative deterministic formatting for dictation: spoken
+  punctuation, explicit self-corrections, filler and stutter removal, capitalisation, the
+  user's replacements and snippets, and URL, email and decimal protection.
+- `insertion`: `target.rs` (the window focused when dictation started, and the fail-closed
+  check before pasting) and `clipboard_paste.rs` (transient clipboard write, `Ctrl+V`, and
+  the tidy-up afterwards).
+- `conversation`: the conversation engine (see [Conversation engine](#conversation-engine)).
+- `tts`: voices (see [Voices](#voices)).
+- `context`: `context/page` is the page model for reading aloud; `context/mod.rs` is the
+  older, unused context snapshot interface.
+- `page_reader.rs`: reading a window aloud (see [Reading a window aloud](#reading-a-window-aloud)).
+- `coding_agents`: voice commands for coding agents (see [Coding agents](#coding-agents)).
+- `platform`: `uia/` (UI Automation on a dedicated thread) and `process.rs` (child processes
+  in kill-on-close job objects). AGENTS.md asks for platform code to live here; Win32 calls in
+  `asr/sidecar.rs` and `overlay.rs` still sit outside it.
+- `overlay.rs`: the floating overlay window: phase and audio-feature events on
+  `localflow://native-dictation`, show and hide with the auto-hide timer, and placement above
+  the taskbar.
+- `runtime_paths.rs`: where binaries and models are looked for: the packaged resources, then
+  `.localflow-runtime/` next to the source checkout (that path is compiled in).
+- `storage`: SQLite schema and the settings row. `app_state.rs`: settings structs and the
+  `LocalFlowRuntime` state. `privacy`: redaction helpers. `cancel.rs`: the shared
+  `CancelFlag`. `desktop_health.rs`: the health file written on phase changes.
 
-- **Talking over the assistant.** While a reply is spoken the microphone, with the
-  assistant's voice removed, is watched for the user. Speech has to be surer (0.65 rather
-  than 0.5) and longer (288 ms rather than 96 ms) than an ordinary start of turn. Then the
-  reply is cut off (a 6 ms fade), its unheard part is forgotten, and what the user is
-  saying becomes their next turn, from its first word. The hotkey still interrupts too.
-- **The assistant must not answer itself.** Three layers: echo cancellation, the stricter
-  gate above, and the transcript check in `echo_guard.rs`. While the assistant is thinking
-  the microphone is ignored. Without a working echo canceller, the microphone is ignored
-  while it speaks as well, and interrupting is by hotkey only.
-- **Limits.** 45 s of silence ends a conversation, as does 10 minutes in total; one turn is
-  cut at 60 s. A microphone that reports an error or delivers nothing for 3 s ends it.
-- **Nothing said is logged or stored.** Notices from the engine carry phases, fixed
-  messages, counts and timings; a test checks that no transcript or reply text appears in
-  them.
+## Dictation pipeline
 
-Measurements are in `benchmarks/CONVERSATION_BENCHMARK.md`.
-
-## Reading a Window Aloud
-
-`Ctrl+Alt+R` (or `Ctrl+Alt+Shift+R`) over any window reads it aloud and stops when pressed
-again. In a conversation, "read this page", "next paragraph", "go back", "read that again"
-and "read from the top" do the same through the conversation's voice. No language model is
-involved: the page's own words go to the voice.
-
+```text
+hotkey -> capture (cpal, one locked channel) -> loudness end of speech (550 ms)
+    -> band-limited resample to 16 kHz -> speech-to-text through the provider chain
+       (dictionary terms bias the recogniser)
+    -> deterministic formatting (transcript), seeded from the user's replacements and snippets
+    -> session and target-window revalidation -> clipboard paste
+    -> background Ollama clean-up (its result only replaces the recoverable last transcript)
 ```
+
+The paste is excluded from clipboard history and cloud sync, and the earlier clipboard text
+is restored afterwards. A superseded, cancelled (`Escape`) or focus-changed session never
+pastes, and the last transcript is kept in memory for "Copy last transcript".
+
+## Conversation engine
+
+A hotkey switches on a hands-free conversation with the local language model. The engine is
+in `src-tauri/src/conversation`, written against traits (audio source and sink, speech
+detector, speech-to-text, chat model, voice, turn model, coding agents, page source) so the
+whole lifecycle is tested with scripted audio and fake models. `conversation/mod.rs` supplies
+the real devices and models and connects the engine to the hotkey, the tray, the overlay and
+the settings window.
+
+| File                 | Role                                                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `state.rs`           | The turn-taking state machine: a pure function from (state, event) to (state, effects).        |
+| `engine.rs`          | The threads: the loop, the ear, the transcriber, the turn judge and one worker per turn.       |
+| `assembler.rs`       | Decides which pause ends the turn, from what the recogniser and the turn model returned. Pure. |
+| `turn_completion.rs` | The text judge: complete, incomplete or unsure, from the words. English, rule-based.           |
+| `barge_in.rs`        | Judges speech over a held reply: a real interruption, a backchannel or an echo. Pure.          |
+| `echo_guard.rs`      | Whether a transcript is a stretch of what the assistant was saying.                            |
+| `router.rs`          | Fixed control phrases, matched before any model sees the turn.                                 |
+| `agents.rs`          | The conversation's side of the coding-agent commands.                                          |
+| `chunker.rs`         | Cuts the streamed reply into speakable pieces and removes markup.                              |
+| `speaking.rs`        | Speaks a sequence of pieces; `SpeakerGate` decides which turn's reply may use the speaker.     |
+| `memory.rs`          | The bounded, in-memory, turn-ordered history sent to the model.                                |
+
+### Threads
+
+- The **loop** owns `ConversationState`, applies events through `state::transition`, and
+  carries out the effects it returns.
+- The **ear** reads the microphone for the whole conversation. It runs the echo canceller,
+  the speech detector, the segmenters and the turn assembler, sends phrases to the
+  **transcriber** thread and pauses to the **turn judge** thread, enforces the time limits,
+  and holds or releases replies.
+- A **turn worker** per user turn decides what the turn is and produces the reply: a fixed
+  line, page text, a coding-agent command, or the model's streamed answer through the voice
+  into the speaker. The model streams into the voice and the voice into the speaker, so the
+  first sentence is heard while later ones are still being written.
+
+Events carry the conversation or turn number they belong to. The ear hands a finished turn
+to the loop by number (`Message::TurnEnded { utterance }`), not through a shared slot.
+
+### State machine
+
+```mermaid
+stateDiagram-v2
+  [*] --> Off
+  Off --> Starting: Toggle
+  Starting --> Listening: Ready
+  Starting --> Off: StartFailed or Toggle
+  Listening --> UserSpeaking: SpeechStarted
+  UserSpeaking --> Listening: TurnAbandoned
+  Listening --> Thinking: SpeechEnded
+  UserSpeaking --> Thinking: SpeechEnded
+  Thinking --> Speaking: ReplyAudioStarted
+  Speaking --> Thinking: ReplyWaiting
+  Thinking --> Listening: NoReply, ReplyFinished, ReplyFailed or Toggle
+  Speaking --> Listening: ReplyFinished, ReplyFailed or Toggle
+  Thinking --> UserSpeaking: InterruptionConfirmed
+  Speaking --> UserSpeaking: InterruptionConfirmed
+  Thinking --> Off: TurnRouted End
+  Speaking --> Off: HandedToAgent
+  Listening --> Off: Toggle or IdleTimeout
+  UserSpeaking --> Off: Toggle
+```
+
+`MaxDuration`, `DeviceLost` and `EndRequested` (app exit) end a conversation from any phase.
+Ending cancels the current turn and bumps the turn number, so anything still in flight is
+ignored.
+
+`held` is a flag on `Thinking` and `Speaking`. `BargeIn` sets it and emits `PauseReply`;
+`FalseInterruption` clears it and emits `ResumeReply`; `InterruptionConfirmed` clears it and
+emits `CancelTurn`. Whatever ends a hold, `transition` adds a `ResumeReply` after any
+`CancelTurn`, so the speaker is never left paused and nothing cancelled is heard.
+
+The hotkey (`Toggle`) interrupts while the assistant has the floor (`Thinking`, `Speaking`)
+and ends the conversation otherwise. `ReplyWaiting` returns to `Thinking` while a
+coding-agent question runs, so the microphone is listened to as while any reply is
+prepared.
+
+### The ear's stages
+
+The ear keeps its own view of who has the floor (`Stage` in `engine.rs`):
+
+- `Closed`: not acting on the microphone until the floor is first given to the user.
+- `User`: the user has the floor; the assembler is finding the start and end of their turn.
+  It records whether the turn began over a reply (`over_reply`, so it might be the
+  assistant's echo) and whether it began on the user's own floor (`own_floor`, the only kind
+  of turn that may answer a coding-agent read-back). `continues` holds the earlier text when
+  the user carried on before the reply to it was heard.
+- `Assistant`: a turn was handed over and the assistant has the floor. Only the start of
+  speech over it is watched for, through the stricter barge-in segmenter.
+- `Holding`: the user started speaking over the assistant and the reply is held while their
+  words are judged.
+
+The microphone is ignored for 300 ms after the assistant stops speaking (`reopen_guard`), so
+the last of its own voice is not taken for the user.
+
+### Turn flow
+
+```mermaid
+flowchart TD
+  mic["Microphone, MicStream"] --> aec["Echo canceller, audio/echo.rs"]
+  aec --> vad["Speech detector: Silero, or loudness"]
+  vad --> seg["Turn segmenter: 96 ms of speech starts a turn,<br/>250 ms of silence is a pause"]
+  seg --> asm["Turn assembler"]
+  asm -->|"each pause"| asr["Transcriber: the phrase since the last pause"]
+  asm -->|"each pause"| st["Turn judge: Smart Turn on the last 8 s"]
+  asr --> asm
+  st --> asm
+  asm -->|"silence reaches 400, 700 or 1,400 ms"| commit["Commit: the turn's text"]
+  commit --> loop["Loop: SpeechEnded, then BeginTurn"]
+  loop --> worker["Turn worker"]
+  worker --> dialog{"Coding-agent dialog"}
+  dialog -->|"a command, a question back, a read-back"| fixed["Fixed line or agent run"]
+  dialog -->|"pass on"| router{"router.rs"}
+  router -->|"goodbye, quiet, repeat, read"| fixed
+  router -->|"anything else"| chat["Ollama chat, streaming"]
+  chat --> chunk["Sentence chunker"]
+  chunk --> voice["Phonon voice"]
+  fixed --> voice
+  voice --> gate["SpeakerGate"]
+  gate --> spk["Speaker, SpeakerStream"]
+  spk -.->|"what was played"| aec
+  spk -.->|"user talks over it"| hold["Hold and judge, see below"]
+```
+
+While the user speaks, the engine sends Ollama a one-token request about every 400 ms
+(`ChatProvider::keep_warm`), so a laptop GPU has not dropped to its lowest power state by the
+time the question is ready ([benchmark](benchmarks/CONVERSATION_BENCHMARK.md)).
+
+### Turn assembler and the two turn judges
+
+`assembler.rs` is pure and counts time in audio samples. At each 250 ms pause it asks for
+the speech not yet transcribed to be transcribed. If the user carries on, that text is kept
+and only what follows is sent at the next pause, so a long turn costs no more than its last
+phrase. Once everything said is transcribed, the silence needed to end the turn depends on
+`Readiness`: 400 ms when ready, 700 ms when unsure, 1.4 s when not ready.
+
+Two judges set the readiness:
+
+- The **text judge** (`turn_completion.rs`, `default_readiness` in `conversation/mod.rs`)
+  reads the transcript. It returns complete only on positive evidence, treats punctuation as
+  weak evidence (the recogniser puts full stops where the speaker only took a breath), and
+  says unsure when in doubt.
+- **Smart Turn** (`audio/smart_turn.rs`), Pipecat's v3.2 model, hears the voice. It runs
+  in-process through `tract` (pure Rust, pinned to 0.23.10) on its own thread, beside the
+  recogniser, on the last 8 s of the turn. Only the full-precision `smart-turn-v3.2-gpu.onnx`
+  is used: the 8-bit `-cpu` file gives wrong answers in `tract`.
+
+`combined_readiness` combines them. The voice decides and the words move it one step:
+
+| Smart Turn says                  | Words: ready | Words: unsure | Words: not ready |
+| -------------------------------- | ------------ | ------------- | ---------------- |
+| Finished (probability above 0.5) | Ready        | Ready         | Unsure           |
+| Not finished                     | Unsure       | Not ready     | Not ready        |
+| Still listening to this pause    | Unsure       | Unsure        | Not ready        |
+| No model, or it failed           | Ready        | Unsure        | Not ready        |
+
+On Smart Turn's public test set this cut the share of unfinished turns ended too early from
+28.4 % (text judge alone) to 4.5 %, with finished turns answered slightly sooner
+([benchmark](benchmarks/TURN_JUDGE_BENCHMARK.md)). An answer belongs to one pause: if the user
+speaks again it is discarded, and a late answer for an earlier pause is ignored. Without the
+model file, `best_turn_model` returns none and the words decide alone.
+
+### Talking over a reply: hold and resume
+
+Speech over the assistant goes through a second, stricter segmenter: it must start above
+0.65, stay above 0.5 (short dips of up to 32 ms pause the count rather than reset it) and
+last 288 ms, against 0.5 and 96 ms for an ordinary start of turn. Then the reply is held,
+not cancelled (LiveKit Agents' "false interruption"). `barge_in.rs` judges the words as they
+are transcribed.
+
+```mermaid
+flowchart TD
+  start["User speaks while the assistant<br/>is thinking or speaking"] --> gate{"Barge-in gate:<br/>288 ms above 0.65, staying above 0.5"}
+  gate -->|"no"| ignored["Ignored"]
+  gate -->|"yes"| hold["BargeIn: speaker paused, 6 ms fade<br/>the reply goes on being written"]
+  hold --> words["The user's words are transcribed"]
+  words --> judge{"judge_interruption"}
+  judge -->|"stop word or control phrase"| real["InterruptionConfirmed: CancelTurn"]
+  judge -->|"two real words over a reply,<br/>or one before any reply played"| real
+  judge -->|"blank, filler, backchannel, echo"| resume["FalseInterruption: ResumeReply"]
+  judge -->|"one word over a reply"| more["Wait for more"]
+  more --> words
+  hold -->|"1.5 s of quiet, nothing decided"| resume
+  hold -->|"still held after 6 s"| real
+  real --> next["What the user is saying is their next turn"]
+```
+
+- **Real**: a stop word ("stop", "wait", "no", "hold", "cancel", ...), a control phrase from
+  `router.rs` (end, quiet, repeat, and the reading moves: from the top, next, previous,
+  again; not "read this page" and its kin), or at least two words that are neither fillers
+  nor the assistant's own.
+- **Backchannel**: nothing, fillers, or an acknowledgement ("mm-hmm", "yeah", "okay", "got
+  it", "go on", "keep reading").
+- **Echo**: `echo_guard::is_echo_of` or a fragment of the reply being spoken.
+- The two-word minimum applies only while the reply is audible (Pipecat). Speech that began
+  while the reply was still being prepared is the user carrying on, and one word of substance
+  is enough; that turn's earlier text becomes `continues`, and the two are sent to the model
+  as one message (`ConversationMemory::push_user_continuing`). This is how "read this page"
+  followed by "from the top" becomes one command.
+- While a coding-agent question runs, a hold uses `judge_while_agent_works` instead: only
+  "stop that" and its synonyms stop the agent; other speech gets a reminder; a long hold
+  resumes rather than cancels, so a minute's work is not lost to a remark. The question is
+  registered as a job before "Asking Claude..." is spoken, so talking over that line cannot
+  cancel the confirmed question. Once the answer is in, the hold switches to the ordinary
+  rules (`HeldReply::agent_finished`), and "stop that" then stops the answer being spoken.
+
+`AudioSink::pause` fades the speaker out over 6 ms and stops reading the queue; held audio is
+never counted as played, so it is never counted as heard. `resume` fades back in.
+
+### Not answering itself
+
+Three layers keep the assistant's own voice from counting as the user:
+
+1. **Echo cancellation** (`audio/echo.rs`): a pure-Rust port of the WebRTC AEC3 canceller
+   (`sonora`, pinned to 0.3.0). The speaker reports exactly what it played
+   (`AudioSink::take_played`) as the reference. When the microphone is far quieter than the
+   speaker, because the audio driver already removes it, the canceller detects this and
+   passes the microphone through. It adds about 28 ms of delay.
+2. **The stricter barge-in gate** above.
+3. **The transcript check**: an interruption whose words are a stretch of what was being
+   said is an echo (`echo_guard.rs`).
+
+If the canceller cannot be built, the pass-through `NoEchoCancellation` is used, the ear
+ignores the microphone while the assistant speaks, and interrupting is by hotkey only.
+
+### Turn numbers, the speaker gate and memory
+
+- **Turn numbers.** `turn` changes for every user turn and every interruption, and
+  `conversation` every time the mode is switched on. A late result from a cancelled turn or
+  a closed conversation no longer matches and is ignored.
+- **The speaker gate.** Each reply speaks through its own gated sink (`SpeakerGate` in
+  `speaking.rs`). Cancelling a turn closes the gate to it and silences the queue in one step,
+  so a cancelled reply that is slow to notice cannot play over, flush, or cut off the reply
+  after it. `speak_pieces` reports how many pieces were heard to the end
+  (`Spoken::finished_pieces`), which is how a page's reading position and the memory advance
+  only as far as the user heard.
+- **Turn-ordered memory.** `ConversationMemory` keeps each entry with its turn number and in
+  turn order, however late it is recorded: an interrupted reply is recorded when it stops,
+  which can be after the user's next words, and still goes before them. Only what was heard
+  of a reply is kept. History is bounded to 8,000 characters to fit the 4,096-token context,
+  trimmed rather than summarised, and cleared when the conversation ends. The system prompt
+  is kept byte-for-byte stable so Ollama can reuse its cached evaluation.
+
+### Limits and rules
+
+- 45 s of silence while listening ends a conversation, as do 10 minutes in total and a
+  microphone that errors or delivers nothing for 3 s. One turn is cut at 60 s.
+- The language model has no tools. Control phrases and coding-agent commands are matched in
+  code on the user's own transcript before the model is asked; the model's output is only
+  spoken.
+- Nothing said is logged or stored. `Notice` carries phases, fixed messages, counts and
+  timings; tests check that no transcript, reply or page text appears in notices or in the
+  next model request.
+
+## Speech recognition
+
+`src-tauri/src/asr`:
+
+- `provider.rs`: `SpeechToTextProvider` (mono 16 kHz samples, a language and an optional
+  vocabulary prompt in; text and the engine's name out), the typed `AsrError`, the
+  per-utterance deadline, and `FallbackProvider`. A failure falls back to another local
+  engine, never a remote one.
+- `transcribe_cpp.rs`: the in-process engine for GGUF models (Parakeet TDT 0.6B v3) through
+  the `transcribe-cpp` crate. The model is loaded once and kept; a watchdog cancels a run that
+  passes its deadline through the library's abort callback; a failed run drops the session so
+  the next one reloads it. Its native logging is off and it opens no socket.
+- `whisper_server.rs`: a supervised persistent `whisper-server.exe` on `127.0.0.1` with an
+  ephemeral port, in-memory WAV, restart on exit, deadline kill, start back-off and a check
+  that the listener belongs to the process LocalFlow started.
+- `whisper_cli.rs`: one `whisper-cli.exe` process per utterance; the fallback and
+  low-resource engine.
+- `sidecar.rs`: hidden-process launch, the kill-on-close job object and memory measurement.
+- `engine_select.rs`: `plan_asr_engine`, a pure, tested function, and `resolve_asr`, which
+  builds the chain or reuses the loaded one from the `AsrEngines` state, shared by dictation
+  and conversation.
+
+| Condition                                                    | Engine chain                                                                           |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| Model is a `.gguf` file (default: Parakeet TDT 0.6B v3)      | `transcribe-cpp` in-process, kept loaded, then `whisper-cli` with tiny.en if installed |
+| Same, with low-resource mode and a Whisper model installed   | `whisper-cli` only; nothing stays loaded                                               |
+| Model is a `ggml-*.bin` Whisper file                         | `whisper-server` (persistent), then `whisper-cli` with the same model                  |
+| Same, with low-resource mode or `whisper-server.exe` missing | `whisper-cli` only                                                                     |
+
+Model resolution: `LOCALFLOW_WHISPER_MODEL`, then Settings > Models > Whisper model path if
+the file exists, then the first installed of `parakeet-tdt-0.6b-v3-Q5_K_M.gguf` and
+`ggml-tiny.en-q5_1.bin`. Conversation uses the same resolution, so low-resource mode also
+moves a conversation onto the Whisper CLI.
+
+### GPU or CPU
+
+- A default build runs `transcribe-cpp` on the CPU with the library's thread count
+  (usable logical CPUs, at most 8). Every logical CPU (22 on the development laptop) never
+  finished the benchmark corpus.
+- The `gpu-vulkan` Cargo feature (`npm run tauri:build:gpu`) builds it with Vulkan.
+  `choose_gpu` considers only discrete Vulkan GPUs, never integrated ones; among them one
+  whose description contains "NVIDIA" wins, then the one with the most memory. The CPU is
+  used when there is no discrete GPU or loading fails, and a run that fails on the GPU is
+  retried once on the CPU. Each fallback writes one log line with the reason.
+- Loading and warm-up are separate. `prepare` only loads the model; dictation calls it as
+  recording starts, so a warm-up never holds the model while the user's first phrase waits.
+  `warm_up`, called when a conversation opens and before the microphone does, loads the
+  model if needed and transcribes quiet noise so the first real phrase does not pay one-time
+  costs: one 2 s clip on the CPU, and 2, 4 and 10 s clips on a GPU, because Vulkan prepares
+  kernels for larger shapes only when they are first needed. A warm-up that fails or times
+  out is logged and ignored as long as the model loaded.
+- `LOCALFLOW_ASR_DEVICE` (`cpu`, `gpu`) and `LOCALFLOW_ASR_THREADS` (a number, or `auto`)
+  override the defaults; an unparsable value is ignored. The Threads field in Settings >
+  Models is not read.
+- The GPU build imports `vulkan-1.dll` and does not start without a Vulkan loader, so the
+  feature is off by default. Silero voice detection stays on the CPU in both builds.
+
+Measurements: [ASR_BENCHMARK.md](benchmarks/ASR_BENCHMARK.md) (engines and models),
+[ASR_SPEED_BENCHMARK.md](benchmarks/ASR_SPEED_BENCHMARK.md) (threads and GPU). To add an
+engine, implement `SpeechToTextProvider` and return it from `build_asr_provider`.
+
+## Voices
+
+`src-tauri/src/tts` has two boundaries:
+
+- `stream.rs`: `StreamingTextToSpeech`, which hands audio out in pieces as it is generated
+  and takes a cancel flag. `phonon.rs` implements it with Gradium Phonon 31m (English,
+  24 kHz) in-process on at most four CPU threads; with one thread per logical core it barely
+  kept up with real time. The library is built without its download feature. This voice
+  speaks conversation replies and page reading.
+- `provider.rs`: `TextToSpeechProvider`, which returns a whole clip with a deadline, and the
+  text preparation shared by both. `fish_s2.rs` implements it with Fish Audio S2 Pro through
+  the `s2.cpp` server, supervised like the whisper server. `playback.rs` plays the clip.
+  `mod.rs` is the read-aloud coordinator behind "Read last transcript aloud": a newer request
+  or a stop supersedes the current one, the engine is unloaded after five minutes without
+  use, and phase changes go out on `localflow://tts` without the text. Its files are
+  installed by `scripts/Build-FishS2.ps1` and `scripts/Get-FishModel.ps1` and never bundled.
+
+`audio/devices.rs` has the long-lived streams. `MicStream` and `SpeakerStream` callbacks
+neither allocate nor lock (`audio/ring.rs`). The speaker can `flush` (fade out over 6 ms and
+discard the queue), `pause` and `resume` (fade out and in, keeping the queue), and reports
+what it played for the echo canceller.
+
+To add a conversation voice, implement `StreamingTextToSpeech`; for read-aloud, implement
+`TextToSpeechProvider` and return it from `resolve_engine`.
+
+## Reading a window aloud
+
+```text
 hotkey or spoken command -> focused window -> capture policy (program, title)
     -> UI Automation tree (plain data) -> capture policy again (password focus)
     -> main content -> blocks -> reading position -> sentence pieces -> voice -> speaker
 ```
 
-- `src-tauri/src/platform/uia/`: reads one window's accessibility tree into plain data
+- `platform/uia/`: reads one window's accessibility tree into plain data
   (`context/page/raw.rs`). All COM work runs on one dedicated thread; callers wait with a
-  deadline, and a worker stuck in a hung application is abandoned and replaced. The tree is
-  fetched in one cached call. It never enters password or edit fields. `window_info` gives
-  a window's program, title and class through plain Win32, without reading its content.
-- `src-tauri/src/context/page/policy.rs`: whether a window may be read. Applied before any
-  content is fetched and again afterwards.
+  deadline (4 s by default), and a worker stuck in a hung application is abandoned and
+  replaced. The tree is fetched in one cached call, capped at 20,000 nodes. It records names
+  only, never enters password or edit fields, and takes no text from a password field.
+  `window_info` gives a window's program, title and class through plain Win32.
+- `context/page/policy.rs`: whether a window may be read. Applied before any content is
+  fetched and again afterwards. Refuses password focus, private windows (by English title
+  words), password managers and credential prompts (by program), LocalFlow's own windows, and
+  unidentified programs.
 - `context/page/extract.rs`: finds the main content (a `main` landmark, a single article,
   otherwise the densest prose region), drops navigation, banners, footers, consent dialogs,
   controls and hidden text, and cuts the rest into headings, paragraphs, list items, table
   rows, quotes and image descriptions with stable ids.
-- `context/page/cursor.rs`: the reading position per page, in memory, for up to 16 pages.
-  It advances only by blocks that were heard to the end.
-- `context/page/speech.rs`: cuts a block into sentence-sized pieces without changing a
-  word; a property test checks the words out equal the words in.
+- `context/page/cursor.rs`: the reading position per page, in memory, for up to 16 pages. It
+  advances only by blocks that were heard to the end.
+- `context/page/speech.rs`: cuts a block into sentence-sized pieces without changing a word;
+  a property test checks that the words out equal the words in.
 - `context/page/types.rs`: `VerbatimText` can only be made from page text, and its debug
   output shows a length, never the text.
-- `src-tauri/src/page_reader.rs`: ties these to the hotkey, the voice and the speaker, and
-  implements the conversation's `PageSource`.
-- `conversation/speaking.rs`: speaks a sequence of pieces and reports how many were heard;
-  shared by conversation replies and page reading.
+- `page_reader.rs`: ties these to the hotkey, the Phonon voice and the speaker, and
+  implements the conversation's `PageSource`. No language model is involved: page text goes
+  only to the voice, never to the model, the memory, a notice or a log.
 
 `cargo run --release --example page_probe -- "<window title>"` shows what would be read from
 a window as counts and kinds (add `--show-text` only for pages you wrote yourself).
 
-## Web UI Boundary
+## Coding agents
 
-The web UI is confined in two ways (`src-tauri/tauri.conf.json`, `src-tauri/capabilities/`):
+`src-tauri/src/coding_agents` recognises the commands with fixed rules, confirms them, and
+carries them out. `conversation/agents.rs` is the conversation's side.
 
-- A content security policy allows scripts and styles from the app itself only, and
-  network connections only to the app's own IPC. The Models screen asks the native layer
-  which Ollama models are installed (`list_ollama_models`), so the packaged web UI needs no
-  network access at all. Development builds use a looser policy for Vite's hot reload and
-  for asking Ollama directly from a browser.
-- Every command is declared in `src-tauri/build.rs` and granted per window. The `main`
-  window may call them; the `overlay` window may only listen for events, so it cannot
-  read transcripts or change settings. A new command must be added to `build.rs` and to
-  `capabilities/main.json`, or the web UI cannot call it.
+| File              | Role                                                                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `grammar.rs`      | Rules of named slots (action word, agent, joiner, project, tail, question) in the style of dragonfly; `recognize` returns a `Recognition`. |
+| `phrases.rs`      | Splits a transcript into words with byte positions, and replaces known phrases.                                                            |
+| `spoken_forms.rs` | Spoken forms for folder names, ported from Talon community; `match_key` compares with spaces and punctuation removed.                      |
+| `projects.rs`     | The user's projects, `validate_folder`, `clean_spoken_names`, and `ProjectIndex` (one, many or no projects for a heard name).              |
+| `dialog.rs`       | The clarify-and-confirm state machine: `Idle`, `ChoosingProject`, `Confirming`. Pure.                                                      |
+| `speech.rs`       | Every sentence spoken: read-backs, questions back, outcomes, and `speakable` for answers.                                                  |
+| `agent.rs`        | The `CodingAgent` trait, `ClaudeCode`, `CursorEditor`, `NotSetUp`, `CodingAgents`, and the `Launcher` and `Locator` seams for tests.       |
+| `args.rs`         | Every argument list, and `check_no_permission_skipping`.                                                                                   |
+| `detect.rs`       | Finds the real executables (never npm's `.cmd` or `.ps1` shims) and probes `claude --version` and `--help`.                                |
+| `ask.rs`          | The read-only background question and the reading of its JSON result.                                                                      |
+| `run.rs`          | `run_captured`: a program with a time limit, a cancel flag and captured output, inside a kill-on-close job.                                |
+| `commands.rs`     | Tauri commands for the settings screen. None of them starts an agent.                                                                      |
 
-## Provider Boundary
+```mermaid
+flowchart TD
+  turn["Finished user turn: the user's own transcript only"] --> waiting{"AgentDialog waiting for an answer?"}
+  waiting -->|"yes"| heard{"Question heard to its end, answer begun<br/>at least 150 ms after it, on the user's floor?"}
+  heard -->|"no"| ignore["Ignore the turn"]
+  heard -->|"yes"| classify{"classify_reply"}
+  classify -->|"yes"| execute["Execute"]
+  classify -->|"anything else"| declined["Say: OK, I won't."]
+  waiting -->|"no"| recognize{"grammar::recognize"}
+  recognize -->|"not a command"| router["router.rs, then the model"]
+  recognize -->|"project unclear"| choose["Ask which project: ChoosingProject"]
+  recognize -->|"complete command"| readback["Read back: Confirming, 15 s once heard"]
+  execute --> folder["validate_folder again"]
+  folder --> kind{"Which command?"}
+  kind -->|"open Claude Code"| targs["terminal_args, check_no_permission_skipping"]
+  targs --> launch["SystemLauncher checks again, starts wt.exe"]
+  launch --> handed["HandedToAgent: the conversation ends"]
+  kind -->|"open in Cursor"| cursor["cursor_args: Cursor.exe with the folder"]
+  kind -->|"ask Claude"| qargs["question_args, run_captured in a job"]
+  qargs --> claude["claude.exe -p, question on stdin, 120 s limit"]
+  claude --> says["Speak: Claude says ..."]
+```
 
-Providers are intentionally narrow:
+- **Only the user's speech.** `UserSpeech` is built only from the microphone transcript;
+  page text, model replies and the assistant's own words never reach `recognize` or the
+  dialog. The language model plays no part in deciding what runs.
+- **Spoken forms.** Suggested names follow Talon community's rules (case, digit and symbol
+  boundaries, numbers in words), plus comparison with spaces removed so "local flow" matches
+  "localflow". A heard name that matches several projects, or none, is asked about. Names
+  that are also agent names, or known mishearings of them, are refused.
+- **Mishearings.** A small table ("cloud code", "clawed", "curser", "codecs", ...) is applied
+  only at the agent slot, never to a task or a question.
+- **Read-backs.** No stretch of words in any read-back counts as a yes on its own (tested in
+  `speech.rs`), so the assistant's own voice heard back cannot confirm a command. An answer
+  counts only if the read-back was spoken to its end and the answer began at least
+  `answer_guard` (150 ms) later on the user's own floor; a read-back cut off is dropped.
+- **Arguments.** `terminal_args` and `question_args` build these, one element per argument,
+  started with no shell:
 
-- ASR accepts mono 16 kHz samples, a language, and an optional vocabulary prompt, and returns text plus the engine that produced it. Every engine enforces a deadline and reports a typed error; a failure falls back to another local engine, never to a remote one.
-- Refinement accepts compact dictation-cleanup inputs and returns strict JSON.
-- Context providers never return password/protected-field content.
-- Inserters must verify the intended target before writing text.
+  ```text
+  wt.exe -w 0 new-tab -d <folder> <claude.exe> --permission-mode default
+  claude.exe -p --output-format json --permission-mode dontAsk --tools Read,Grep,Glob
+      --strict-mcp-config --setting-sources user --settings {"disableAllHooks":true}
+      [--max-turns 20] --no-session-persistence --append-system-prompt <answer style>
+  ```
+
+  The tab's mode is `manual` in Claude Code versions that renamed `default`. `--max-turns`
+  is dropped and the question retried once if the installed version calls it unknown. The
+  question goes on standard input. No user text goes on the terminal's command line: Windows
+  Terminal splits at `;` even inside quotes and expands `%NAME%`, so paths containing `;`,
+  `%` or `"` are refused.
+
+- **The guard.** `check_no_permission_skipping` refuses any list in which an option, or the
+  value after a `--` option, contains `dangerously`, `bypasspermissions` or `acceptedits`
+  (case-insensitive, so inside a `--settings` JSON too), and any `--permission-mode` other
+  than `default`, `manual`, `plan` or `dontask`. Absolute folder and program paths are not
+  searched for those words, so a folder named `dangerously-fast-ui` still opens. The guard
+  runs when a list is built and again in `SystemLauncher::launch` and `ask::run_once` before
+  anything starts.
+- **Job objects.** `platform/process.rs` creates the child suspended, assigns it to a new
+  kill-on-close job, and only then resumes it, so not even its first instruction runs outside
+  the job. Cancelling ("stop that" or the hotkey), the 120 s limit, or LocalFlow exiting or
+  crashing ends the whole process tree. `CLAUDECODE` is removed from the agent's environment.
+- **Detection.** `CodingAgents::detect_all` runs as each conversation starts
+  (`AgentRuntime::prepare`) and when the settings screen asks. It only runs `claude --version`
+  and `--help`; the help text decides which options and permission modes exist.
+- **The conversation hook.** `conversation/agents.rs` defines `AgentRuntime` (the host's
+  projects, availability and `execute`), `AgentDialog` (the dialog plus whether its question
+  was heard: `reply_finished`, `reply_cut`, `HeardTurn`), and `AgentJob` (a running question
+  the ear can stop or ask for a reminder). In `engine.rs`, every turn goes to the dialog
+  first (`TurnContext::plan`); only `TurnPlan::PassOn` reaches `router.rs`. A question sends
+  `ReplyWaiting` so the ear listens while it runs. After Claude Code opens,
+  `ExecutionOutcome::ends_conversation` makes the reply end with `HandedToAgent`, and the
+  conversation stops with `StopReason::AgentOpened` so the task can be dictated into the tab.
+- **Logs** name the agent, the project's spoken name, the kind of command and the outcome,
+  never the question or the answer.
+
+Codex and Cursor Agent are `NotSetUp` until their command-line tools are installed.
+
+## Tauri commands, events and capabilities
+
+Every command is declared in `src-tauri/build.rs` (`APP_COMMANDS`), registered in
+`generate_handler!` in `lib.rs`, and granted per window in `src-tauri/capabilities/`:
+
+| Area          | Commands                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| App           | `get_status`, `save_settings`, `list_ollama_models`                                                                            |
+| Mock workflow | `begin_mock_session`, `finish_mock_session`, `cancel_session`                                                                  |
+| Recovery      | `get_last_transcript`, `copy_last_transcript`                                                                                  |
+| Read-aloud    | `tts_status`, `speak_text`, `speak_last_transcript`, `stop_speaking`                                                           |
+| Conversation  | `conversation_status`, `toggle_conversation`                                                                                   |
+| Page reading  | `screen_reading_status`                                                                                                        |
+| Coding agents | `list_coding_projects`, `save_coding_project`, `remove_coding_project`, `suggest_project_spoken_names`, `detect_coding_agents` |
+
+- `capabilities/main.json`: the settings window may call all of them.
+- `capabilities/overlay.json`: the overlay window gets `core:event:default` only, so it can
+  listen for events but cannot read transcripts or change settings.
+- A new command must be added to `build.rs`, `capabilities/main.json` and `lib.rs`, or the
+  web UI cannot call it; the failure shows only at run time.
+- The coding-agent commands edit projects and run detection; none starts an agent. Project
+  folders are changed only through them: a general `save_settings` ignores that part.
+
+Events, none of which carries anything that was said or read:
+
+- `localflow://native-dictation`: overlay phases with a fixed message, and audio features
+  (level, pitch, brightness, 32 spectrum bands). Conversation and page reading borrow
+  dictation's phases.
+- `localflow://conversation`: conversation phase, stop reason and fixed message.
+- `localflow://tts`: read-aloud phase.
+- `localflow://hotkey`: dictation hotkey presses.
+
+The web UI runs under a content security policy (`tauri.conf.json`): scripts and styles from
+the app only, connections only to the app's IPC. The Models screen asks the native layer
+which Ollama models are installed (`list_ollama_models`), so the packaged web UI needs no
+network access. Development builds use a looser policy for Vite's hot reload.
+
+## Frontend layer
+
+- `src/App.tsx`: the settings window: Home, Models, Microphone, Hotkeys, Dictionary,
+  Replacements, Snippets, Styles, Coding agents, Privacy, History, Diagnostics, About. It
+  polls conversation and reading status about once a second.
+- `src/services/localflowClient.ts`: the Tauri command adapter, with a browser fallback for
+  frontend development.
+- `src/components/VoiceOverlay.tsx`: the overlay window. Phase events flow through React
+  state; audio-feature events (about 36 a second) only update a ref polled by the renderer,
+  so React never re-renders at microphone rate and a late feature event cannot change the
+  phase.
+- `packages/localflow-sdk/src/react/topology/`: the overlay renderer, a mirrored ridgeline
+  spectrogram on a single-rAF Canvas 2D loop. `?view=overlay-demo` previews it in a browser.
+- `src/domain`: shared, tested logic: `conversation.ts` and `codingAgents.ts` (what the
+  settings window shows for those features), the mock state machine, deterministic clean-up,
+  transcript stabilisation, insertion planning, the cleanup JSON contract, context and
+  privacy policy, diagnostics export, performance formatting, settings mutations, command
+  mode planning, undo, the local-only network policy, and Ollama discovery.
+
+## Provider boundaries
+
+- Speech-to-text takes mono 16 kHz samples and returns text plus the engine that produced
+  it. Every engine has a deadline and a typed error, and falls back only to another local
+  engine.
+- Dictation clean-up takes compact inputs and returns strict JSON.
+- The conversation model (`ChatProvider`) streams text, is cancelled by closing the
+  connection, and gets no tools.
+- Voices never log or return the text they speak.
+- Page sources return only text that the capture policy allowed, and only to the voice.
+- Coding agents start only from a confirmed command, with argument lists that pass the
+  permission guard.
+- Inserters verify the intended target before writing text.
 
 ## Persistence
 
-Settings structs are `#[serde(default)]`, so stored settings written before a field existed
-still load and keep the user's dictionary, replacements and snippets. SQLite is initialized under the Tauri app data directory. Milestone 1 creates tables for settings, dictation history, and dictionary entries. Later milestones will add migrations and retention jobs.
-
-## Speech-to-Text Engines
-
-`plan_asr_engine` in `asr/engine_select.rs` decides the engine chain per dictation from the
-resolved model and settings; the engine is reused until that plan changes:
-
-| Condition | Engine chain |
-|---|---|
-| Model is a `.gguf` file (default: Parakeet TDT 0.6B v3) | `transcribe-cpp` in-process, kept loaded → `whisper-cli` with tiny.en if installed |
-| Same, with low-resource mode and a Whisper model installed | `whisper-cli` only; nothing stays loaded between dictations |
-| Model is a `ggml-*.bin` Whisper file | `whisper-server` (persistent) → `whisper-cli` (same model) |
-| Same, with low-resource mode or `whisper-server.exe` missing | `whisper-cli` only |
-
-Model resolution order: `LOCALFLOW_WHISPER_MODEL`, then Settings > Models > Whisper model
-path (if the file exists), then the first installed model of
-`parakeet-tdt-0.6b-v3-Q5_K_M.gguf` and `ggml-tiny.en-q5_1.bin`.
-
-The in-process engine (`asr/transcribe_cpp.rs`) loads the model when recording starts, so it
-is warm by the end of the utterance, and holds one session behind a mutex. A watchdog cancels
-a run that passes its deadline through the library's abort callback. A failed run drops the
-session so the next dictation reloads it.
-
-The whisper server sidecar listens on `127.0.0.1` on an ephemeral port, receives audio as an
-in-memory WAV, is restarted if it exits, is killed if a request exceeds its deadline, and is
-stopped on app exit. On Windows a kill-on-close job object also stops it if LocalFlow
-crashes, and the listener's owning process is verified before audio is sent.
-
-To add an engine, implement `SpeechToTextProvider` and return it from `build_asr_provider`
-in `asr/engine_select.rs`. Capture, formatting, and insertion do not change. The loaded
-engine lives in the `AsrEngines` state, so any feature that transcribes speech shares it. Measurements
-behind the defaults are in `benchmarks/ASR_BENCHMARK.md`; the wider model review is in
-`research/VOICE_PIPELINE_REVIEW.md`.
-
-## Read-Aloud (Text-to-Speech)
-
-`src-tauri/src/tts` mirrors the speech-to-text layout:
-
-- `provider.rs`: `TextToSpeechProvider` (prepare, synthesize with a deadline, shutdown), a
-  typed `TtsError` whose messages never contain the text, and text preparation (control
-  characters removed, whitespace collapsed, length bounded at a sentence boundary).
-- `fish_s2.rs`: Fish Audio S2 Pro through the `s2.cpp` HTTP server, supervised exactly like
-  the whisper server (loopback ephemeral port, listener ownership check, restart, deadline
-  kill, start backoff, job object). The text is posted to `/generate` and the returned WAV
-  is decoded in memory.
-- `playback.rs`: resamples to the output device rate, limits the peak, fades the edges, and
-  plays through `cpal` until the audio ends or a stop flag is set.
-- `mod.rs`: the coordinator and Tauri commands (`tts_status`, `speak_text`,
-  `speak_last_transcript`, `stop_speaking`). A newer request or a stop supersedes the one in
-  progress. The engine is unloaded after five minutes without use and on app exit. Phase
-  changes are emitted on `localflow://tts` without the text.
-
-The engine and model live in `.localflow-runtime/fish` and `.localflow-runtime/models/fish`
-and are installed by `scripts/Build-FishS2.ps1` and `scripts/Get-FishModel.ps1`. They are not
-bundled. To add another voice engine, implement `TextToSpeechProvider` and return it from
-`resolve_engine`.
+SQLite lives at `localflow.sqlite3` in the Tauri app data folder
+(`%APPDATA%\app.localflow.desktop`). It has tables for settings, dictation history and
+dictionary entries; only the settings row (`settings.v1`, JSON) is written today. Settings
+structs are `#[serde(default)]`, so settings written before a field existed still load. A
+row that cannot be parsed is copied to `settings.v1.unreadable` before defaults replace it.
+Conversation memory and reading positions are in memory only.

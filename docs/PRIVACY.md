@@ -98,11 +98,13 @@ spoken "yes" to a read-back.
   Claude Code goes to Anthropic under your own Claude subscription, as with any Claude Code
   session. Claude Code starts in its normal permission mode and asks you before it edits
   files or runs commands; LocalFlow never passes options that skip those prompts.
-- "Ask Claude" sends the question you spoke, and nothing else, to Claude Code on your
-  subscription, which sends it to Anthropic. It runs in that folder with read-only tools
-  (read and search files), without the folder's own hooks, tool servers or settings, and
-  without saving the session. The answer is spoken and is never acted on. "Stop that" ends
-  it.
+- "Ask Claude" gives Claude Code, on your subscription, the question you spoke plus a fixed
+  instruction to answer in a few short spoken sentences; no page text, transcript history or
+  other context is added. Claude Code sends that to Anthropic and, to answer, may read and
+  search files in that project folder (it has read-only tools only), so the contents of files
+  it reads are sent to Anthropic too, as in any Claude Code session. It runs without the
+  folder's own hooks, tool servers or settings, and without saving the session. The answer is
+  spoken and is never acted on. "Stop that" ends it.
 - LocalFlow itself still makes no network connection for this; the agent does. Logs record
   which agent and which project name was used, never the question or the answer.
 - "Open in Cursor" only opens the folder in the Cursor editor.
