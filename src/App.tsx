@@ -1,6 +1,7 @@
 import {
   Activity,
   BookOpenText,
+  Bot,
   Braces,
   ClipboardList,
   Download,
@@ -25,6 +26,17 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import "./App.css";
 import { OverlayPreview } from "./components/OverlayPreview";
+import {
+  cleanFolderInput,
+  describeAgent,
+  examplePhrases,
+  formatSpokenNames,
+  parseSpokenNames,
+  quickFolderProblem,
+  type CodingAgentsStatus,
+  type CodingProjectView,
+  type SpokenNameSuggestion,
+} from "./domain/codingAgents";
 import { defaultStatus, pinnedOllamaModel } from "./domain/defaults";
 import { serializeDiagnosticsExport } from "./domain/diagnostics";
 import {
@@ -67,6 +79,11 @@ import {
   beginMockSession,
   cancelSession,
   copyLastTranscript,
+  detectCodingAgents,
+  listCodingProjects,
+  removeCodingProject,
+  saveCodingProject,
+  suggestProjectSpokenNames,
   finishMockSession,
   getLastTranscript,
   getStatus,
@@ -90,6 +107,7 @@ type ScreenId =
   | "replacements"
   | "snippets"
   | "styles"
+  | "agents"
   | "privacy"
   | "history"
   | "diagnostics"
@@ -104,6 +122,7 @@ const screens = [
   { id: "replacements", label: "Replacements", icon: RotateCcw },
   { id: "snippets", label: "Snippets", icon: ClipboardList },
   { id: "styles", label: "Styles", icon: SlidersHorizontal },
+  { id: "agents", label: "Coding agents", icon: Bot },
   { id: "privacy", label: "Privacy", icon: Shield },
   { id: "history", label: "History", icon: History },
   { id: "diagnostics", label: "Diagnostics", icon: Gauge },
@@ -730,6 +749,8 @@ export function App() {
         {activeScreen === "styles" && (
           <StyleEditor settings={settings} updateSettings={updateSettings} />
         )}
+
+        {activeScreen === "agents" && <CodingAgentsEditor />}
 
         {activeScreen === "privacy" && (
           <section className="panel-grid">
@@ -1387,6 +1408,303 @@ function StyleProfilePanel({
         </label>
       </div>
     </section>
+  );
+}
+
+function errorText(reason: unknown, fallback: string): string {
+  return typeof reason === "string" && reason ? reason : fallback;
+}
+
+function CodingAgentsEditor() {
+  const [projects, setProjects] = useState<CodingProjectView[]>([]);
+  const [agents, setAgents] = useState<CodingAgentsStatus | null>(null);
+  const [detecting, setDetecting] = useState(true);
+  const [draftPath, setDraftPath] = useState("");
+  const [draftNames, setDraftNames] = useState("");
+  const [namesEdited, setNamesEdited] = useState(false);
+  const [suggestion, setSuggestion] = useState<{
+    path: string;
+    result: SpokenNameSuggestion;
+  } | null>(null);
+  const [error, setError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listCodingProjects().then((next) => {
+      if (!cancelled) {
+        setProjects(next);
+      }
+    });
+    void detectCodingAgents().then((next) => {
+      if (!cancelled) {
+        setAgents(next);
+        setDetecting(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const cleanedPath = cleanFolderInput(draftPath);
+  const quickProblem = cleanedPath ? quickFolderProblem(cleanedPath) : null;
+
+  // Ask the native layer about the folder once typing pauses: whether it exists, and what it
+  // might be called aloud.
+  useEffect(() => {
+    if (!cleanedPath || quickFolderProblem(cleanedPath)) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void suggestProjectSpokenNames(cleanedPath).then((next) => {
+        if (!cancelled) {
+          setSuggestion({ path: cleanedPath, result: next });
+        }
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [cleanedPath]);
+
+  // A suggestion is only used while it is for the path currently typed.
+  const currentSuggestion =
+    suggestion && !quickProblem && suggestion.path === cleanedPath ? suggestion.result : null;
+  const folderProblem = quickProblem ?? currentSuggestion?.problem ?? null;
+  const namesValue = namesEdited
+    ? draftNames
+    : formatSpokenNames(currentSuggestion?.suggestions ?? []);
+  const canAdd = Boolean(currentSuggestion?.folder) && !folderProblem && !isSaving;
+
+  async function addProject() {
+    setIsSaving(true);
+    setError("");
+    try {
+      const next = await saveCodingProject({
+        path: cleanedPath,
+        spokenNames: parseSpokenNames(namesValue),
+      });
+      setProjects(next);
+      setDraftPath("");
+      setDraftNames("");
+      setNamesEdited(false);
+      setSuggestion(null);
+    } catch (reason) {
+      setError(errorText(reason, "The project could not be saved."));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function checkAgain() {
+    setDetecting(true);
+    setAgents(await detectCodingAgents());
+    setDetecting(false);
+  }
+
+  return (
+    <section className="panel-grid">
+      <section className="panel panel--wide">
+        <div className="panel-heading">
+          <h2>Projects</h2>
+        </div>
+        <p className="field-hint">
+          Add the folders you want to name in a conversation, and how you say each one. Separate
+          several spoken names with commas. Paths containing ; % or &quot; cannot be used: Windows
+          Terminal would read those characters as commands or variables.
+        </p>
+        <div className="inline-form inline-form--project">
+          <label className="field">
+            <span>Folder</span>
+            <input
+              value={draftPath}
+              onChange={(event) => setDraftPath(event.currentTarget.value)}
+              placeholder="C:\Users\you\projects\app"
+              spellCheck={false}
+            />
+          </label>
+          <label className="field">
+            <span>Spoken names</span>
+            <input
+              value={namesValue}
+              onChange={(event) => {
+                setDraftNames(event.currentTarget.value);
+                setNamesEdited(true);
+              }}
+              placeholder="local flow, the app"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void addProject()}
+            disabled={!canAdd}
+            title="Add project"
+          >
+            <Plus size={16} aria-hidden="true" />
+            Add
+          </button>
+        </div>
+        {cleanedPath && folderProblem ? (
+          <p className="field-hint field-hint--warning">{folderProblem}</p>
+        ) : null}
+        {error ? <p className="field-hint field-hint--warning">{error}</p> : null}
+
+        {projects.length === 0 ? (
+          <p className="empty-state">No projects yet.</p>
+        ) : (
+          <div className="setting-list">
+            {projects.map((project) => (
+              <CodingProjectRow
+                key={`${project.id}:${project.spokenNames.join("|")}`}
+                project={project}
+                onChanged={setProjects}
+                onError={setError}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <SettingsPanel title="Agents found">
+        {agents ? (
+          <div className="setting-list">
+            {agents.agents.map((status) => {
+              const view = describeAgent(status);
+              return (
+                <div className="agent-row" key={status.agent}>
+                  <div className="agent-row__heading">
+                    <strong>{view.name}</strong>
+                    <span className={`status-pill status-pill--${view.tone}`}>{view.state}</span>
+                  </div>
+                  {view.location ? <span className="agent-row__path">{view.location}</span> : null}
+                  <span className="agent-row__detail">{view.detail}</span>
+                </div>
+              );
+            })}
+            <div className="agent-row">
+              <div className="agent-row__heading">
+                <strong>Windows Terminal</strong>
+                <span
+                  className={`status-pill status-pill--${agents.windowsTerminal ? "ok" : "blocked"}`}
+                >
+                  {agents.windowsTerminal ? "Found" : "Not found"}
+                </span>
+              </div>
+              {agents.windowsTerminal ? (
+                <span className="agent-row__path">{agents.windowsTerminal}</span>
+              ) : (
+                <span className="agent-row__detail">Needed to open Claude Code in a tab.</span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <p className="empty-state">
+            {detecting ? "Looking for coding agents..." : "Detection needs the desktop app."}
+          </p>
+        )}
+        <div className="button-row agent-actions">
+          <button
+            type="button"
+            onClick={() => void checkAgain()}
+            disabled={detecting}
+            title="Look for coding agents again"
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {detecting ? "Checking" : "Check again"}
+          </button>
+        </div>
+      </SettingsPanel>
+
+      <SettingsPanel title="Saying a command">
+        <p className="field-hint">In a conversation, say for example:</p>
+        <ul className="phrase-list">
+          {examplePhrases(projects).map((phrase) => (
+            <li key={phrase}>&ldquo;{phrase}&rdquo;</li>
+          ))}
+        </ul>
+        <p className="field-hint">
+          Every command is read back and runs only after you say yes. LocalFlow never types a task
+          for you: once Claude Code opens, dictate the task into its prompt and press Enter. A
+          question runs read-only in the background and the answer is spoken, starting &ldquo;Claude
+          says&rdquo;. Say &ldquo;stop that&rdquo; to cancel it.
+        </p>
+        <p className="field-hint">
+          A question you confirm goes to Anthropic through your own Claude subscription. LocalFlow
+          itself makes no network connection, and its logs name only the agent and the project.
+        </p>
+      </SettingsPanel>
+    </section>
+  );
+}
+
+function CodingProjectRow({
+  project,
+  onChanged,
+  onError,
+}: {
+  project: CodingProjectView;
+  onChanged: (projects: CodingProjectView[]) => void;
+  onError: (message: string) => void;
+}) {
+  const [names, setNames] = useState(formatSpokenNames(project.spokenNames));
+
+  async function commitNames() {
+    const next = parseSpokenNames(names);
+    if (next.join("|") === project.spokenNames.join("|")) {
+      return;
+    }
+    try {
+      onChanged(await saveCodingProject({ id: project.id, path: project.path, spokenNames: next }));
+      onError("");
+    } catch (reason) {
+      onError(errorText(reason, "The spoken names could not be saved."));
+      setNames(formatSpokenNames(project.spokenNames));
+    }
+  }
+
+  async function remove() {
+    try {
+      onChanged(await removeCodingProject(project.id));
+    } catch (reason) {
+      onError(errorText(reason, "The project could not be removed."));
+    }
+  }
+
+  return (
+    <div className="setting-row setting-row--project">
+      <div className="project-folder">
+        <strong>{project.folderName}</strong>
+        <span>{project.path}</span>
+      </div>
+      <input
+        aria-label={`Spoken names for ${project.folderName}`}
+        value={names}
+        onChange={(event) => setNames(event.currentTarget.value)}
+        onBlur={() => void commitNames()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            void commitNames();
+          }
+        }}
+      />
+      <IconButton label="Remove project" onClick={() => void remove()} />
+      {project.folderProblem || project.sharedNames.length > 0 ? (
+        <div className="setting-row__notes">
+          {project.folderProblem ? (
+            <span className="field-hint--warning">{project.folderProblem}</span>
+          ) : null}
+          {project.sharedNames.length > 0 ? (
+            <span className="field-hint--warning">
+              Another project is also called {project.sharedNames.join(", ")}. Saying that name will
+              be asked about.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

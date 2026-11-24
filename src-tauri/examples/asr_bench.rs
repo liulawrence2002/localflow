@@ -14,16 +14,29 @@
 //! ```
 //!
 //! A config is `engine:model-file:beam:threads[:context]`. Engines: `inprocess` (a GGUF
-//! model such as Parakeet kept loaded through transcribe.cpp; beam and threads are ignored),
-//! `server` (persistent whisper-server), and `cli` (one whisper process per utterance).
-//! Context applies to Whisper only: `full` (default), `dyn`, `vad`, `dyn+vad`. The corpus
-//! directory holds `manifest.tsv` (`id<TAB>reference transcript`) and `wav/<id>.wav`.
+//! model such as Parakeet kept loaded through transcribe.cpp), `server` (persistent
+//! whisper-server), and `cli` (one whisper process per utterance). For Whisper the last field
+//! is the context: `full` (default), `dyn`, `vad`, `dyn+vad`. For `inprocess` beam is
+//! ignored, threads `0` is the library default (logical CPUs capped at 8), and the last field is the
+//! device: `cpu` (default) or `gpu` (a discrete GPU through Vulkan; needs a build with
+//! `--features gpu-vulkan`, otherwise it runs on the CPU). The corpus directory holds
+//! `manifest.tsv` (`id<TAB>reference transcript`) and `wav/<id>.wav`.
+//!
+//! Other flags:
+//!
+//! - `--sweep-threads 4,6,8,12,22` replaces each `inprocess` config with one per thread count.
+//! - `--no-warm-up` skips the warm-up transcription after load, so the first request is cold.
+//! - `--min-seconds` / `--max-seconds` keep only clips in that length range.
+//! - `--list-devices` prints the compute devices the speech library registered.
+//!
+//! When several configs run, each is compared with the first one clip by clip (identical
+//! transcripts and word edits between the two), without printing any text.
 //!
 //! Hypothesis text is never printed unless `--show-text` is passed.
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -32,7 +45,9 @@ use localflow_lib::{
     asr::{
         metrics::word_errors,
         provider::{SpeechToTextProvider, TranscriptionRequest},
-        transcribe_cpp::{TranscribeCppConfig, TranscribeCppProvider},
+        transcribe_cpp::{
+            AsrDevice, TranscribeCppConfig, TranscribeCppOptions, TranscribeCppProvider,
+        },
         whisper_cli::{WhisperCliConfig, WhisperCliProvider},
         whisper_server::{WhisperServerConfig, WhisperServerProvider},
         whisper_text::is_blank_transcript,
@@ -51,6 +66,11 @@ struct Args {
     concurrency: usize,
     passes: usize,
     idle_secs: u64,
+    sweep_threads: Vec<u32>,
+    warm_up: bool,
+    min_seconds: f64,
+    max_seconds: f64,
+    list_devices: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -64,6 +84,11 @@ fn parse_args() -> Result<Args, String> {
         concurrency: 4,
         passes: 1,
         idle_secs: 0,
+        sweep_threads: Vec::new(),
+        warm_up: true,
+        min_seconds: 0.0,
+        max_seconds: f64::INFINITY,
+        list_devices: false,
     };
 
     let mut iter = std::env::args().skip(1);
@@ -100,8 +125,31 @@ fn parse_args() -> Result<Args, String> {
             }
             "--json" => args.json = Some(PathBuf::from(value("--json")?)),
             "--show-text" => args.show_text = true,
+            "--sweep-threads" => {
+                args.sweep_threads = value("--sweep-threads")?
+                    .split(',')
+                    .map(|threads| threads.trim().parse::<u32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "--sweep-threads must be numbers like 4,6,8".to_string())?
+            }
+            "--no-warm-up" => args.warm_up = false,
+            "--min-seconds" => {
+                args.min_seconds = value("--min-seconds")?
+                    .parse()
+                    .map_err(|_| "--min-seconds must be a number".to_string())?
+            }
+            "--max-seconds" => {
+                args.max_seconds = value("--max-seconds")?
+                    .parse()
+                    .map_err(|_| "--max-seconds must be a number".to_string())?
+            }
+            "--list-devices" => args.list_devices = true,
             other => return Err(format!("unknown argument: {other}")),
         }
+    }
+
+    if !args.sweep_threads.is_empty() {
+        args.configs = expand_thread_sweep(&args.configs, &args.sweep_threads);
     }
 
     // Sidecars run with their own working directory, so every path must be absolute.
@@ -110,10 +158,54 @@ fn parse_args() -> Result<Args, String> {
     args.corpus =
         std::path::absolute(&args.corpus).map_err(|error| format!("bad --corpus path: {error}"))?;
 
-    if args.configs.is_empty() {
+    if args.configs.is_empty() && !args.list_devices {
         return Err("at least one --config engine:model:beam:threads is required".to_string());
     }
     Ok(args)
+}
+
+/// Replace each `inprocess` config with one copy per thread count; other engines are kept.
+fn expand_thread_sweep(configs: &[String], thread_counts: &[u32]) -> Vec<String> {
+    configs
+        .iter()
+        .flat_map(|spec| {
+            let parts: Vec<&str> = spec.split(':').collect();
+            if parts.first() != Some(&"inprocess") || parts.len() < 4 {
+                return vec![spec.clone()];
+            }
+            thread_counts
+                .iter()
+                .map(|threads| {
+                    let mut parts: Vec<String> =
+                        parts.iter().map(|part| part.to_string()).collect();
+                    parts[3] = threads.to_string();
+                    parts.join(":")
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn print_devices() {
+    println!(
+        "speech library compute devices (this build: {}):",
+        if localflow_lib::asr::transcribe_cpp::GPU_BUILD {
+            "gpu-vulkan"
+        } else {
+            "cpu only"
+        }
+    );
+    for device in transcribe_cpp::devices() {
+        println!(
+            "  {} [{} {:?}] {} — {} MiB total, {} MiB free",
+            device.name,
+            device.kind,
+            device.device_type,
+            device.description,
+            device.memory_total >> 20,
+            device.memory_free >> 20
+        );
+    }
 }
 
 struct Utterance {
@@ -123,7 +215,9 @@ struct Utterance {
     seconds: f64,
 }
 
-fn load_corpus(corpus: &Path, limit: Option<usize>) -> Result<Vec<Utterance>, String> {
+fn load_corpus(args: &Args) -> Result<Vec<Utterance>, String> {
+    let corpus = args.corpus.as_path();
+    let limit = args.limit;
     let manifest = std::fs::read_to_string(corpus.join("manifest.tsv"))
         .map_err(|error| format!("Could not read manifest.tsv: {error}"))?;
 
@@ -139,6 +233,9 @@ fn load_corpus(corpus: &Path, limit: Option<usize>) -> Result<Vec<Utterance>, St
         // Same resampler as the live path, so non-16 kHz corpora exercise it too.
         let samples = resample_to_16khz(&decoded.samples, decoded.sample_rate);
         let seconds = samples.len() as f64 / 16_000.0;
+        if seconds < args.min_seconds || seconds > args.max_seconds {
+            continue;
+        }
         utterances.push(Utterance {
             id: id.to_string(),
             reference: reference.to_string(),
@@ -174,17 +271,41 @@ impl Engine {
     }
 }
 
-fn build_engine(spec: &str, runtime: &Path) -> Result<Engine, String> {
+fn build_engine(spec: &str, args: &Args) -> Result<Engine, String> {
+    let runtime = args.runtime.as_path();
     let parts: Vec<&str> = spec.split(':').collect();
     let (engine, model, beam, threads, context) = match parts.as_slice() {
-        [engine, model, beam, threads] => (engine, model, beam, threads, "full"),
-        [engine, model, beam, threads, context] => (engine, model, beam, threads, *context),
+        [engine, model, beam, threads] => (engine, model, beam, threads, None),
+        [engine, model, beam, threads, context] => (engine, model, beam, threads, Some(*context)),
         _ => {
             return Err(format!(
-                "config must be engine:model:beam:threads[:full|dyn], got {spec}"
+                "config must be engine:model:beam:threads[:context|device], got {spec}"
             ))
         }
     };
+    let model_path = runtime.join("models").join(model);
+
+    if *engine == "inprocess" {
+        let threads: u32 = threads
+            .parse()
+            .map_err(|_| format!("bad threads in {spec}"))?;
+        let device = match context {
+            None => AsrDevice::Cpu,
+            Some(device) => AsrDevice::parse(device)
+                .ok_or_else(|| format!("bad device {device} in {spec} (cpu or gpu)"))?,
+        };
+        return Ok(Engine::InProcess(TranscribeCppProvider::with_options(
+            TranscribeCppConfig { model_path },
+            TranscribeCppOptions {
+                threads: (threads > 0).then_some(threads),
+                device,
+                warm_up: args.warm_up,
+                ..Default::default()
+            },
+        )));
+    }
+
+    let context = context.unwrap_or("full");
     let decode = WhisperDecodeOptions {
         beam_size: beam.parse().map_err(|_| format!("bad beam in {spec}"))?,
         threads: threads
@@ -200,12 +321,8 @@ fn build_engine(spec: &str, runtime: &Path) -> Result<Engine, String> {
         .ends_with("vad")
         .then(|| runtime.join("models").join("ggml-silero-v6.2.0.bin"));
     let release = runtime.join("whisper").join("Release");
-    let model_path = runtime.join("models").join(model);
 
     match *engine {
-        "inprocess" => Ok(Engine::InProcess(TranscribeCppProvider::new(
-            TranscribeCppConfig { model_path },
-        ))),
         "cli" => Ok(Engine::Cli(WhisperCliProvider::new(WhisperCliConfig {
             cli_path: release.join("whisper-cli.exe"),
             model_path,
@@ -272,6 +389,37 @@ struct UtteranceResult {
     reference_words: usize,
     edits: usize,
     latencies_ms: Vec<f64>,
+    /// First-pass transcript, kept in memory to compare configs. Never written out.
+    hypothesis: Option<String>,
+}
+
+/// How closely one config's transcripts match another's, clip by clip.
+#[derive(Debug, Clone, Copy)]
+struct Agreement {
+    identical_clips: usize,
+    compared_clips: usize,
+    /// Word edits turning the base config's transcripts into this one's.
+    word_edits: usize,
+    base_words: usize,
+}
+
+fn agreement(base: &ConfigResult, other: &ConfigResult) -> Agreement {
+    let mut result = Agreement {
+        identical_clips: 0,
+        compared_clips: 0,
+        word_edits: 0,
+        base_words: 0,
+    };
+    for (base, other) in base.per_utterance.iter().zip(&other.per_utterance) {
+        if let (Some(base), Some(other)) = (&base.hypothesis, &other.hypothesis) {
+            let (edits, words) = word_errors(base, other);
+            result.compared_clips += 1;
+            result.identical_clips += usize::from(base == other);
+            result.word_edits += edits;
+            result.base_words += words;
+        }
+    }
+    result
 }
 
 /// Three seconds of digital silence and three seconds of low-level white noise (about
@@ -289,11 +437,12 @@ fn non_speech_probes() -> Vec<Vec<f32>> {
 }
 
 fn run_config(spec: &str, args: &Args, corpus: &[Utterance]) -> Result<ConfigResult, String> {
-    let engine = Arc::new(build_engine(spec, &args.runtime)?);
+    let engine = Arc::new(build_engine(spec, args)?);
     let provider = engine.provider();
 
     let prepare_started = Instant::now();
-    provider.prepare().map_err(|error| error.to_string())?;
+    // As a conversation opens: load, then warm up unless --no-warm-up.
+    provider.warm_up().map_err(|error| error.to_string())?;
     let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
 
     let mut latencies_ms = Vec::new();
@@ -313,6 +462,7 @@ fn run_config(spec: &str, args: &Args, corpus: &[Utterance]) -> Result<ConfigRes
             reference_words: 0,
             edits: 0,
             latencies_ms: Vec::new(),
+            hypothesis: None,
         })
         .collect();
 
@@ -349,6 +499,7 @@ fn run_config(spec: &str, args: &Args, corpus: &[Utterance]) -> Result<ConfigRes
                         reference_words += words;
                         per_utterance[index].edits = utterance_edits;
                         per_utterance[index].reference_words = words;
+                        per_utterance[index].hypothesis = Some(transcription.text.clone());
                         if transcription.text.trim().is_empty() {
                             empty_outputs += 1;
                         }
@@ -502,12 +653,12 @@ fn optional(value: Option<f64>) -> String {
 
 fn print_table(results: &[ConfigResult]) {
     println!(
-        "\n| Config | p50 ms | p95 ms | mean ms | p50 ms (clips <= 5 s) | RTF | WER % | Errors | Non-speech hallucinations | Peak RSS MB | Ready ms | Crash recovery ms |"
+        "\n| Config | p50 ms | p95 ms | mean ms | p50 ms (clips <= 5 s) | RTF | WER % | Errors | Non-speech hallucinations | Peak RSS MB | Ready ms | First ms | Crash recovery ms |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for result in results {
         println!(
-            "| `{}` | {:.0} | {:.0} | {:.0} | {:.0} | {:.3} | {:.2} | {} | {}/{} | {} | {:.0} | {} |",
+            "| `{}` | {:.0} | {:.0} | {:.0} | {:.0} | {:.3} | {:.2} | {} | {}/{} | {} | {:.0} | {:.0} | {} |",
             result.spec,
             result.p50_ms,
             result.p95_ms,
@@ -520,16 +671,49 @@ fn print_table(results: &[ConfigResult]) {
             result.non_speech_probes,
             optional(result.peak_memory_mb),
             result.prepare_ms,
+            result.first_request_ms,
             optional(result.recovery_ms),
         );
     }
+
+    if let Some((base, others)) = results.split_first() {
+        for other in others {
+            let agreement = agreement(base, other);
+            println!(
+                "`{}` vs `{}`: identical transcripts {}/{} clips, {} word edits in {} words ({:.2} %)",
+                other.spec,
+                base.spec,
+                agreement.identical_clips,
+                agreement.compared_clips,
+                agreement.word_edits,
+                agreement.base_words,
+                100.0 * agreement.word_edits as f64 / agreement.base_words.max(1) as f64
+            );
+        }
+    }
+    for result in results {
+        println!("`{}`: {}", result.spec, result.description);
+    }
 }
 
-fn to_json(results: &[ConfigResult], corpus: &[Utterance], passes: usize) -> serde_json::Value {
+fn to_json(results: &[ConfigResult], corpus: &[Utterance], args: &Args) -> serde_json::Value {
     let configs: Vec<serde_json::Value> = results
         .iter()
         .map(|result| {
             let mut map = BTreeMap::new();
+            if let Some(base) = results.first().filter(|base| !std::ptr::eq(*base, result)) {
+                let agreement = agreement(base, result);
+                map.insert(
+                    "agreementWithFirst",
+                    serde_json::json!({
+                        "baseConfig": base.spec,
+                        "identicalClips": agreement.identical_clips,
+                        "comparedClips": agreement.compared_clips,
+                        "wordEdits": agreement.word_edits,
+                        "baseWords": agreement.base_words,
+                    }),
+                );
+            }
             map.insert("config", serde_json::json!(result.spec));
             map.insert("description", serde_json::json!(result.description));
             map.insert("utterances", serde_json::json!(result.utterances));
@@ -589,8 +773,12 @@ fn to_json(results: &[ConfigResult], corpus: &[Utterance], passes: usize) -> ser
         "corpus": {
             "utterances": corpus.len(),
             "audioSeconds": corpus.iter().map(|utterance| utterance.seconds).sum::<f64>(),
+            "minClipSeconds": args.min_seconds,
+            "maxClipSeconds": args.max_seconds.is_finite().then_some(args.max_seconds),
         },
-        "passes": passes,
+        "passes": args.passes,
+        "warmUp": args.warm_up,
+        "gpuBuild": localflow_lib::asr::transcribe_cpp::GPU_BUILD,
         "dynamicAudioContext": localflow_lib::asr::describe_dynamic_audio_context(),
         "logicalCpus": std::thread::available_parallelism().map(|count| count.get()).unwrap_or(0),
         "configs": configs,
@@ -606,7 +794,14 @@ fn main() {
         }
     };
 
-    let corpus = match load_corpus(&args.corpus, args.limit) {
+    if args.list_devices {
+        print_devices();
+        if args.configs.is_empty() {
+            return;
+        }
+    }
+
+    let corpus = match load_corpus(&args) {
         Ok(corpus) if !corpus.is_empty() => corpus,
         Ok(_) => {
             eprintln!("error: corpus is empty");
@@ -663,7 +858,7 @@ fn write_json(args: &Args, results: &[ConfigResult], corpus: &[Utterance]) {
     let Some(path) = &args.json else {
         return;
     };
-    let payload = serde_json::to_string_pretty(&to_json(results, corpus, args.passes))
+    let payload = serde_json::to_string_pretty(&to_json(results, corpus, args))
         .expect("benchmark results serialise");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

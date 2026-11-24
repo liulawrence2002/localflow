@@ -11,10 +11,15 @@
 //!   depends on how finished it reads: briefly after a complete question, the ordinary time
 //!   when unsure, and noticeably longer after something that trails off mid-thought.
 //!
+//! - When a turn model is in use (Smart Turn, which hears the voice rather than the words), it
+//!   is asked about each pause at the same time, and its answer moves the wait: see
+//!   [`combined_readiness`]. Its answer belongs to that one pause; if the user speaks again it
+//!   is thrown away, and a late one never holds the turn up.
+//!
 //! It is pure. Time is counted in audio samples, not read from a clock; the caller feeds it
-//! what the speech detector saw and what the recogniser returned, and carries out the
-//! actions it gives back. That makes every interleaving of pauses, resumptions and late
-//! transcripts unit-testable.
+//! what the speech detector saw and what the recogniser and the turn model returned, and
+//! carries out the actions it gives back. That makes every interleaving of pauses,
+//! resumptions and late answers unit-testable.
 
 use std::{sync::Arc, time::Duration};
 
@@ -29,8 +34,67 @@ pub enum Readiness {
     NotReady,
 }
 
-/// Judges a transcript. Injected so tests can script it.
+/// Judges a transcript. Injected so tests can script it. It reads words only; what the turn
+/// model heard is the second input to the decision, applied by [`combined_readiness`].
 pub type ReadinessJudge = Arc<dyn Fn(&str) -> Readiness + Send + Sync>;
+
+/// Above this, the turn model's probability means the speaker sounds finished: Pipecat's own
+/// threshold, and the one measured in `docs/benchmarks/TURN_JUDGE_BENCHMARK.md`.
+pub const TURN_MODEL_THRESHOLD: f32 = 0.5;
+
+/// What the turn model has said about the latest pause.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TurnSignal {
+    /// There is no model, or it failed on this pause: the words decide alone.
+    Unavailable,
+    /// The model is still listening to this pause.
+    Pending,
+    /// The model's probability, from 0 to 1, that the turn is finished.
+    Heard(f32),
+}
+
+/// How finished the turn is, from what its words say and what its voice sounded like.
+///
+/// The voice decides and the words move its answer one step. This is the rule the benchmark
+/// found best: cut-offs fell from 28 % to 4.5 % of unfinished turns, and finished turns were
+/// answered a little sooner.
+///
+/// - It sounds finished (above [`TURN_MODEL_THRESHOLD`]): ready, or only unsure when the
+///   words trail off.
+/// - It does not: not ready, or only unsure when the words read as finished.
+/// - No model, or it failed: the words alone, exactly as without one.
+/// - Still listening: the words alone, except that words that read as finished get the
+///   unsure wait instead of the short one. That is the call the model most often overturns
+///   (a full stop the recogniser put where the speaker only took a breath), and it bounds the
+///   wait at what an unsure turn waits anyway. If the answer arrives meanwhile it decides from
+///   then on; if not, the turn ends on the words, and nothing waits longer for the model.
+pub fn combined_readiness(words: Readiness, signal: TurnSignal) -> Readiness {
+    use Readiness::*;
+    match signal {
+        TurnSignal::Unavailable => words,
+        TurnSignal::Heard(probability) if probability > TURN_MODEL_THRESHOLD => {
+            if words == NotReady {
+                Unsure
+            } else {
+                Ready
+            }
+        }
+        TurnSignal::Heard(_) => {
+            if words == Ready {
+                Unsure
+            } else {
+                NotReady
+            }
+        }
+        TurnSignal::Pending => {
+            if words == Ready {
+                Unsure
+            } else {
+                words
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssemblerConfig {
@@ -48,6 +112,8 @@ pub struct AssemblerConfig {
     pub not_ready_wait: Duration,
     /// A turn is cut at this length even if the user never pauses.
     pub max_turn: Duration,
+    /// Whether a turn model is listening, so each pause is also sent to it.
+    pub turn_model: bool,
 }
 
 impl AssemblerConfig {
@@ -63,6 +129,9 @@ pub enum Action {
     TurnStarted,
     /// Transcribe the audio in `from..to` and report back with this `id`.
     Transcribe { id: u64, from: u64, to: u64 },
+    /// Ask the turn model whether the turn in `from..to` (everything so far, ending at this
+    /// pause) sounds finished, and report back with this `pause`.
+    JudgeTurn { pause: u64, from: u64, to: u64 },
     /// The turn is over: this is everything the user said.
     Commit {
         text: String,
@@ -70,6 +139,9 @@ pub enum Action {
         speech_end: u64,
         /// Silence that had passed when the turn was ended.
         waited: Duration,
+        /// Whether the turn model heard the last pause as finished; `None` when it had not
+        /// answered or there is none. For diagnostics only.
+        sounded_finished: Option<bool>,
     },
     /// The turn held no words (a cough, a noise). Go back to waiting.
     Abandon,
@@ -100,6 +172,10 @@ pub struct TurnAssembler {
     /// The transcription in flight: its id and the range it covers.
     pending: Option<(u64, u64, u64)>,
     next_id: u64,
+    /// Number of the latest pause; a turn model's answer counts only for it.
+    pause: u64,
+    /// What the turn model said about that pause.
+    signal: TurnSignal,
 }
 
 impl TurnAssembler {
@@ -113,6 +189,8 @@ impl TurnAssembler {
             text: String::new(),
             pending: None,
             next_id: 1,
+            pause: 0,
+            signal: TurnSignal::Unavailable,
         }
     }
 
@@ -120,11 +198,18 @@ impl TurnAssembler {
         self.phase != Phase::Idle
     }
 
+    /// Everything transcribed in the turn so far: what the user has said up to the last
+    /// pause whose transcript is back. Empty outside a turn.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     /// Forget the turn in progress. A transcription still in flight will be ignored.
     pub fn reset(&mut self) {
         self.phase = Phase::Idle;
         self.text.clear();
         self.pending = None;
+        self.signal = TurnSignal::Unavailable;
     }
 
     /// The detector heard speech beginning at `speech_start`.
@@ -138,9 +223,11 @@ impl TurnAssembler {
                 self.text.clear();
                 vec![Action::TurnStarted]
             }
-            // The user carried on after a pause: the turn simply continues.
+            // The user carried on after a pause: the turn simply continues, and what the turn
+            // model said about that pause no longer applies.
             Phase::Paused { .. } => {
                 self.phase = Phase::Speaking;
+                self.signal = TurnSignal::Unavailable;
                 Vec::new()
             }
             Phase::Speaking => Vec::new(),
@@ -156,9 +243,43 @@ impl TurnAssembler {
             speech_end,
             forced: false,
         };
-        let mut actions = self.request_transcription(now);
+        self.pause += 1;
+        let mut actions = Vec::new();
+        if self.config.turn_model {
+            // Heard alongside the transcription: everything since the turn began, ending
+            // where the recogniser's phrase ends.
+            self.signal = TurnSignal::Pending;
+            actions.push(Action::JudgeTurn {
+                pause: self.pause,
+                from: self.turn_start,
+                to: self.phrase_end(speech_end, now),
+            });
+        } else {
+            self.signal = TurnSignal::Unavailable;
+        }
+        actions.extend(self.request_transcription(now));
         actions.extend(self.try_commit(now));
         actions
+    }
+
+    /// The turn model answered for `pause`: the probability that the turn is finished, or
+    /// `None` when it could not judge it. An answer for any pause but the latest, or after the
+    /// user spoke again, is ignored.
+    pub fn turn_judged(&mut self, pause: u64, probability: Option<f32>, now: u64) -> Vec<Action> {
+        let current = pause == self.pause
+            && matches!(self.phase, Phase::Paused { forced: false, .. })
+            && self.signal == TurnSignal::Pending;
+        if !current {
+            return Vec::new();
+        }
+        self.signal = probability.map_or(TurnSignal::Unavailable, TurnSignal::Heard);
+        self.try_commit(now)
+    }
+
+    /// Where a phrase that paused at `speech_end` ends: a little silence after the last word
+    /// helps the recogniser, but never past the present.
+    fn phrase_end(&self, speech_end: u64, now: u64) -> u64 {
+        (speech_end + self.config.samples(self.config.tail)).min(now.max(speech_end))
     }
 
     /// Time has passed with nothing new from the detector.
@@ -169,11 +290,13 @@ impl TurnAssembler {
                 if now.saturating_sub(self.turn_start) < self.config.samples(self.config.max_turn) {
                     return Vec::new();
                 }
-                // Talking without a break for the maximum length: end the turn here.
+                // Talking without a break for the maximum length: end the turn here, without
+                // waiting for anything.
                 self.phase = Phase::Paused {
                     speech_end: now,
                     forced: true,
                 };
+                self.signal = TurnSignal::Unavailable;
                 let mut actions = self.request_transcription(now);
                 actions.extend(self.try_commit(now));
                 actions
@@ -226,8 +349,7 @@ impl TurnAssembler {
         if self.pending.is_some() || speech_end <= self.segment_start {
             return Vec::new();
         }
-        // A little silence after the last word helps the recogniser; never past the present.
-        let to = (speech_end + self.config.samples(self.config.tail)).min(now.max(speech_end));
+        let to = self.phrase_end(speech_end, now);
         let id = self.next_id;
         self.next_id += 1;
         self.pending = Some((id, self.segment_start, to));
@@ -260,7 +382,7 @@ impl TurnAssembler {
         let wait = if forced {
             Duration::ZERO
         } else {
-            match (self.judge)(&self.text) {
+            match combined_readiness((self.judge)(&self.text), self.signal) {
                 Readiness::Ready => self.config.ready_wait,
                 Readiness::Unsure => self.config.unsure_wait,
                 Readiness::NotReady => self.config.not_ready_wait,
@@ -272,11 +394,16 @@ impl TurnAssembler {
 
         let text = std::mem::take(&mut self.text);
         let waited = Duration::from_secs_f64(silence as f64 / self.config.sample_rate as f64);
+        let sounded_finished = match self.signal {
+            TurnSignal::Heard(probability) => Some(probability > TURN_MODEL_THRESHOLD),
+            TurnSignal::Unavailable | TurnSignal::Pending => None,
+        };
         self.reset();
         vec![Action::Commit {
             text,
             speech_end,
             waited,
+            sounded_finished,
         }]
     }
 }
@@ -300,7 +427,225 @@ mod tests {
             unsure_wait: Duration::from_millis(700),
             not_ready_wait: Duration::from_millis(1_400),
             max_turn: Duration::from_secs(60),
+            turn_model: false,
         }
+    }
+
+    /// An assembler whose pauses are also sent to a turn model.
+    fn listening_assembler() -> TurnAssembler {
+        TurnAssembler::new(
+            AssemblerConfig {
+                turn_model: true,
+                ..config()
+            },
+            judge(),
+        )
+    }
+
+    /// The turn-model request among `actions`: its pause number and range.
+    fn judge_request(actions: &[Action]) -> (u64, u64, u64) {
+        actions
+            .iter()
+            .find_map(|action| match action {
+                Action::JudgeTurn { pause, from, to } => Some((*pause, *from, *to)),
+                _ => None,
+            })
+            .expect("a turn-model request")
+    }
+
+    fn sounded_finished(actions: &[Action]) -> Option<Option<bool>> {
+        actions.iter().find_map(|action| match action {
+            Action::Commit {
+                sounded_finished, ..
+            } => Some(*sounded_finished),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_voice_decides_and_the_words_move_it_one_step() {
+        use Readiness::*;
+        let finished = TurnSignal::Heard(0.9);
+        let unfinished = TurnSignal::Heard(0.1);
+        for (words, signal, expected) in [
+            // It sounds finished.
+            (Ready, finished, Ready),
+            (Unsure, finished, Ready),
+            (NotReady, finished, Unsure),
+            // It does not.
+            (Ready, unfinished, Unsure),
+            (Unsure, unfinished, NotReady),
+            (NotReady, unfinished, NotReady),
+            // No model, or it failed: the words alone.
+            (Ready, TurnSignal::Unavailable, Ready),
+            (Unsure, TurnSignal::Unavailable, Unsure),
+            (NotReady, TurnSignal::Unavailable, NotReady),
+            // Still listening: a finished reading waits as an unsure one, nothing else moves.
+            (Ready, TurnSignal::Pending, Unsure),
+            (Unsure, TurnSignal::Pending, Unsure),
+            (NotReady, TurnSignal::Pending, NotReady),
+        ] {
+            assert_eq!(
+                combined_readiness(words, signal),
+                expected,
+                "{words:?} with {signal:?}"
+            );
+        }
+        // The threshold itself counts as not finished, as in the benchmark.
+        assert_eq!(
+            combined_readiness(Unsure, TurnSignal::Heard(TURN_MODEL_THRESHOLD)),
+            NotReady
+        );
+        assert_eq!(
+            combined_readiness(Unsure, TurnSignal::Heard(0.500_1)),
+            Ready
+        );
+    }
+
+    #[test]
+    fn each_pause_is_sent_to_the_turn_model_with_the_whole_turn_so_far() {
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(1_000));
+        let actions = turn.pause_started(ms(3_000), ms(3_250));
+        // From the turn's start (lead-in included) to where the phrase sent for
+        // transcription ends.
+        assert_eq!(judge_request(&actions), (1, ms(600), ms(3_200)));
+        assert_eq!(request(&actions).2, ms(3_200));
+
+        let (id, _, _) = request(&actions);
+        turn.transcribed(id, "And then", ms(3_300));
+        turn.speech_started(ms(3_400));
+        let actions = turn.pause_started(ms(5_000), ms(5_250));
+        assert_eq!(judge_request(&actions), (2, ms(600), ms(5_200)));
+        // Without a turn model nothing is sent.
+        let mut plain = assembler();
+        plain.speech_started(ms(1_000));
+        assert!(!plain
+            .pause_started(ms(3_000), ms(3_250))
+            .iter()
+            .any(|action| matches!(action, Action::JudgeTurn { .. })));
+    }
+
+    #[test]
+    fn a_voice_that_sounds_finished_ends_an_unsure_turn_at_the_short_wait() {
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(0));
+        let actions = turn.pause_started(ms(2_000), ms(2_250));
+        let (pause, _, _) = judge_request(&actions);
+        let (id, _, _) = request(&actions);
+        turn.transcribed(id, "maybe the blue one", ms(2_300));
+        assert!(commit(&turn.tick(ms(2_399))).is_none());
+
+        // The answer arrives late, after the short wait has passed: the turn ends at once.
+        let actions = turn.turn_judged(pause, Some(0.97), ms(2_420));
+        assert_eq!(
+            commit(&actions).map(|(text, _)| text),
+            Some("maybe the blue one")
+        );
+        assert_eq!(sounded_finished(&actions), Some(Some(true)));
+    }
+
+    #[test]
+    fn a_voice_that_sounds_unfinished_holds_a_finished_reading_to_the_unsure_wait() {
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(0));
+        let actions = turn.pause_started(ms(2_000), ms(2_250));
+        let (pause, _, _) = judge_request(&actions);
+        let (id, _, _) = request(&actions);
+        assert!(turn.turn_judged(pause, Some(0.02), ms(2_260)).is_empty());
+        // The recogniser put a full stop where the speaker only took a breath.
+        turn.transcribed(id, "I think we should.", ms(2_300));
+
+        assert!(commit(&turn.tick(ms(2_400))).is_none(), "the short wait");
+        assert!(commit(&turn.tick(ms(2_699))).is_none());
+        let actions = turn.tick(ms(2_700));
+        assert!(commit(&actions).is_some());
+        assert_eq!(sounded_finished(&actions), Some(Some(false)));
+    }
+
+    #[test]
+    fn an_answer_for_an_earlier_pause_is_thrown_away() {
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(0));
+        let first = turn.pause_started(ms(1_000), ms(1_250));
+        let (old_pause, _, _) = judge_request(&first);
+        let (id, _, _) = request(&first);
+        turn.transcribed(id, "What time", ms(1_300));
+        // The user carries on; the answer about the first pause arrives while they talk.
+        turn.speech_started(ms(1_350));
+        assert!(turn
+            .turn_judged(old_pause, Some(0.99), ms(1_400))
+            .is_empty());
+
+        let second = turn.pause_started(ms(2_000), ms(2_250));
+        let (pause, _, _) = judge_request(&second);
+        assert_ne!(pause, old_pause);
+        let (id, _, _) = request(&second);
+        turn.transcribed(id, "is it?", ms(2_300));
+        // Still about the first pause, arriving even later: ignored again.
+        assert!(turn
+            .turn_judged(old_pause, Some(0.99), ms(2_420))
+            .is_empty());
+        // With the second pause's answer still out, the finished reading waits the unsure time.
+        assert!(commit(&turn.tick(ms(2_420))).is_none());
+        assert!(commit(&turn.turn_judged(pause, Some(0.05), ms(2_500))).is_none());
+        assert!(commit(&turn.tick(ms(2_699))).is_none());
+        assert!(commit(&turn.tick(ms(2_700))).is_some());
+    }
+
+    #[test]
+    fn a_late_or_missing_answer_never_holds_the_turn_up() {
+        // No answer at all: the words decide, a finished reading at the unsure wait.
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(0));
+        let actions = turn.pause_started(ms(2_000), ms(2_250));
+        let (pause, _, _) = judge_request(&actions);
+        let (id, _, _) = request(&actions);
+        turn.transcribed(id, "What time is it?", ms(2_300));
+        let actions = turn.tick(ms(2_700));
+        assert!(commit(&actions).is_some());
+        assert_eq!(sounded_finished(&actions), Some(None));
+        // The answer turning up afterwards changes nothing.
+        assert!(turn.turn_judged(pause, Some(0.0), ms(2_800)).is_empty());
+
+        // An unclear reading waits no longer than without a model.
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(0));
+        let (id, _, _) = request(&turn.pause_started(ms(2_000), ms(2_250)));
+        turn.transcribed(id, "maybe the blue one", ms(2_300));
+        assert!(commit(&turn.tick(ms(2_700))).is_some());
+    }
+
+    #[test]
+    fn a_failed_answer_leaves_the_words_to_decide_alone() {
+        let mut turn = listening_assembler();
+        turn.speech_started(ms(0));
+        let actions = turn.pause_started(ms(2_000), ms(2_250));
+        let (pause, _, _) = judge_request(&actions);
+        let (id, _, _) = request(&actions);
+        assert!(turn.turn_judged(pause, None, ms(2_260)).is_empty());
+        turn.transcribed(id, "What time is it?", ms(2_300));
+        // A finished reading gets the short wait again, as without a model.
+        assert!(commit(&turn.tick(ms(2_400))).is_some());
+    }
+
+    #[test]
+    fn a_turn_cut_at_its_maximum_length_waits_for_nothing() {
+        let mut turn = TurnAssembler::new(
+            AssemblerConfig {
+                max_turn: Duration::from_secs(5),
+                turn_model: true,
+                ..config()
+            },
+            judge(),
+        );
+        turn.speech_started(ms(400));
+        let actions = turn.tick(ms(5_000));
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, Action::JudgeTurn { .. })));
+        let (id, _, _) = request(&actions);
+        assert!(commit(&turn.transcribed(id, "and so on and", ms(5_100))).is_some());
     }
 
     /// Reads a transcript ending in "?" or "." as finished, one ending in "and" as not.
@@ -427,6 +772,26 @@ mod tests {
 
         let (text, _) = commit(&actions).expect("the whole turn");
         assert_eq!(text, "I went to the shop and bought some bread.");
+    }
+
+    #[test]
+    fn the_words_so_far_can_be_read_before_the_turn_ends() {
+        let mut turn = assembler();
+        turn.speech_started(ms(0));
+        assert_eq!(turn.text(), "");
+        let (first, _, _) = request(&turn.pause_started(ms(1_000), ms(1_250)));
+        turn.transcribed(first, "Wait,", ms(1_300));
+        assert_eq!(turn.text(), "Wait,");
+
+        turn.speech_started(ms(1_320));
+        let (second, _, _) = request(&turn.pause_started(ms(2_000), ms(2_250)));
+        let actions = turn.transcribed(second, "what about deadlocks?", ms(2_300));
+        assert!(commit(&actions).is_none());
+        assert_eq!(turn.text(), "Wait, what about deadlocks?");
+
+        // Once the turn is over there is nothing in progress.
+        assert!(commit(&turn.tick(ms(2_400))).is_some());
+        assert_eq!(turn.text(), "");
     }
 
     #[test]

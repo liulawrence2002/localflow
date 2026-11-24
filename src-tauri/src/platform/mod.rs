@@ -1,3 +1,4 @@
+pub mod process;
 pub mod uia;
 
 pub trait StartupRegistration: Send + Sync {

@@ -1,3 +1,5 @@
+import type { CodingAgentSettings } from "./codingAgents";
+
 export type DictationPhase =
   | "Idle"
   | "Preparing"
@@ -142,6 +144,11 @@ export interface LocalFlowSettings {
   replacements: ReplacementRule[];
   snippets: Snippet[];
   styles: StyleProfile[];
+  /**
+   * Project folders for voice commands. Changed only through the coding-agent commands, which
+   * check each folder; the native layer ignores this part of a general settings save.
+   */
+  codingAgents: CodingAgentSettings;
 }
 
 export interface AppStatus {

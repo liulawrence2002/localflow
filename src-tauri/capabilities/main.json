@@ -19,6 +19,11 @@
     "allow-conversation-status",
     "allow-toggle-conversation",
     "allow-list-ollama-models",
-    "allow-screen-reading-status"
+    "allow-screen-reading-status",
+    "allow-list-coding-projects",
+    "allow-save-coding-project",
+    "allow-remove-coding-project",
+    "allow-suggest-project-spoken-names",
+    "allow-detect-coding-agents"
   ]
 }

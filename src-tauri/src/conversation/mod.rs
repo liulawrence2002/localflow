@@ -7,13 +7,17 @@
 //! - `state`: the turn-taking state machine (pure).
 //! - `engine`: the threads that run a conversation, written against traits.
 //! - `router`: fixed phrases ("goodbye", "repeat that") handled without the model.
+//! - `barge_in`: tells a real interruption from "mm-hmm" while a reply is held (pure).
+//! - `agents`: voice commands for coding agents, as the conversation runs them.
 //! - `chunker`: cuts the model's streamed reply into speakable pieces.
 //! - `memory`: the bounded, in-memory history of one conversation.
 //!
 //! This file supplies the real devices and models and connects the engine to the tray, the
 //! hotkey and the overlay. Nothing that is said is logged, stored, or sent in an event.
 
+pub mod agents;
 pub mod assembler;
+pub mod barge_in;
 pub mod chunker;
 pub mod echo_guard;
 pub mod engine;
@@ -29,6 +33,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use self::{
+    agents::{AgentRuntime, NoAgents},
     engine::{
         ConversationCore, ConversationHost, Limits, NoPageSource, Notice, Resources, TurnTimings,
     },
@@ -39,7 +44,12 @@ use crate::{
     asr::engine_select::{asr_language, resolve_asr},
     audio::{
         devices::{MicStream, SpeakerStream},
+        smart_turn::{best_turn_model, SMART_TURN_MODEL_FILE},
         speech_detector::{best_detector, SILERO_MODEL_FILE},
+    },
+    cancel::CancelFlag,
+    coding_agents::{
+        AgentCommand, CodingAgents, CodingAgentsRuntime, CommandContext, ExecutionOutcome,
     },
     llm::{chat::OllamaChat, ollama::OLLAMA_MODEL},
     overlay::{emit_audio_features, emit_status, overlay_audio_features},
@@ -166,6 +176,15 @@ fn silero_model(app: &AppHandle) -> Option<std::path::PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// The full-precision Smart Turn file. The 8-bit one gives wrong answers in `tract` and is
+/// never looked for.
+fn smart_turn_model(app: &AppHandle) -> Option<std::path::PathBuf> {
+    runtime_candidates(app)
+        .into_iter()
+        .map(|runtime| runtime.join("models").join(SMART_TURN_MODEL_FILE))
+        .find(|path| path.is_file())
+}
+
 /// How finished a transcript reads, for deciding how long a silence ends the turn.
 pub fn default_readiness() -> assembler::ReadinessJudge {
     Arc::new(|text: &str| match turn_completion::judge_transcript(text) {
@@ -180,7 +199,39 @@ struct TauriHost {
     shared: Arc<Shared>,
 }
 
+/// The installed coding agents, and the project folders from the current settings.
+struct AppAgents {
+    app: AppHandle,
+    agents: Arc<CodingAgents>,
+}
+
+impl AgentRuntime for AppAgents {
+    fn prepare(&self) {
+        // Runs the agents' `--version` and `--help`, and nothing else.
+        self.agents.detect_all();
+    }
+
+    fn context(&self) -> CommandContext {
+        let settings = self.app.state::<LocalFlowRuntime>().current_settings();
+        self.agents.context(&settings.coding_agents.projects)
+    }
+
+    fn execute(&self, command: &AgentCommand, cancel: &CancelFlag) -> ExecutionOutcome {
+        self.agents.execute(command, cancel)
+    }
+}
+
 impl ConversationHost for TauriHost {
+    fn agents(&self) -> Arc<dyn AgentRuntime> {
+        match self.app.try_state::<CodingAgentsRuntime>() {
+            Some(runtime) => Arc::new(AppAgents {
+                app: self.app.clone(),
+                agents: runtime.agents(),
+            }),
+            None => Arc::new(NoAgents),
+        }
+    }
+
     fn open(&self) -> Result<Resources, String> {
         let app = &self.app;
         if crate::native_dictation::is_recording(app) {
@@ -202,8 +253,10 @@ impl ConversationHost for TauriHost {
 
         // Models first: if one cannot load, the microphone is never opened.
         let asr = resolve_asr(app, &settings)?;
+        // Load and warm up: the first transcription on a GPU otherwise pays for compiling its
+        // shaders, which would land on the user's first turn.
         asr.provider
-            .prepare()
+            .warm_up()
             .map_err(|error| format!("Speech recognition could not start: {error}"))?;
         let language = asr_language(&settings.models.language, &asr.model_path);
 
@@ -216,6 +269,11 @@ impl ConversationHost for TauriHost {
         let (detector, fallback_reason) = best_detector(silero_model(app).as_deref());
         if let Some(reason) = fallback_reason {
             tracing::warn!(reason = %reason, "conversation is using the loudness rule to detect speech");
+        }
+        // Loaded once for the conversation. Without it, a pause is judged by its words alone.
+        let (turn_model, turn_model_missing) = best_turn_model(smart_turn_model(app).as_deref());
+        if let Some(reason) = turn_model_missing {
+            tracing::info!(reason = %reason, "conversation is judging pauses by their words alone");
         }
 
         let speaker = SpeakerStream::open()?;
@@ -242,6 +300,7 @@ impl ConversationHost for TauriHost {
             },
             echo: crate::audio::echo::best_echo_canceller(),
             readiness: default_readiness(),
+            turn_model,
             model,
             language,
         })
@@ -271,6 +330,9 @@ impl ConversationHost for TauriHost {
                     response_ms = ?timings.response_ms,
                     transcript_chars = timings.transcript_chars,
                     reply_chars = timings.reply_chars,
+                    // Coarse on purpose: above or below the threshold, never the probability.
+                    turn_model_heard_finished = ?timings.turn_model_finished,
+                    turn_model_ms = ?timings.turn_model_ms,
                     "conversation turn answered"
                 );
                 *lock(&self.shared.last_turn) = Some(timings);
@@ -287,10 +349,10 @@ impl ConversationHost for TauriHost {
                     Phase::Thinking => emit_status(app, "processing", &message),
                     Phase::Speaking => emit_status(app, "refining", &message),
                     Phase::Off => match reason {
-                        // Ended on purpose: just put the overlay away.
-                        Some(StopReason::User | StopReason::Goodbye) | None => {
-                            emit_status(app, "cancelled", &message)
-                        }
+                        // Ended on purpose, or to make way for dictating into a coding
+                        // agent: just put the overlay away.
+                        Some(StopReason::User | StopReason::Goodbye | StopReason::AgentOpened)
+                        | None => emit_status(app, "cancelled", &message),
                         // Ended by a limit: say so briefly.
                         Some(StopReason::Idle | StopReason::MaxDuration) => {
                             emit_status(app, "ready", &message)
@@ -333,6 +395,9 @@ fn phase_message(phase: Phase, reason: Option<StopReason>, last_problem: Option<
             Some(StopReason::StartFailed) => last_problem
                 .unwrap_or("The conversation could not start.")
                 .to_string(),
+            Some(StopReason::AgentOpened) => {
+                "Conversation ended: dictate your task in the new tab".to_string()
+            }
             Some(StopReason::User | StopReason::Goodbye) | None => "Conversation ended".to_string(),
         },
     }
@@ -351,7 +416,11 @@ pub fn conversation_status(app: AppHandle) -> ConversationStatus {
         Some(_) => (
             true,
             if silero_model(&app).is_some() {
-                "Local speech recognition, local language model, Phonon voice, Silero voice detection".to_string()
+                if smart_turn_model(&app).is_some() {
+                    "Local speech recognition, local language model, Phonon voice, Silero voice detection, Smart Turn end-of-turn detection".to_string()
+                } else {
+                    "Local speech recognition, local language model, Phonon voice, Silero voice detection".to_string()
+                }
             } else {
                 "Ready, using a simple loudness rule to detect speech. Run scripts\\Get-VadModel.ps1 for better detection.".to_string()
             },
@@ -439,6 +508,10 @@ mod tests {
             phase_message(Phase::Off, Some(StopReason::Goodbye), None),
             "Conversation ended"
         );
+        assert_eq!(
+            phase_message(Phase::Off, Some(StopReason::AgentOpened), None),
+            "Conversation ended: dictate your task in the new tab"
+        );
     }
 
     #[test]
@@ -476,6 +549,8 @@ mod tests {
             response_ms: Some(1_240),
             transcript_chars: 40,
             reply_chars: 80,
+            turn_model_finished: Some(true),
+            turn_model_ms: Some(120),
         }));
         assert_eq!(rows[0].value, "1240 ms from end of speech to first audio");
         assert_eq!(rows[0].status, "ok");

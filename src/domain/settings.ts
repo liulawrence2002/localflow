@@ -199,6 +199,13 @@ export function normalizeSettings(settings: LocalFlowSettings): LocalFlowSetting
           }),
         )
       : defaultSettings.styles,
+    codingAgents: {
+      projects: (settings.codingAgents?.projects ?? []).map((project) => ({
+        id: project.id,
+        path: project.path,
+        spokenNames: [...(project.spokenNames ?? [])],
+      })),
+    },
   };
 }
 

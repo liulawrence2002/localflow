@@ -74,8 +74,16 @@ pub trait AudioSink: Send + Sync {
     /// nothing, for sinks that make no sound.
     fn take_played(&self, _out: &mut Vec<f32>) {}
     /// Stop now: fade out, discard everything queued, and return once that has happened.
+    /// A pause is left as it is.
     fn flush(&self);
     fn healthy(&self) -> bool;
+    /// Hold playback where it is: fade out and keep everything queued, so that
+    /// [`AudioSink::resume`] carries on from the same place. Audio written meanwhile queues
+    /// behind it. Held audio is not played, so it never counts in [`AudioSink::played`].
+    /// The default does nothing, for sinks that cannot pause: they keep playing.
+    fn pause(&self) {}
+    /// Carry on playing after [`AudioSink::pause`], fading back in. The default does nothing.
+    fn resume(&self) {}
 }
 
 struct MicShared {
@@ -319,6 +327,9 @@ struct SpeakerShared {
     flush_requested: AtomicU32,
     /// The last flush request the callback has completed.
     flush_done: AtomicU32,
+    /// Set by [`AudioSink::pause`]: the callback fades out, then plays silence and leaves the
+    /// queue alone until it is cleared.
+    paused: AtomicBool,
 }
 
 pub struct SpeakerStream {
@@ -409,13 +420,22 @@ impl AudioSink for SpeakerStream {
     fn healthy(&self) -> bool {
         !self.shared.failed.load(Ordering::Relaxed)
     }
+
+    fn pause(&self) {
+        self.shared.paused.store(true, Ordering::SeqCst);
+    }
+
+    fn resume(&self) {
+        self.shared.paused.store(false, Ordering::SeqCst);
+    }
 }
 
 /// State owned by the speaker callback between calls.
 struct Renderer {
     shared: Arc<SpeakerShared>,
-    /// Gain applied during a stop fade, 1 when not fading.
-    fade_gain: f32,
+    /// Gain on the queued speech: 1 while playing, 0 while paused, in between while fading
+    /// out for a stop or a pause, or back in after a pause.
+    gain: f32,
     fade_step: f32,
     /// The flush request being faded out, if any.
     fading: Option<u32>,
@@ -426,10 +446,17 @@ impl Renderer {
         let fade_samples = (sample_rate as f32 * STOP_FADE.as_secs_f32()).max(1.0);
         Self {
             shared,
-            fade_gain: 1.0,
+            gain: 1.0,
             fade_step: 1.0 / fade_samples,
             fading: None,
         }
+    }
+
+    /// Take the next queued sample, counting it as played, at the current gain.
+    fn play_next(&mut self) -> Option<f32> {
+        let sample = self.shared.ring.pop()?;
+        self.shared.played.fetch_add(1, Ordering::Relaxed);
+        Some(sample * PLAYBACK_GAIN * self.gain)
     }
 
     /// The next mono sample to play.
@@ -442,34 +469,51 @@ impl Renderer {
         }
 
         if let Some(request) = self.fading {
-            self.fade_gain -= self.fade_step;
-            let sample = if self.fade_gain > 0.0 {
-                self.shared.ring.pop()
+            self.gain -= self.fade_step;
+            let sample = if self.gain > 0.0 {
+                self.play_next()
             } else {
                 None
             };
-            match sample {
-                Some(sample) => {
-                    self.shared.played.fetch_add(1, Ordering::Relaxed);
-                    return sample * PLAYBACK_GAIN * self.fade_gain;
-                }
+            return match sample {
+                Some(sample) => sample,
                 None => {
                     // Faded to silence, or nothing was playing: drop the rest and report.
                     self.shared.ring.discard_all();
-                    self.fade_gain = 1.0;
+                    // A paused speaker stays silent; otherwise the next audio plays at once.
+                    self.gain = if self.shared.paused.load(Ordering::Relaxed) {
+                        0.0
+                    } else {
+                        1.0
+                    };
                     self.fading = None;
                     self.shared.flush_done.store(request, Ordering::SeqCst);
-                    return 0.0;
+                    0.0
                 }
-            }
+            };
         }
 
-        match self.shared.ring.pop() {
-            Some(sample) => {
-                self.shared.played.fetch_add(1, Ordering::Relaxed);
-                sample * PLAYBACK_GAIN
+        if self.shared.paused.load(Ordering::Relaxed) {
+            // Fade out, then hold: nothing more is taken from the queue, so nothing more
+            // counts as played, and resuming carries on from exactly here.
+            self.gain = (self.gain - self.fade_step).max(0.0);
+            if self.gain <= 0.0 {
+                return 0.0;
             }
-            None => 0.0,
+            return self.play_next().unwrap_or(0.0);
+        }
+
+        if self.gain < 1.0 && !self.shared.ring.is_empty() {
+            // Back from a pause: fade in rather than jump.
+            self.gain = (self.gain + self.fade_step).min(1.0);
+        }
+        match self.play_next() {
+            Some(sample) => sample,
+            None => {
+                // Nothing to play: whatever comes next starts at full level, as a reply does.
+                self.gain = 1.0;
+                0.0
+            }
         }
     }
 
@@ -504,6 +548,7 @@ fn build_speaker_stream() -> Result<(cpal::Stream, Arc<SpeakerShared>, u32), Str
         played: AtomicU64::new(0),
         flush_requested: AtomicU32::new(0),
         flush_done: AtomicU32::new(0),
+        paused: AtomicBool::new(false),
     });
 
     let on_error = {
@@ -595,7 +640,7 @@ pub mod mock {
         }
     }
 
-    /// A speaker that "plays" instantly unless told to hold audio in its queue.
+    /// A speaker that "plays" instantly unless told to hold audio in its queue, or paused.
     pub struct RecordingSpeaker {
         pub rate: u32,
         /// Everything written and not flushed away, in order.
@@ -604,6 +649,9 @@ pub mod mock {
         pub hold: AtomicBool,
         queue: Mutex<Vec<f32>>,
         pub flushes: AtomicU32,
+        paused: AtomicBool,
+        pub pauses: AtomicU32,
+        pub resumes: AtomicU32,
     }
 
     impl RecordingSpeaker {
@@ -614,14 +662,27 @@ pub mod mock {
                 hold: AtomicBool::new(false),
                 queue: Mutex::new(Vec::new()),
                 flushes: AtomicU32::new(0),
+                paused: AtomicBool::new(false),
+                pauses: AtomicU32::new(0),
+                resumes: AtomicU32::new(0),
             }
         }
 
-        /// Play everything that was being held.
+        /// Stop holding audio back as slow playback; play the queue unless paused.
         pub fn release(&self) {
-            self.hold.store(false, Ordering::Relaxed);
+            self.hold.store(false, Ordering::SeqCst);
+            self.play_queue();
+        }
+
+        pub fn is_paused(&self) -> bool {
+            self.paused.load(Ordering::SeqCst)
+        }
+
+        fn play_queue(&self) {
             let mut queue = self.queue.lock().unwrap();
-            self.heard.lock().unwrap().append(&mut queue);
+            if !self.hold.load(Ordering::SeqCst) && !self.paused.load(Ordering::SeqCst) {
+                self.heard.lock().unwrap().append(&mut queue);
+            }
         }
     }
 
@@ -631,12 +692,27 @@ pub mod mock {
         }
 
         fn write(&self, samples: &[f32]) -> usize {
-            if self.hold.load(Ordering::Relaxed) {
-                self.queue.lock().unwrap().extend_from_slice(samples);
+            let mut queue = self.queue.lock().unwrap();
+            if self.hold.load(Ordering::SeqCst) || self.paused.load(Ordering::SeqCst) {
+                queue.extend_from_slice(samples);
             } else {
-                self.heard.lock().unwrap().extend_from_slice(samples);
+                // Anything still queued plays first, so the order is kept.
+                let mut heard = self.heard.lock().unwrap();
+                heard.append(&mut queue);
+                heard.extend_from_slice(samples);
             }
             samples.len()
+        }
+
+        fn pause(&self) {
+            self.pauses.fetch_add(1, Ordering::SeqCst);
+            self.paused.store(true, Ordering::SeqCst);
+        }
+
+        fn resume(&self) {
+            self.resumes.fetch_add(1, Ordering::SeqCst);
+            self.paused.store(false, Ordering::SeqCst);
+            self.play_queue();
         }
 
         fn queued(&self) -> usize {
@@ -670,8 +746,96 @@ mod tests {
             played: AtomicU64::new(0),
             flush_requested: AtomicU32::new(0),
             flush_done: AtomicU32::new(0),
+            paused: AtomicBool::new(false),
         });
         (Renderer::new(shared.clone(), rate), shared)
+    }
+
+    fn render(renderer: &mut Renderer, samples: usize) -> Vec<f32> {
+        let mut output = vec![0.0f32; samples];
+        renderer.fill(&mut output, 1, |sample| sample);
+        output
+    }
+
+    #[test]
+    fn a_pause_fades_out_and_keeps_the_rest_queued_without_counting_it_as_played() {
+        let rate = 48_000;
+        let (mut renderer, shared) = speaker(rate);
+        shared.ring.push_slice(&vec![0.5; rate as usize / 2]);
+        let before = render(&mut renderer, 480);
+
+        shared.paused.store(true, Ordering::SeqCst);
+        let during = render(&mut renderer, 960);
+
+        // The level falls steadily to silence within the fade, as for a stop.
+        let mut previous = *before.last().unwrap();
+        for sample in &during {
+            assert!(*sample <= previous + 1e-6, "level rose during the fade");
+            assert!(previous - *sample < 0.02, "level dropped abruptly");
+            previous = *sample;
+        }
+        let fade_samples = (rate as f32 * STOP_FADE.as_secs_f32()) as usize;
+        assert!(during[fade_samples + 2..]
+            .iter()
+            .all(|sample| *sample == 0.0));
+        // Only what played before and during the fade counts; the rest waits in the queue.
+        let played = shared.played.load(Ordering::Relaxed);
+        assert!(played <= 480 + fade_samples as u64 + 1, "{played}");
+        assert_eq!(shared.ring.len() as u64, rate as u64 / 2 - played);
+
+        // Staying paused takes nothing more.
+        render(&mut renderer, 4_800);
+        assert_eq!(shared.played.load(Ordering::Relaxed), played);
+        // No flush was involved.
+        assert_eq!(shared.flush_done.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn resuming_carries_on_from_the_same_sample_and_fades_back_in() {
+        let rate = 48_000;
+        let (mut renderer, shared) = speaker(rate);
+        // A ramp, so where playback resumes can be read off the samples.
+        let ramp: Vec<f32> = (0..20_000).map(|index| index as f32 / 40_000.0).collect();
+        shared.ring.push_slice(&ramp);
+        render(&mut renderer, 100);
+        shared.paused.store(true, Ordering::SeqCst);
+        render(&mut renderer, 2_000);
+        let played = shared.played.load(Ordering::Relaxed) as usize;
+
+        shared.paused.store(false, Ordering::SeqCst);
+        let after = render(&mut renderer, 2_000);
+
+        // Nothing was skipped: the next sample out is the next one of the ramp, faded in.
+        let fade_samples = (rate as f32 * STOP_FADE.as_secs_f32()) as usize;
+        assert!(after[0] < ramp[played] * PLAYBACK_GAIN * 0.01 + 1e-6);
+        let settled = fade_samples + 10;
+        assert!((after[settled] - ramp[played + settled] * PLAYBACK_GAIN).abs() < 1e-6);
+        assert_eq!(
+            shared.played.load(Ordering::Relaxed) as usize,
+            played + 2_000
+        );
+    }
+
+    #[test]
+    fn a_stop_while_paused_discards_at_once_and_the_pause_holds_until_resumed() {
+        let (mut renderer, shared) = speaker(48_000);
+        shared.ring.push_slice(&[0.5; 4_000]);
+        shared.paused.store(true, Ordering::SeqCst);
+        render(&mut renderer, 1_000);
+
+        shared.flush_requested.fetch_add(1, Ordering::SeqCst);
+        render(&mut renderer, 1);
+        assert_eq!(shared.flush_done.load(Ordering::SeqCst), 1);
+        assert!(shared.ring.is_empty());
+
+        // The next reply is queued while still paused: it waits.
+        shared.ring.push_slice(&[0.25; 1_000]);
+        assert!(render(&mut renderer, 500)
+            .iter()
+            .all(|sample| *sample == 0.0));
+        shared.paused.store(false, Ordering::SeqCst);
+        let after = render(&mut renderer, 500);
+        assert_eq!(after[499], 0.25 * PLAYBACK_GAIN);
     }
 
     #[test]

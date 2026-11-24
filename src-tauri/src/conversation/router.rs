@@ -11,8 +11,8 @@ pub enum TurnIntent {
     Nothing,
     /// End the conversation.
     End,
-    /// The user asked for quiet. There is nothing to stop when this is heard (the microphone
-    /// is ignored while the assistant speaks), so just keep listening.
+    /// The user asked for quiet. Said over a reply it stopped the reply (see `barge_in`); as
+    /// a turn of its own there is nothing more to do, so just keep listening.
     Quiet,
     /// Say the previous reply again.
     Repeat,
@@ -138,6 +138,8 @@ const END_PHRASES: &[&str] = &[
 ];
 const QUIET_PHRASES: &[&str] = &[
     "stop",
+    "stop that",
+    "cancel that",
     "be quiet",
     "quiet",
     "never mind",
@@ -203,7 +205,7 @@ pub fn route_turn(transcript: &str) -> TurnIntent {
 }
 
 /// Lower case, apostrophes removed, every other non-alphanumeric run turned into one space.
-fn normalize(text: &str) -> String {
+pub(crate) fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
         if character.is_alphanumeric() {
@@ -258,6 +260,9 @@ mod tests {
         assert_eq!(route_turn("Say that again, please."), TurnIntent::Repeat);
         assert_eq!(route_turn("Stop."), TurnIntent::Quiet);
         assert_eq!(route_turn("Never mind"), TurnIntent::Quiet);
+        // As the coding-agent dialog has it ("say stop that to cancel").
+        assert_eq!(route_turn("Stop that."), TurnIntent::Quiet);
+        assert_eq!(route_turn("Cancel that, please."), TurnIntent::Quiet);
     }
 
     #[test]
@@ -302,6 +307,19 @@ mod tests {
             assert!(
                 matches!(route_turn(question), TurnIntent::Ask(_)),
                 "{question}"
+            );
+        }
+    }
+
+    #[test]
+    fn once_the_user_has_the_floor_one_word_is_an_answer() {
+        // Over a reply these would be backchannels (see `barge_in`); said in the user's own
+        // turn, after the reply has ended, they answer it and go to the model.
+        for answer in ["Yeah.", "Okay.", "Sure", "Paris."] {
+            assert_eq!(
+                route_turn(answer),
+                TurnIntent::Ask(answer.to_string()),
+                "{answer}"
             );
         }
     }

@@ -30,6 +30,7 @@ use localflow_lib::{
     audio::{
         devices::{AudioSink, AudioSource},
         resample::resample,
+        smart_turn::{best_turn_model, SMART_TURN_MODEL_FILE},
         speech_detector::{best_detector, SILERO_MODEL_FILE},
     },
     cancel::CancelFlag,
@@ -209,6 +210,11 @@ impl ConversationHost for BenchHost {
             page: Arc::new(NoPageSource),
             echo: Box::new(localflow_lib::audio::echo::NoEchoCancellation),
             readiness: localflow_lib::conversation::default_readiness(),
+            // As in the app: the turn model when it is installed, the words alone otherwise.
+            turn_model: best_turn_model(Some(
+                &self.runtime.join("models").join(SMART_TURN_MODEL_FILE),
+            ))
+            .0,
             model: self.model.clone(),
             language: "en".to_string(),
         })
@@ -261,7 +267,8 @@ fn main() {
             .join("models")
             .join("parakeet-tdt-0.6b-v3-Q5_K_M.gguf"),
     }));
-    asr.prepare().expect("the speech model should load");
+    // As the app does when a conversation opens: load and warm up.
+    asr.warm_up().expect("the speech model should load");
     let chat = Arc::new(OllamaChat::new().expect("chat client"));
     chat.prepare(&model)
         .expect("Ollama should be running with the model installed");

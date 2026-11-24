@@ -56,13 +56,22 @@ Run:
 - Engine planning (`plan_asr_engine`): GGUF models in-process, Whisper models in the server, low-resource mode, and missing pieces.
 - Read-aloud: text preparation and bounding, synthesis deadlines, the Fish S2 request against a stand-in HTTP server (text sent, WAV decoded, error status reported without the response body, junk audio rejected), missing-engine handling, install discovery, and playback sample preparation.
 
-Seven Rust tests are ignored by default because they need local assets or a release build:
+21 Rust tests are ignored by default because they need local models, a built stand-in
+program, real hardware, or are timing runs (the full table is in `DEVELOPMENT.md`):
 
 ```powershell
 cd src-tauri
-cargo test --release --lib real_ -- --ignored                          # real whisper-server and Parakeet model
-cargo test --release --lib resampler_speed -- --ignored --nocapture    # resampler timing
+cargo test --release --lib real_ -- --ignored --test-threads=1          # real models: Parakeet, Whisper server, Silero, Smart Turn, Phonon
+cargo test --release --lib _speed -- --ignored --nocapture             # timing runs
+cargo build --release --example fake_agent
+cargo test --release --lib coding_agents -- --ignored                  # background-question runner against the stand-in
+cargo build --release --example wt_probe
+$env:LOCALFLOW_LIVE_WT = "1"
+cargo test --release --lib live_windows_terminal -- --ignored --nocapture   # opens a Windows Terminal tab
 ```
+
+The GPU build has one more, `real_parakeet_gpu_agrees_with_the_cpu_on_the_bench_corpus`
+(`--features gpu-vulkan`).
 
 The Rust crate now compiles transcribe.cpp from source, so `cmake` must be on `PATH` for the
 first build. The Visual Studio Build Tools ship one under
@@ -102,7 +111,7 @@ Current verification on this workstation:
 - `npm run test` with 163 passing tests.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test --release --lib` with 497 passing tests and 7 ignored (2026-11-23, after the code review); `-- --ignored` runs the 7 real-model and speed tests, all passing with the models installed.
+- `cargo test --release --lib` with 722 passing tests and 21 ignored (2026-11-24, after the PR #2 review fixes); the real-model, stand-in and live Windows Terminal tests pass with the models installed and the examples built. Earlier: 497 passing and 7 ignored (2026-11-23).
 - `cargo test --release --lib real_phonon -- --ignored` and `real_silero -- --ignored`, both passing with the models installed.
 - `cargo check`
 - `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.

@@ -295,6 +295,67 @@ textarea {
   min-height: 76px;
 }
 
+.inline-form--project {
+  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 1fr) 82px;
+}
+
+.setting-row--project {
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 1fr) 38px;
+}
+
+.setting-row__notes {
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+}
+
+.project-folder {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.project-folder span,
+.agent-row__path,
+.agent-row__detail {
+  color: #6a746f;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.field-hint--warning,
+.field .field-hint--warning {
+  color: #8b5a12;
+  font-size: 12px;
+}
+
+.agent-row {
+  background: #f8faf7;
+  border: 1px solid #dfe4de;
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.agent-row__heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.agent-actions {
+  margin-top: 12px;
+}
+
+.phrase-list {
+  color: #3d5147;
+  margin: 0 0 12px;
+  padding-left: 18px;
+}
+
 .icon-button {
   min-height: 36px;
   padding: 0;
@@ -339,9 +400,20 @@ textarea {
   color: #8b3525;
 }
 
-.status-pill--listening {
+.status-pill--listening,
+.status-pill--ok {
   background: #e1f0e8;
   color: #236342;
+}
+
+.status-pill--warning {
+  background: #f8edd6;
+  color: #7a5212;
+}
+
+.status-pill--blocked {
+  background: #eceeec;
+  color: #5d6661;
 }
 
 .transcript-output {
@@ -494,10 +566,12 @@ textarea {
   .inline-form--dictionary,
   .inline-form--replacement,
   .inline-form--snippet,
+  .inline-form--project,
   .setting-row,
   .setting-row--dictionary,
   .setting-row--replacement,
   .setting-row--snippet,
+  .setting-row--project,
   .toggle-grid,
   .two-column-fields {
     grid-template-columns: 1fr;

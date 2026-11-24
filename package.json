@@ -14,6 +14,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:dev:gpu": "tauri dev --features gpu-vulkan",
+    "tauri:build:gpu": "tauri build --features gpu-vulkan",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",

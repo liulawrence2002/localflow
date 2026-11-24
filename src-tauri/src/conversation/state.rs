@@ -8,6 +8,12 @@
 //! switched on, and `turn` changes for every user turn and every interruption. Events carry
 //! the counter they belong to; one that no longer matches is ignored, so a slow model or
 //! voice finishing late can never speak into a newer turn or a closed conversation.
+//!
+//! Speech while the assistant has the floor (thinking or speaking) does not cancel its reply
+//! at once. The reply is *held*: its audio paused, its words still being produced. What the
+//! user said then either confirms the interruption, which cancels the reply exactly as the
+//! hotkey does, or shows it was a false one ("mm-hmm", an echo, a noise), which lets the reply
+//! carry on where it stopped. The speaker is paused exactly while `held` is set.
 
 use serde::Serialize;
 
@@ -29,9 +35,12 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// Whether microphone audio is acted on. While the assistant thinks or speaks it is
-    /// ignored, so the assistant can never hear itself and take that for the user.
-    pub fn listens(self) -> bool {
+    /// Whether the user has the floor: the assistant is waiting for them or hearing them.
+    ///
+    /// The microphone is listened to beyond that: while a reply is prepared, so that carrying
+    /// on speaking holds it, and while it is spoken, to catch the user talking over it when
+    /// the assistant's own voice can be removed. The ear decides that from its own stage.
+    pub fn user_has_floor(self) -> bool {
         matches!(self, Self::Listening | Self::UserSpeaking)
     }
 
@@ -56,6 +65,9 @@ pub enum StopReason {
     StartFailed,
     /// The microphone stopped delivering audio.
     DeviceLost,
+    /// A coding agent was opened in a terminal tab, and the conversation stepped aside so the
+    /// task can be dictated into the agent's own prompt.
+    AgentOpened,
 }
 
 /// What a finished user turn turned out to be, as far as the state machine cares.
@@ -84,11 +96,26 @@ pub enum Event {
     SpeechStarted {
         conversation: u64,
     },
+    /// The user finished a turn. Accepted while waiting for them too: the start of their
+    /// speech may have been heard while the assistant still had the floor, which it then gave
+    /// back as they talked.
     SpeechEnded {
         conversation: u64,
     },
-    /// The user started speaking over the assistant's reply.
+    /// The user started speaking while the assistant had the floor: while it prepared a reply
+    /// or spoke one. The reply is held, not cancelled, until their words show whether they are
+    /// taking the floor.
     BargeIn {
+        conversation: u64,
+    },
+    /// What the user said over the held reply is a real interruption. The reply is cancelled
+    /// and the user has the floor: what they are saying is their next turn.
+    InterruptionConfirmed {
+        conversation: u64,
+    },
+    /// It was only "mm-hmm", the assistant's own voice, or a noise. The held reply carries on
+    /// where it stopped.
+    FalseInterruption {
         conversation: u64,
     },
     /// What sounded like the start of a turn held no words (a cough, a noise).
@@ -99,12 +126,24 @@ pub enum Event {
         turn: u64,
         outcome: TurnOutcome,
     },
-    /// The first audio of the reply reached the speaker queue.
+    /// The first audio of the reply reached the speaker queue. Also the first audio after a
+    /// [`Event::ReplyWaiting`].
     ReplyAudioStarted {
+        turn: u64,
+    },
+    /// What the reply had to say so far has been said, and the rest is not ready: a coding
+    /// agent is still working on the question. The assistant keeps the floor, but the
+    /// microphone is listened to as while it prepares any reply.
+    ReplyWaiting {
         turn: u64,
     },
     /// The reply has been spoken to the end.
     ReplyFinished {
+        turn: u64,
+    },
+    /// The reply has been spoken to the end, and it opened a coding agent: the conversation
+    /// ends so the task can be dictated into the agent.
+    HandedToAgent {
         turn: u64,
     },
     /// The reply could not be produced or spoken.
@@ -130,8 +169,14 @@ pub enum Effect {
     Stop { reason: StopReason },
     /// Transcribe the captured utterance and answer it.
     BeginTurn { turn: u64 },
-    /// Cancel the model and the voice for this turn and silence the speaker.
+    /// Cancel the model and the voice for this turn and silence the speaker, discarding
+    /// what was queued.
     CancelTurn { turn: u64 },
+    /// Pause the speaker, keeping what is queued; the reply goes on being produced.
+    PauseReply { turn: u64 },
+    /// Let the speaker play again after [`Effect::PauseReply`]. After a
+    /// [`Effect::CancelTurn`] in the same transition, so nothing cancelled is heard.
+    ResumeReply { turn: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +184,10 @@ pub struct ConversationState {
     pub phase: Phase,
     pub conversation: u64,
     pub turn: u64,
+    /// The user started speaking while the assistant had the floor, so its reply is held:
+    /// the speaker paused, the reply still being produced, until their words are judged.
+    /// Only ever set while thinking or speaking.
+    pub held: bool,
 }
 
 impl Default for ConversationState {
@@ -147,11 +196,35 @@ impl Default for ConversationState {
             phase: Phase::Off,
             conversation: 0,
             turn: 0,
+            held: false,
         }
     }
 }
 
 pub fn transition(state: ConversationState, event: Event) -> (ConversationState, Vec<Effect>) {
+    let (mut next, mut effects) = step(state, event);
+    // Only a reply that is being prepared or spoken can be held.
+    if !matches!(next.phase, Phase::Thinking | Phase::Speaking) {
+        next.held = false;
+    }
+    // However a hold ends, the speaker must not stay paused: the next reply would never be
+    // heard. A cancel comes first, so what was cancelled is discarded before it could play.
+    if state.held
+        && !next.held
+        && !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::ResumeReply { .. }))
+    {
+        let after_cancel = effects
+            .iter()
+            .position(|effect| matches!(effect, Effect::CancelTurn { .. }))
+            .map_or(effects.len(), |cancel| cancel + 1);
+        effects.insert(after_cancel, Effect::ResumeReply { turn: state.turn });
+    }
+    (next, effects)
+}
+
+fn step(state: ConversationState, event: Event) -> (ConversationState, Vec<Effect>) {
     use Phase::*;
 
     let stop = |state: ConversationState, reason| {
@@ -173,7 +246,8 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
     let stay = (state, Vec::new());
     let current_conversation =
         |conversation: u64| state.phase.is_active() && conversation == state.conversation;
-    let current_turn = |turn: u64| matches!(state.phase, Thinking | Speaking) && turn == state.turn;
+    let assistant_has_floor = matches!(state.phase, Thinking | Speaking);
+    let current_turn = |turn: u64| assistant_has_floor && turn == state.turn;
 
     match event {
         Event::Toggle => match state.phase {
@@ -184,6 +258,7 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
                         phase: Starting,
                         conversation,
                         turn: state.turn,
+                        held: false,
                     },
                     vec![Effect::Start { conversation }],
                 )
@@ -241,7 +316,8 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
             }
         }
         Event::SpeechEnded { conversation } => {
-            if state.phase == UserSpeaking && conversation == state.conversation {
+            if matches!(state.phase, Listening | UserSpeaking) && conversation == state.conversation
+            {
                 let turn = state.turn + 1;
                 (
                     ConversationState {
@@ -256,16 +332,44 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
             }
         }
         Event::BargeIn { conversation } => {
-            // Only a reply that is being spoken can be talked over. The user keeps the floor:
-            // what they are saying is the start of their next turn.
-            if state.phase == Speaking && conversation == state.conversation {
+            // Only a reply that is being prepared or spoken can be talked over. It is held,
+            // not cancelled: the user may only be saying "mm-hmm".
+            if assistant_has_floor && conversation == state.conversation && !state.held {
+                (
+                    ConversationState {
+                        held: true,
+                        ..state
+                    },
+                    vec![Effect::PauseReply { turn: state.turn }],
+                )
+            } else {
+                stay
+            }
+        }
+        Event::InterruptionConfirmed { conversation } => {
+            // The user keeps the floor: what they are saying is the start of their next turn.
+            if assistant_has_floor && conversation == state.conversation && state.held {
                 (
                     ConversationState {
                         phase: UserSpeaking,
                         turn: state.turn + 1,
+                        held: false,
                         ..state
                     },
                     vec![Effect::CancelTurn { turn: state.turn }],
+                )
+            } else {
+                stay
+            }
+        }
+        Event::FalseInterruption { conversation } => {
+            if assistant_has_floor && conversation == state.conversation && state.held {
+                (
+                    ConversationState {
+                        held: false,
+                        ..state
+                    },
+                    vec![Effect::ResumeReply { turn: state.turn }],
                 )
             } else {
                 stay
@@ -313,6 +417,19 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
                 stay
             }
         }
+        Event::ReplyWaiting { turn } => {
+            if state.phase == Speaking && turn == state.turn {
+                (
+                    ConversationState {
+                        phase: Thinking,
+                        ..state
+                    },
+                    Vec::new(),
+                )
+            } else {
+                stay
+            }
+        }
         Event::ReplyFinished { turn } | Event::ReplyFailed { turn } => {
             if current_turn(turn) {
                 (
@@ -322,6 +439,13 @@ pub fn transition(state: ConversationState, event: Event) -> (ConversationState,
                     },
                     Vec::new(),
                 )
+            } else {
+                stay
+            }
+        }
+        Event::HandedToAgent { turn } => {
+            if current_turn(turn) {
+                stop(state, StopReason::AgentOpened)
             } else {
                 stay
             }
@@ -437,16 +561,31 @@ mod tests {
     }
 
     #[test]
-    fn the_microphone_is_only_acted_on_while_waiting_for_or_hearing_the_user() {
-        assert!(Phase::Listening.listens());
-        assert!(Phase::UserSpeaking.listens());
+    fn the_user_has_the_floor_only_while_waited_for_or_heard() {
+        // Not while a reply is prepared or spoken, even though the ear listens then: speech
+        // there holds the reply (`BargeIn`) rather than starting a turn.
+        assert!(Phase::Listening.user_has_floor());
+        assert!(Phase::UserSpeaking.user_has_floor());
         for phase in [
             Phase::Off,
             Phase::Starting,
             Phase::Thinking,
             Phase::Speaking,
         ] {
-            assert!(!phase.listens(), "{phase:?}");
+            assert!(!phase.user_has_floor(), "{phase:?}");
+        }
+        // And it is the floor that decides whether speech starts a turn or holds a reply.
+        for prefix in [listening(), thinking(), speaking()] {
+            let (before, _) = run(&prefix);
+            let (after_start, _) = transition(before, Event::SpeechStarted { conversation: 1 });
+            let (after_barge, _) = transition(before, Event::BargeIn { conversation: 1 });
+            if before.phase.user_has_floor() {
+                assert_eq!(after_start.phase, Phase::UserSpeaking);
+                assert_eq!(after_barge, before);
+            } else {
+                assert_eq!(after_start, before);
+                assert!(after_barge.held);
+            }
         }
     }
 
@@ -568,7 +707,9 @@ mod tests {
         for (event, reason) in endings {
             let mut speaking = thinking();
             speaking.push(Event::ReplyAudioStarted { turn: 1 });
-            for prefix in [vec![Event::Toggle], listening(), thinking(), speaking] {
+            let mut held = speaking.clone();
+            held.push(Event::BargeIn { conversation: 1 });
+            for prefix in [vec![Event::Toggle], listening(), thinking(), speaking, held] {
                 let (before, earlier) = run(&prefix);
                 let (state, effects) = after(prefix, &[event]);
                 let new = &effects[earlier.len()..];
@@ -656,14 +797,56 @@ mod tests {
         assert!(effects.is_empty());
     }
 
+    /// A conversation in which turn 1's reply is being spoken.
+    fn speaking() -> Vec<Event> {
+        let mut events = thinking();
+        events.push(Event::ReplyAudioStarted { turn: 1 });
+        events
+    }
+
+    /// Turn 1's reply is being spoken and the user has started talking over it.
+    fn held_while_speaking() -> Vec<Event> {
+        let mut events = speaking();
+        events.push(Event::BargeIn { conversation: 1 });
+        events
+    }
+
+    /// The user carried on speaking while turn 1's reply was being prepared.
+    fn held_while_thinking() -> Vec<Event> {
+        let mut events = thinking();
+        events.push(Event::BargeIn { conversation: 1 });
+        events
+    }
+
     #[test]
-    fn speaking_over_a_reply_cuts_it_off_and_starts_the_users_turn() {
-        let mut speaking = thinking();
-        speaking.push(Event::ReplyAudioStarted { turn: 1 });
-        let (state, effects) = after(speaking.clone(), &[Event::BargeIn { conversation: 1 }]);
+    fn speaking_over_a_reply_holds_it_instead_of_cutting_it_off() {
+        // Changed by design: this used to cancel the reply on the spot.
+        let (before, _) = run(&speaking());
+        let (state, effects) = transition(before, Event::BargeIn { conversation: 1 });
+
+        assert_eq!(state.phase, Phase::Speaking);
+        assert!(state.held);
+        assert_eq!(state.turn, 1, "the turn goes on");
+        assert_eq!(effects, vec![Effect::PauseReply { turn: 1 }]);
+    }
+
+    #[test]
+    fn a_confirmed_interruption_cuts_the_reply_off_and_starts_the_users_turn() {
+        let (state, effects) = after(
+            held_while_speaking(),
+            &[Event::InterruptionConfirmed { conversation: 1 }],
+        );
 
         assert_eq!(state.phase, Phase::UserSpeaking);
-        assert_eq!(effects.last(), Some(&Effect::CancelTurn { turn: 1 }));
+        assert!(!state.held);
+        // Cancelled (and the queue discarded) before the speaker is let go again.
+        assert_eq!(
+            effects[effects.len() - 2..],
+            [
+                Effect::CancelTurn { turn: 1 },
+                Effect::ResumeReply { turn: 1 }
+            ]
+        );
         assert!(!effects.iter().any(|e| matches!(e, Effect::Stop { .. })));
 
         // The interrupted reply reporting in late changes nothing, and the user's words
@@ -677,19 +860,285 @@ mod tests {
     }
 
     #[test]
-    fn only_a_reply_being_spoken_can_be_talked_over() {
-        for prefix in [vec![Event::Toggle], listening(), thinking()] {
+    fn a_false_interruption_lets_the_reply_carry_on_in_the_same_turn() {
+        let (state, effects) = after(
+            held_while_speaking(),
+            &[Event::FalseInterruption { conversation: 1 }],
+        );
+
+        assert_eq!(state.phase, Phase::Speaking);
+        assert!(!state.held);
+        assert_eq!(effects.last(), Some(&Effect::ResumeReply { turn: 1 }));
+        assert!(!effects
+            .iter()
+            .any(|e| matches!(e, Effect::CancelTurn { .. })));
+        // The same reply can still finish, and be talked over again.
+        let (again, effects) = transition(state, Event::BargeIn { conversation: 1 });
+        assert!(again.held);
+        assert_eq!(effects, vec![Effect::PauseReply { turn: 1 }]);
+        let (done, _) = transition(state, Event::ReplyFinished { turn: 1 });
+        assert_eq!(done.phase, Phase::Listening);
+    }
+
+    #[test]
+    fn speech_while_the_reply_is_prepared_holds_it_before_any_of_it_plays() {
+        let (state, effects) = run(&held_while_thinking());
+        assert_eq!((state.phase, state.held), (Phase::Thinking, true));
+        assert_eq!(effects.last(), Some(&Effect::PauseReply { turn: 1 }));
+
+        // Its first audio arrives into the paused speaker: still held.
+        let (state, effects) = transition(state, Event::ReplyAudioStarted { turn: 1 });
+        assert_eq!((state.phase, state.held), (Phase::Speaking, true));
+        assert!(effects.is_empty());
+
+        // The user was carrying on with their question: it is cancelled for the longer one.
+        let (state, effects) = transition(state, Event::InterruptionConfirmed { conversation: 1 });
+        assert_eq!(state.phase, Phase::UserSpeaking);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::CancelTurn { turn: 1 },
+                Effect::ResumeReply { turn: 1 }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_noise_while_the_reply_is_prepared_releases_it() {
+        let (state, effects) = after(
+            held_while_thinking(),
+            &[Event::FalseInterruption { conversation: 1 }],
+        );
+        assert_eq!((state.phase, state.held), (Phase::Thinking, false));
+        assert_eq!(effects.last(), Some(&Effect::ResumeReply { turn: 1 }));
+        // The reply goes on as if nothing had happened.
+        let (state, _) = transition(state, Event::ReplyAudioStarted { turn: 1 });
+        assert_eq!(state.phase, Phase::Speaking);
+    }
+
+    #[test]
+    fn only_a_reply_being_prepared_or_spoken_can_be_talked_over() {
+        // Changed by design: a reply being prepared can now be held too.
+        for prefix in [vec![Event::Toggle], listening(), {
+            let mut events = listening();
+            events.push(Event::SpeechStarted { conversation: 1 });
+            events
+        }] {
             let (before, _) = run(&prefix);
-            let (state, effects) = transition(before, Event::BargeIn { conversation: 1 });
-            assert_eq!(state, before, "{:?}", before.phase);
-            assert!(effects.is_empty());
+            for event in [
+                Event::BargeIn { conversation: 1 },
+                Event::InterruptionConfirmed { conversation: 1 },
+                Event::FalseInterruption { conversation: 1 },
+            ] {
+                let (state, effects) = transition(before, event);
+                assert_eq!(state, before, "{event:?} in {:?}", before.phase);
+                assert!(effects.is_empty());
+            }
         }
         // And not from an earlier conversation.
-        let mut speaking = thinking();
-        speaking.push(Event::ReplyAudioStarted { turn: 1 });
-        let (before, _) = run(&speaking);
-        let (state, _) = transition(before, Event::BargeIn { conversation: 7 });
-        assert_eq!(state, before);
+        for prefix in [thinking(), speaking(), held_while_speaking()] {
+            let (before, _) = run(&prefix);
+            for event in [
+                Event::BargeIn { conversation: 7 },
+                Event::InterruptionConfirmed { conversation: 7 },
+                Event::FalseInterruption { conversation: 7 },
+            ] {
+                let (state, effects) = transition(before, event);
+                assert_eq!(state, before, "{event:?}");
+                assert!(effects.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_verdict_needs_a_hold_and_a_hold_is_not_taken_twice() {
+        for prefix in [thinking(), speaking()] {
+            let (before, _) = run(&prefix);
+            for event in [
+                Event::InterruptionConfirmed { conversation: 1 },
+                Event::FalseInterruption { conversation: 1 },
+            ] {
+                let (state, effects) = transition(before, event);
+                assert_eq!(state, before, "{event:?}");
+                assert!(effects.is_empty());
+            }
+        }
+        let (held, _) = run(&held_while_speaking());
+        let (state, effects) = transition(held, Event::BargeIn { conversation: 1 });
+        assert_eq!(state, held);
+        assert!(effects.is_empty(), "the speaker is paused once");
+    }
+
+    #[test]
+    fn the_hotkey_stops_a_held_reply_at_once() {
+        for prefix in [held_while_speaking(), held_while_thinking()] {
+            let (state, effects) = after(prefix, &[Event::Toggle]);
+            assert_eq!(state.phase, Phase::Listening);
+            assert!(!state.held);
+            assert_eq!(
+                effects[effects.len() - 2..],
+                [
+                    Effect::CancelTurn { turn: 1 },
+                    Effect::ResumeReply { turn: 1 }
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_reply_that_ends_while_held_releases_the_speaker() {
+        for (prefix, ending) in [
+            (held_while_thinking(), Event::ReplyFailed { turn: 1 }),
+            (held_while_thinking(), Event::ReplyFinished { turn: 1 }),
+            (
+                held_while_thinking(),
+                Event::TurnRouted {
+                    turn: 1,
+                    outcome: TurnOutcome::NoReply,
+                },
+            ),
+            (held_while_speaking(), Event::ReplyFinished { turn: 1 }),
+        ] {
+            let (state, effects) = after(prefix, &[ending]);
+            assert_eq!(state.phase, Phase::Listening, "{ending:?}");
+            assert!(!state.held);
+            assert_eq!(effects.last(), Some(&Effect::ResumeReply { turn: 1 }));
+            // A verdict that arrives afterwards is too late to matter.
+            for late in [
+                Event::InterruptionConfirmed { conversation: 1 },
+                Event::FalseInterruption { conversation: 1 },
+            ] {
+                let (unchanged, none) = transition(state, late);
+                assert_eq!(unchanged, state);
+                assert!(none.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_whose_start_was_missed_still_begins_when_it_ends() {
+        // The user started talking as the reply ended, so the start was heard while the
+        // assistant still had the floor; then the floor came back.
+        let (state, effects) = after(listening(), &[Event::SpeechEnded { conversation: 1 }]);
+        assert_eq!(state.phase, Phase::Thinking);
+        assert_eq!(effects.last(), Some(&Effect::BeginTurn { turn: 1 }));
+    }
+
+    #[test]
+    fn a_reply_waiting_for_an_agent_listens_without_giving_up_the_floor() {
+        let (before, _) = run(&speaking());
+        let (state, effects) = transition(before, Event::ReplyWaiting { turn: 1 });
+        assert_eq!(state.phase, Phase::Thinking);
+        assert_eq!(state.turn, 1, "the same reply");
+        assert!(effects.is_empty());
+        // The rest of the reply arrives and is spoken.
+        let (state, _) = transition(state, Event::ReplyAudioStarted { turn: 1 });
+        assert_eq!(state.phase, Phase::Speaking);
+        // Late or out of place, it changes nothing.
+        for prefix in [listening(), thinking()] {
+            let (before, _) = run(&prefix);
+            assert_eq!(
+                transition(before, Event::ReplyWaiting { turn: 1 }).0,
+                before
+            );
+        }
+        let (interrupted, _) = after(speaking(), &[Event::Toggle]);
+        assert_eq!(
+            transition(interrupted, Event::ReplyWaiting { turn: 1 }).0,
+            interrupted
+        );
+    }
+
+    #[test]
+    fn opening_an_agent_ends_the_conversation_once_its_reply_is_spoken() {
+        let (state, effects) = after(speaking(), &[Event::HandedToAgent { turn: 1 }]);
+        assert_eq!(state.phase, Phase::Off);
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::Stop {
+                reason: StopReason::AgentOpened
+            })
+        );
+        // Not from a reply that was already interrupted.
+        let (interrupted, _) = after(speaking(), &[Event::Toggle]);
+        let (state, effects) = transition(interrupted, Event::HandedToAgent { turn: 1 });
+        assert_eq!(state, interrupted);
+        assert!(effects.is_empty());
+    }
+
+    /// A small deterministic generator, so the walk below is the same on every run.
+    fn shuffled(seed: &mut u64, len: usize) -> usize {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*seed >> 33) as usize) % len
+    }
+
+    #[test]
+    fn whatever_happens_the_speaker_is_paused_exactly_while_a_reply_is_held() {
+        let mut seed = 7u64;
+        for _ in 0..200 {
+            let mut state = ConversationState::default();
+            let mut paused = false;
+            let mut open = false;
+            for _ in 0..60 {
+                let conversation = state.conversation.max(1);
+                let turn = state.turn;
+                let events = [
+                    Event::Toggle,
+                    Event::EndRequested,
+                    Event::Ready { conversation },
+                    Event::SpeechStarted { conversation },
+                    Event::SpeechEnded { conversation },
+                    Event::BargeIn { conversation },
+                    Event::InterruptionConfirmed { conversation },
+                    Event::FalseInterruption { conversation },
+                    Event::TurnAbandoned { conversation },
+                    Event::TurnRouted {
+                        turn,
+                        outcome: TurnOutcome::Reply,
+                    },
+                    Event::TurnRouted {
+                        turn,
+                        outcome: TurnOutcome::NoReply,
+                    },
+                    Event::ReplyAudioStarted { turn },
+                    Event::ReplyWaiting { turn },
+                    Event::ReplyFinished { turn },
+                    Event::ReplyFailed { turn },
+                    Event::HandedToAgent { turn },
+                    Event::ReplyFinished {
+                        turn: turn.saturating_sub(1),
+                    },
+                    Event::IdleTimeout { conversation },
+                ];
+                let event = events[shuffled(&mut seed, events.len())];
+                let (next, effects) = transition(state, event);
+                for effect in &effects {
+                    match effect {
+                        Effect::Start { .. } => open = true,
+                        Effect::PauseReply { .. } => {
+                            assert!(!paused, "paused twice by {event:?}");
+                            paused = true;
+                        }
+                        Effect::ResumeReply { .. } => paused = false,
+                        Effect::Stop { .. } => {
+                            open = false;
+                            paused = false;
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(paused, next.held, "after {event:?} from {state:?}");
+                assert!(
+                    !next.held || matches!(next.phase, Phase::Thinking | Phase::Speaking),
+                    "held in {:?}",
+                    next.phase
+                );
+                assert_eq!(open, next.phase.is_active());
+                state = next;
+            }
+        }
     }
 
     #[test]
@@ -732,9 +1181,30 @@ mod tests {
                 turn: 1,
                 outcome: TurnOutcome::End,
             },
+            Event::BargeIn { conversation: 1 },
+            Event::InterruptionConfirmed { conversation: 1 },
+            Event::FalseInterruption { conversation: 1 },
         ] {
             let (state, effects) = transition(second, stale);
             assert_eq!(state, second, "{stale:?}");
+            assert!(effects.is_empty(), "{stale:?}");
+        }
+        // Nor while the new conversation is busy with a held reply of its own.
+        let mut busy = events.clone();
+        busy.extend([
+            Event::SpeechStarted { conversation: 2 },
+            Event::SpeechEnded { conversation: 2 },
+            Event::BargeIn { conversation: 2 },
+        ]);
+        let (held, _) = run(&busy);
+        assert!(held.held);
+        for stale in [
+            Event::InterruptionConfirmed { conversation: 1 },
+            Event::FalseInterruption { conversation: 1 },
+            Event::ReplyFinished { turn: 1 },
+        ] {
+            let (state, effects) = transition(held, stale);
+            assert_eq!(state, held, "{stale:?}");
             assert!(effects.is_empty(), "{stale:?}");
         }
     }
@@ -745,6 +1215,9 @@ mod tests {
         events.push(Event::Toggle); // interrupt
         events.push(Event::SpeechStarted { conversation: 1 });
         events.push(Event::SpeechEnded { conversation: 1 }); // a new turn
+        events.push(Event::BargeIn { conversation: 1 }); // the user carries on...
+        events.push(Event::InterruptionConfirmed { conversation: 1 }); // ...for real
+        events.push(Event::SpeechEnded { conversation: 1 }); // one longer turn
         events.push(Event::EndRequested);
         events.extend([Event::Toggle, Event::Ready { conversation: 2 }]);
         events.push(Event::SpeechStarted { conversation: 2 });
@@ -759,7 +1232,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(turns.len(), 3);
+        assert_eq!(turns.len(), 4);
         assert!(turns.windows(2).all(|pair| pair[1] > pair[0]), "{turns:?}");
     }
 }

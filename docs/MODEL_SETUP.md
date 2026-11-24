@@ -47,7 +47,9 @@ $env:LOCALFLOW_WHISPER_MODEL = "C:\path\to\ggml-base.en.bin"
 
 The native hotkey path resamples the recording to mono 16 kHz, transcribes it with the loaded speech model (dictionary terms are passed as vocabulary where the model supports it, or as a prompt for Whisper), applies deterministic formatting, verifies the target window, inserts the text, and then asks your configured local Ollama model for a background cleanup. The model is loaded when recording starts and freed when LocalFlow quits. Every run has a deadline; a run that passes it is cancelled.
 
-Still pending: streaming partial transcripts, GPU acceleration for the speech model, and unloading the speech model after a period without use.
+GPU acceleration: an app built with `npm run tauri:build:gpu` (the `gpu-vulkan` feature, which needs the Vulkan SDK) runs Parakeet on the discrete GPU and falls back to the CPU if there is none or it fails; set `LOCALFLOW_ASR_DEVICE=cpu` to force the CPU. See `benchmarks/ASR_SPEED_BENCHMARK.md`.
+
+Still pending: streaming partial transcripts, and unloading the speech model after a period without use.
 
 ## Conversation mode models
 
@@ -57,12 +59,14 @@ from a pinned revision; LocalFlow never downloads anything itself.
 ```powershell
 .\scripts\Get-PhononModel.ps1     # the conversation voice, about 65 MB (required)
 .\scripts\Get-VadModel.ps1        # voice-activity detection, 1.2 MB (recommended)
+.\scripts\Get-SmartTurnModel.ps1  # end-of-turn audio model, about 32 MB (recommended)
 ```
 
 | Model | Used for | Licence | Where it runs |
 |---|---|---|---|
 | Gradium Phonon 31m, q8 (`models\phonon\`) | the assistant's voice, English | Apache-2.0 | in-process, at most four CPU threads, about 300 MB of memory while a conversation is on |
 | Silero VAD v6.2 (`models\silero-vad-v6.2-F32.gguf`) | telling speech from other sound, finding the end of a turn | MIT | in-process, through the speech library |
+| Smart Turn v3.2, fp32 (`models\smart-turn-v3.2-gpu.onnx`) | hearing from the voice whether a turn sounds finished, alongside the text judge | BSD-2-Clause | in-process on the CPU (tract), up to four threads, at each pause |
 
 Without the voice, conversation mode will not start and says which script to run. Without
 the Silero model it starts with a loudness rule instead, which any loud sound can trigger.

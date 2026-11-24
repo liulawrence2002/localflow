@@ -5,13 +5,151 @@
 //! how many pieces the listener actually began to hear, which is what lets an interrupted
 //! reply be remembered, and a page's reading position be advanced, only as far as it went.
 
-use std::{sync::mpsc, thread, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use crate::{
     audio::{devices::AudioSink, resample::StreamResampler},
     cancel::CancelFlag,
     tts::{provider::TtsError, stream::StreamingTextToSpeech},
 };
+
+/// Decides whose reply may use the speaker.
+///
+/// Each reply speaks through its own [`GatedSink`]. When its turn is cancelled the gate is
+/// closed to it, and the queue silenced, in one step; whatever that reply's threads write or
+/// flush afterwards is dropped. A cancelled reply that is slow to notice can therefore never
+/// play over, or cut off, the reply that follows it.
+pub struct SpeakerGate {
+    sink: Arc<dyn AudioSink>,
+    state: Mutex<GateState>,
+}
+
+#[derive(Default)]
+struct GateState {
+    /// The turn whose reply may play.
+    owner: Option<u64>,
+    /// How much had been played when each recent reply lost the speaker, so a reply that
+    /// works out what was heard after losing it counts nothing of the next one.
+    closed: VecDeque<(u64, u64)>,
+}
+
+/// How many closed replies are remembered.
+const CLOSED_KEPT: usize = 8;
+
+impl SpeakerGate {
+    pub fn new(sink: Arc<dyn AudioSink>) -> Arc<Self> {
+        Arc::new(Self {
+            sink,
+            state: Mutex::new(GateState::default()),
+        })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, GateState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Give the speaker to `turn`'s reply.
+    pub fn open(&self, turn: u64) {
+        self.state().owner = Some(turn);
+    }
+
+    /// Take the speaker from `turn`'s reply, if it has it, and silence what it queued.
+    /// Returns once that is done.
+    pub fn close(&self, turn: u64) {
+        let mut state = self.state();
+        if state.owner == Some(turn) {
+            Self::shut(&mut state, &*self.sink, turn);
+        }
+    }
+
+    /// Take the speaker from whichever reply has it: the conversation is ending.
+    pub fn close_any(&self) {
+        let mut state = self.state();
+        if let Some(turn) = state.owner {
+            Self::shut(&mut state, &*self.sink, turn);
+        }
+    }
+
+    fn shut(state: &mut GateState, sink: &dyn AudioSink, turn: u64) {
+        state.owner = None;
+        // Under the lock: nothing of this reply can be written between the two.
+        sink.flush();
+        state.closed.push_back((turn, sink.played()));
+        if state.closed.len() > CLOSED_KEPT {
+            state.closed.pop_front();
+        }
+    }
+
+    /// The speaker as `turn`'s reply may use it.
+    pub fn for_turn(self: &Arc<Self>, turn: u64) -> GatedSink {
+        GatedSink {
+            gate: self.clone(),
+            turn,
+        }
+    }
+}
+
+/// One reply's use of the speaker; see [`SpeakerGate`].
+pub struct GatedSink {
+    gate: Arc<SpeakerGate>,
+    turn: u64,
+}
+
+impl AudioSink for GatedSink {
+    fn sample_rate(&self) -> u32 {
+        self.gate.sink.sample_rate()
+    }
+
+    fn write(&self, samples: &[f32]) -> usize {
+        let state = self.gate.state();
+        if state.owner == Some(self.turn) {
+            self.gate.sink.write(samples)
+        } else {
+            // Too late: taken as written, and dropped.
+            samples.len()
+        }
+    }
+
+    fn queued(&self) -> usize {
+        let state = self.gate.state();
+        if state.owner == Some(self.turn) {
+            self.gate.sink.queued()
+        } else {
+            0
+        }
+    }
+
+    fn played(&self) -> u64 {
+        let state = self.gate.state();
+        if state.owner == Some(self.turn) {
+            return self.gate.sink.played();
+        }
+        state
+            .closed
+            .iter()
+            .rev()
+            .find(|(turn, _)| *turn == self.turn)
+            .map_or_else(|| self.gate.sink.played(), |(_, played)| *played)
+    }
+
+    fn flush(&self) {
+        let state = self.gate.state();
+        if state.owner == Some(self.turn) {
+            self.gate.sink.flush();
+        }
+    }
+
+    fn healthy(&self) -> bool {
+        self.gate.sink.healthy()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spoken {
@@ -185,6 +323,140 @@ mod tests {
         assert_eq!(spoken.heard_text, "");
         assert!(speaker.flushes.load(Ordering::Relaxed) >= 1);
         assert_eq!(speaker.queued(), 0);
+    }
+
+    #[test]
+    fn a_cancelled_reply_that_is_late_to_stop_cannot_touch_the_next_one() {
+        let speaker = Arc::new(RecordingSpeaker::new(16_000));
+        speaker.hold.store(true, Ordering::Relaxed);
+        let gate = SpeakerGate::new(speaker.clone());
+        let old = gate.for_turn(1);
+        let new = gate.for_turn(3);
+
+        gate.open(1);
+        old.write(&[0.5; 100]);
+        assert_eq!(old.queued(), 100);
+        // Turn 1 is cancelled: its queue is silenced in the same step.
+        gate.close(1);
+        assert_eq!(speaker.queued(), 0);
+        assert_eq!(speaker.flushes.load(Ordering::Relaxed), 1);
+
+        // The next reply starts.
+        gate.open(3);
+        new.write(&[0.25; 50]);
+        // The old reply's threads, slow to notice, write and flush.
+        assert_eq!(old.write(&[0.5; 100]), 100, "taken, so it does not wait");
+        old.flush();
+        assert_eq!(speaker.queued(), 50, "only the new reply's audio");
+        assert_eq!(speaker.flushes.load(Ordering::Relaxed), 1);
+        assert_eq!(old.queued(), 0);
+        assert_eq!(new.queued(), 50);
+
+        // What the old reply counts as heard stops where it lost the speaker.
+        speaker.release();
+        assert_eq!(new.played(), 50);
+        assert_eq!(old.played(), 0);
+        // Closing a turn that no longer has the speaker does nothing.
+        gate.close(1);
+        assert_eq!(speaker.flushes.load(Ordering::Relaxed), 1);
+        gate.close_any();
+        assert_eq!(speaker.flushes.load(Ordering::Relaxed), 2);
+        assert_eq!(new.write(&[0.1; 10]), 10);
+        assert_eq!(speaker.played(), 50, "nothing after the end");
+    }
+
+    #[test]
+    fn a_reply_cancelled_mid_sentence_reports_only_what_played_before() {
+        let voice = MockVoice {
+            chunk_delay: Duration::from_millis(2),
+            ..MockVoice::default()
+        };
+        let speaker = Arc::new(RecordingSpeaker::new(voice.sample_rate));
+        let gate = SpeakerGate::new(speaker.clone());
+        gate.open(1);
+        let sink = gate.for_turn(1);
+        let cancel = CancelFlag::default();
+        let gate_for_cancel = gate.clone();
+        let cancel_for_audio = cancel.clone();
+        let mut cancel_on_audio = move || {
+            // The loop cancels the turn and closes the gate, then the next reply starts
+            // playing at once.
+            cancel_for_audio.cancel();
+            gate_for_cancel.close(1);
+            gate_for_cancel.open(3);
+            gate_for_cancel.for_turn(3).write(&[0.1; 10_000]);
+        };
+
+        let spoken = speak_pieces(
+            &voice,
+            &sink,
+            pieces(&["One.", "Two."]),
+            &cancel,
+            Duration::ZERO,
+            &mut cancel_on_audio,
+        );
+
+        // Only the first chunk had played; the next reply's audio is not counted.
+        assert_eq!(spoken.heard_pieces, 1);
+        assert_eq!(spoken.finished_pieces, 0);
+        assert!(speaker.played() >= 10_000);
+    }
+
+    #[test]
+    fn audio_held_by_a_pause_is_not_heard_until_it_resumes() {
+        let voice = MockVoice::default();
+        let speaker = RecordingSpeaker::new(voice.sample_rate);
+        // The user started speaking before the reply's first audio: it is held from the start.
+        speaker.pause();
+
+        let spoken = thread::scope(|scope| {
+            let speaking = scope.spawn(|| {
+                speak_pieces(
+                    &voice,
+                    &speaker,
+                    pieces(&["One.", "Two.", "Three."]),
+                    &CancelFlag::default(),
+                    Duration::from_millis(10),
+                    &mut || {},
+                )
+            });
+            // Everything is produced and queued, and none of it has played.
+            while voice.spoken.lock().unwrap().len() < 3 || speaker.queued() < 3 * 4 * 160 {
+                thread::sleep(Duration::from_millis(2));
+            }
+            thread::sleep(Duration::from_millis(30));
+            assert_eq!(speaker.played(), 0);
+            assert!(!speaking.is_finished(), "a held reply is not over");
+
+            speaker.resume();
+            speaking.join().unwrap()
+        });
+
+        assert_eq!(spoken.heard_pieces, 3);
+        assert_eq!(spoken.finished_pieces, 3);
+        assert_eq!(spoken.heard_text, "One. Two. Three.");
+    }
+
+    #[test]
+    fn a_reply_cancelled_while_held_was_never_heard() {
+        let voice = MockVoice::default();
+        let speaker = RecordingSpeaker::new(voice.sample_rate);
+        speaker.pause();
+        let cancel = CancelFlag::default();
+        let mut cancel_on_audio = || cancel.cancel();
+
+        let spoken = speak_pieces(
+            &voice,
+            &speaker,
+            pieces(&["One.", "Two."]),
+            &cancel,
+            Duration::ZERO,
+            &mut cancel_on_audio,
+        );
+
+        assert_eq!(spoken.heard_pieces, 0);
+        assert_eq!(spoken.heard_text, "");
+        assert_eq!(speaker.queued(), 0, "the held audio was thrown away");
     }
 
     /// Plays everything written to it except the last `withheld` samples, as a speaker that
