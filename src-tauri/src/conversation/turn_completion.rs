@@ -161,7 +161,9 @@ enum Tail {
     Closed,
 }
 
-const FILLERS: &[&str] = &[
+/// Hesitation sounds that carry no words. Also used to tell a listener's "mm-hmm" from an
+/// interruption (`barge_in`).
+pub const FILLERS: &[&str] = &[
     "um", "uh", "er", "erm", "uhm", "umm", "uhh", "ah", "hmm", "hm", "mm", "eh",
 ];
 /// Opening words that carry no content and, alone, promise more.

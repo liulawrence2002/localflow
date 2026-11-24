@@ -82,6 +82,13 @@ pub trait SpeechToTextProvider: Send + Sync {
         Ok(())
     }
 
+    /// Make the engine ready and pay any one-time first-run cost (GPU shader compiles, first
+    /// touch of the weights) with a short throw-away transcription, so the next real phrase
+    /// is fast. Idempotent. Meant for the start of a conversation. The default is `prepare`.
+    fn warm_up(&self) -> Result<(), AsrError> {
+        self.prepare()
+    }
+
     /// Transcribe one utterance, blocking until done, failed, or timed out.
     fn transcribe(&self, request: &TranscriptionRequest<'_>) -> Result<Transcription, AsrError>;
 
@@ -140,6 +147,20 @@ impl SpeechToTextProvider for FallbackProvider {
         }
     }
 
+    fn warm_up(&self) -> Result<(), AsrError> {
+        match self.primary.warm_up() {
+            Ok(()) => Ok(()),
+            Err(primary_error) => {
+                tracing::warn!(
+                    provider = self.primary.id(),
+                    error = %primary_error,
+                    "primary ASR provider could not be warmed up; fallback remains available"
+                );
+                self.fallback.prepare()
+            }
+        }
+    }
+
     fn transcribe(&self, request: &TranscriptionRequest<'_>) -> Result<Transcription, AsrError> {
         let primary_error = match self.primary.transcribe(request) {
             Ok(transcription) => return Ok(transcription),
@@ -185,6 +206,7 @@ mod tests {
     struct Counters {
         calls: AtomicUsize,
         shutdowns: AtomicUsize,
+        warm_ups: AtomicUsize,
     }
 
     struct Scripted {
@@ -231,6 +253,61 @@ mod tests {
         fn shutdown(&self) {
             self.counters.shutdowns.fetch_add(1, Ordering::SeqCst);
         }
+
+        fn warm_up(&self) -> Result<(), AsrError> {
+            self.counters.warm_ups.fetch_add(1, Ordering::SeqCst);
+            self.result.clone().map(|_| ())
+        }
+    }
+
+    /// A provider that keeps the trait's default `warm_up`, which must fall through to
+    /// `prepare`.
+    struct PrepareOnly(Arc<Counters>);
+
+    impl SpeechToTextProvider for PrepareOnly {
+        fn id(&self) -> &'static str {
+            "prepare-only"
+        }
+
+        fn describe(&self) -> String {
+            self.id().to_string()
+        }
+
+        fn prepare(&self) -> Result<(), AsrError> {
+            self.0.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn transcribe(&self, _: &TranscriptionRequest<'_>) -> Result<Transcription, AsrError> {
+            Err(AsrError::Failed("unused".to_string()))
+        }
+    }
+
+    #[test]
+    fn warm_up_defaults_to_prepare() {
+        let counters = Arc::new(Counters::default());
+
+        PrepareOnly(counters.clone()).warm_up().unwrap();
+
+        assert_eq!(counters.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn warm_up_reaches_the_primary_and_only_prepares_the_fallback_when_it_fails() {
+        let (primary, primary_counters) = Scripted::boxed("primary", Ok("a"));
+        let (fallback, fallback_counters) = Scripted::boxed("fallback", Ok("b"));
+        FallbackProvider::new(primary, fallback).warm_up().unwrap();
+        assert_eq!(primary_counters.warm_ups.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback_counters.warm_ups.load(Ordering::SeqCst), 0);
+
+        let (primary, _) = Scripted::boxed(
+            "primary",
+            Err(AsrError::Unavailable("no model".to_string())),
+        );
+        let (fallback, fallback_counters) = Scripted::boxed("fallback", Ok("b"));
+        // The fallback is prepared (its default `prepare` succeeds), not warmed up.
+        FallbackProvider::new(primary, fallback).warm_up().unwrap();
+        assert_eq!(fallback_counters.warm_ups.load(Ordering::SeqCst), 0);
     }
 
     fn request() -> TranscriptionRequest<'static> {

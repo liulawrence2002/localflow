@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  quickFolderProblem,
+  type CodingAgentsStatus,
+  type CodingProjectInput,
+  type CodingProjectView,
+  type SpokenNameSuggestion,
+} from "../domain/codingAgents";
+import {
   localModelsToStatus,
   type ConversationStatus,
   type ScreenReadingStatus,
@@ -136,6 +143,47 @@ export async function checkLocalModels(): Promise<OllamaConnectionStatus> {
       message: typeof error === "string" ? error : "Local Ollama could not be reached.",
     };
   }
+}
+
+/** The coding-agent projects, with what settings should warn about. Empty in a browser. */
+export async function listCodingProjects(): Promise<CodingProjectView[]> {
+  return invokeOrFallback<CodingProjectView[]>("list_coding_projects", {}, () => []);
+}
+
+/**
+ * Add a project (no `id`) or change one. Rejects with a sentence saying what is wrong with the
+ * folder or the names. Projects only exist in the desktop app.
+ */
+export async function saveCodingProject(project: CodingProjectInput): Promise<CodingProjectView[]> {
+  if (!isDesktopApp()) {
+    throw "Coding agent projects can only be added in the desktop app.";
+  }
+  return invoke<CodingProjectView[]>("save_coding_project", { project });
+}
+
+export async function removeCodingProject(id: string): Promise<CodingProjectView[]> {
+  if (!isDesktopApp()) {
+    return [];
+  }
+  return invoke<CodingProjectView[]>("remove_coding_project", { id });
+}
+
+/** Suggested spoken names for a folder, or why the folder cannot be used. */
+export async function suggestProjectSpokenNames(path: string): Promise<SpokenNameSuggestion> {
+  return invokeOrFallback<SpokenNameSuggestion>("suggest_project_spoken_names", { path }, () => ({
+    folder: null,
+    folderName: "",
+    suggestions: [],
+    problem: quickFolderProblem(path) ?? "Checking a folder needs the desktop app.",
+  }));
+}
+
+/**
+ * Look for Claude Code, Windows Terminal and Cursor. Runs `claude --version` and `--help`, and
+ * nothing else. `null` outside the desktop app.
+ */
+export async function detectCodingAgents(): Promise<CodingAgentsStatus | null> {
+  return invokeOrFallback<CodingAgentsStatus | null>("detect_coding_agents", {}, () => null);
 }
 
 function isDesktopApp(): boolean {

@@ -44,7 +44,7 @@ fn main() {
     let mut memory = ConversationMemory::default();
     println!("turn,first_text_ms,total_ms,prompt_tokens,output_tokens,reply_chars");
     for (turn, question) in QUESTIONS.iter().enumerate() {
-        memory.push_user(question);
+        memory.push_user(turn as u64, question);
         let started = Instant::now();
         let mut first_text: Option<Duration> = None;
         let mut reply = String::new();
@@ -71,9 +71,9 @@ fn main() {
             let mut chunker = SentenceChunker::default();
             let mut pieces = chunker.push(&reply);
             pieces.extend(chunker.finish());
-            memory.push_assistant(&pieces.join(" "));
+            memory.push_assistant(turn as u64, &pieces.join(" "));
         } else {
-            memory.push_assistant(&reply);
+            memory.push_assistant(turn as u64, &reply);
         }
     }
 
@@ -82,14 +82,17 @@ fn main() {
     // have to wait behind it (Ollama serves one request at a time by default).
     let cancel = CancelFlag::default();
     let mut long = ConversationMemory::default();
-    long.push_user("Count slowly from one to two hundred, writing every number as a word.");
+    long.push_user(
+        1,
+        "Count slowly from one to two hundred, writing every number as a word.",
+    );
     let started = Instant::now();
     chat.stream_chat(&model, &long.messages(), &cancel, &mut |_| cancel.cancel())
         .expect("cancelled reply");
     let cancelled_after = started.elapsed();
 
     let mut short = ConversationMemory::default();
-    short.push_user("Say the single word: ready.");
+    short.push_user(1, "Say the single word: ready.");
     let started = Instant::now();
     let mut first_text: Option<Duration> = None;
     chat.stream_chat(

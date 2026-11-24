@@ -93,14 +93,14 @@ export function describeConversation(status: ConversationStatus | null): Convers
       };
     case "thinking":
       return {
-        headline: "Thinking. The microphone is open but ignored.",
+        headline: "Thinking. The microphone is open: keep talking to add to it.",
         buttonLabel: `Interrupt${hotkey}`,
         buttonDisabled: false,
         microphoneOpen: true,
       };
     case "speaking":
       return {
-        headline: "Speaking. The microphone is open but ignored.",
+        headline: "Speaking. The microphone is open.",
         buttonLabel: `Interrupt${hotkey}`,
         buttonDisabled: false,
         microphoneOpen: true,

@@ -26,6 +26,7 @@ Rust, Cargo, WebView2, and MSVC Build Tools are required before native Tauri com
 ## Privacy Requirements
 
 - No cloud ASR, LLM, telemetry, analytics, or silent network fallback.
+- One owner-approved exception (2026-11-23): a voice command may start a coding agent the user subscribes to (Claude Code now), only after a spoken read-back and "yes". Only the spoken question goes to it, never page text or other context; LocalFlow itself makes no network connection, and never passes flags that skip the agent's permission prompts. See `docs/PRIVACY.md`.
 - Ordinary dictation must work offline once local models are installed.
 - Logs redact transcript content by default.
 - Do not collect protected-field or password context.

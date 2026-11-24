@@ -156,6 +156,34 @@ over the assistant does not depend on LocalFlow's canceller, which detects the s
 and passes the microphone through. On synthetic rooms with a real echo path it removed
 29-33 dB after the first second.
 
+## After the upgrades: GPU recognition and Smart Turn
+
+Measured 2026-11-24 with the same harness, plugged in, all runs back to back in one session
+so they can be compared with each other: three passes of the four questions each. These
+builds include the slice 24 turn-taking changes and Smart Turn.
+
+|                                                 | Median | Slowest  | Recognition per turn, short questions |
+| ----------------------------------------------- | ------ | -------- | ------------------------------------- |
+| Speech recognition on the GPU (Vulkan)          | 568 ms | 853 ms   | 432-591 ms                            |
+| Speech recognition on the CPU, with Smart Turn  | 993 ms | 1,380 ms | 549-762 ms                            |
+| Speech recognition on the CPU, no Smart Turn    | 965 ms | 1,256 ms | 636-840 ms                            |
+
+Smart Turn costs nothing measurable here: it runs on its own threads while the recogniser
+works. The GPU takes about 40 % off the response time.
+
+The CPU figures are slower than the 663 ms measured after milestone 4, and the cause is not
+known. The same build without Smart Turn is no faster, and timings on this machine have
+moved by this much between runs of one build before (484 ms against 663 ms, above), so
+compare only within a table.
+
+The first run of a freshly built GPU program stalled twice on its first pass: one turn
+answered after 9.9 s and another after 3.8 s, with the recogniser taking 9.7 s and 5.0 s.
+Later passes, and a second run of the same program, never stalled. The cause is Vulkan
+preparing kernels for larger inputs the first time they are needed; the 2 s warm-up clip
+did not reach them. The warm-up now also runs 4 s and 10 s clips on a GPU (see
+`ASR_SPEED_BENCHMARK.md`). A freshly built program with that warm-up, two passes, did not
+stall: median 533 ms, slowest 956 ms.
+
 ## Not measured
 
 - A person speaking into a real microphone, in a real room, with a real speaker. The

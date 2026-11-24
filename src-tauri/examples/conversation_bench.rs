@@ -30,6 +30,7 @@ use localflow_lib::{
     audio::{
         devices::{AudioSink, AudioSource},
         resample::resample,
+        smart_turn::{best_turn_model, SMART_TURN_MODEL_FILE},
         speech_detector::{best_detector, SILERO_MODEL_FILE},
     },
     cancel::CancelFlag,
@@ -209,6 +210,11 @@ impl ConversationHost for BenchHost {
             page: Arc::new(NoPageSource),
             echo: Box::new(localflow_lib::audio::echo::NoEchoCancellation),
             readiness: localflow_lib::conversation::default_readiness(),
+            // As in the app: the turn model when it is installed, the words alone otherwise.
+            turn_model: best_turn_model(Some(
+                &self.runtime.join("models").join(SMART_TURN_MODEL_FILE),
+            ))
+            .0,
             model: self.model.clone(),
             language: "en".to_string(),
         })

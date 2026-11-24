@@ -1,3 +1,4 @@
+import { defaultCodingAgentSettings } from "./codingAgents";
 import type { AppStatus, LocalFlowSettings, WorkflowState } from "./types";
 
 export const pinnedOllamaModel = "llama3.2:3b";
@@ -108,6 +109,7 @@ export const defaultSettings: LocalFlowSettings = {
       allowSentenceFragments: true,
     },
   ],
+  codingAgents: defaultCodingAgentSettings,
 };
 
 export const defaultStatus: AppStatus = {

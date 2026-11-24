@@ -3,6 +3,7 @@ pub mod devices;
 pub mod echo;
 pub mod resample;
 pub mod ring;
+pub mod smart_turn;
 pub mod spectrum;
 pub mod speech_detector;
 pub mod turn_segmenter;

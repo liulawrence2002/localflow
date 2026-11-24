@@ -259,9 +259,11 @@ Phase 1 (unify the production pipeline): in progress.
     validated against the reference implementation but NOT compiled into the app: it would
     add about 27 MB and 40 crates, takes 62-80 ms per decision (150-210 ms under load), and
     in a rough check called 18 of 60 cut-off clips complete. The file is not in the module
-    tree. Decide after real use whether to wire it in or delete it.
+    tree. Decide after real use whether to wire it in or delete it. (Decided in slice 24 by
+    a benchmark on Smart Turn's public test set: wired in.)
   - A real interruption that repeats most of a sentence the assistant just said is
-    discarded as echo. While the assistant is thinking, speech is still ignored.
+    discarded as echo. While the assistant is thinking, speech is still ignored (fixed in
+    slice 24).
   Next risks: an echo that slips through all three layers makes the assistant cut itself
   off; the canceller adds 28 ms of delay to the microphone path.
 - **Slice 23 -- code review fixes (done).** A review of the branch against `master` found
@@ -283,6 +285,88 @@ Phase 1 (unify the production pipeline): in progress.
     `mobile_start_dictation`/`mobile_stop_dictation`, which the app does not have; changing the
     speech model while a transcription runs can shut that engine down mid-request; Win32 calls
     in `asr/sidecar.rs` and `overlay.rs` sit outside `platform/` as AGENTS.md asks.
+- **Slice 24 -- turn-taking upgrades from the open-source review (done; not yet tried by a
+  person).** The review is summarised in `../VOICE_ASSISTANT_PLAN.md` ("Lessons from other
+  projects").
+  - Talking over a reply pauses it instead of cancelling it (LiveKit Agents' "false
+    interruption"). `conversation/barge_in.rs` judges what was said: a stop word, a control
+    phrase or two real words cancel the reply; blank, filler, backchannel ("mm-hmm", "okay",
+    "yeah") or echo resume it; 1.5 s of quiet with nothing decided resumes it; a hold over 6 s
+    cancels it. The word minimum applies only while the reply is audible (Pipecat), so "yeah"
+    after a reply has finished still goes to the model. `AudioSink` gained `pause`/`resume`; the
+    speaker fades out over 6 ms and stops reading the queue, so held audio is never counted as
+    heard.
+  - The microphone stays on while the model thinks. Speech then holds the reply before any
+    of it plays, and real words join the earlier turn into one message (Pipecat's "turn
+    resumed"); "read this page" followed by "from the top" is understood as one command.
+    Speech that starts before a reply begins is carried into the next turn instead of lost.
+  - The barge-in gate uses two thresholds (start at 0.65, stay above 0.5, Silero-style), so
+    one quiet frame no longer resets it; it still needs 288 ms of speech.
+  - Smart Turn is wired in (`audio/smart_turn.rs`, tract 0.23.10, the fp32 model
+    `smart-turn-v3.2-gpu.onnx`; the 8-bit `-cpu` file gives wrong answers in tract). Scored
+    first on 2,000 English clips from `pipecat-ai/smart-turn-data-v3.2-test`
+    (`../benchmarks/TURN_JUDGE_BENCHMARK.md`): on 1,600 human clips the text judge alone ended
+    28.4 % of unfinished turns too early, Smart Turn with the text judge 4.5 %, with the wait
+    on finished turns 415 ms against 431 ms. At each pause it hears the last 8 s of the turn
+    on its own thread while Parakeet transcribes. Above 0.5 means ready (400 ms), otherwise not
+    ready (1.4 s); words that trail off pull ready down to unsure (700 ms), and words that read
+    finished lift not ready up to unsure. While its answer is still out, finished-sounding
+    words wait the unsure time rather than the short one; a late answer still applies, and a
+    missing or failed model leaves the words to decide alone. Results for an earlier pause
+    are discarded.
+  - Races fixed with turn numbers: a cancelled reply can no longer flush or write over a newer
+    reply (`SpeakerGate` in `speaking.rs`); memory entries are kept in turn order, so a late
+    reply cannot land after the next question; finished turns are handed over by number
+    rather than through one slot.
+  - Speech recognition on the GPU: a `gpu-vulkan` Cargo feature (`npm run tauri:build:gpu`)
+    builds transcribe.cpp with Vulkan, picks the discrete GPU by name (never the integrated
+    one), and falls back to the CPU if the GPU is missing or a load or run fails. Each
+    conversation starts with a warm-up (2 s on the CPU; 2, 4 and 10 s on a GPU).
+    `LOCALFLOW_ASR_DEVICE=cpu` and `LOCALFLOW_ASR_THREADS` override it. Measured
+    (`../benchmarks/ASR_SPEED_BENCHMARK.md`, `../benchmarks/CONVERSATION_BENCHMARK.md`): the
+    same word error rate (0.85 % against 0.93 %), 135-199 ms against 383-734 ms for a 1-3 s
+    clip, and a median response of 568 ms against 993 ms on the CPU in the same session.
+    The CPU thread count stays at the library's default (8 here); every logical CPU (22)
+    never finished the corpus.
+  Known limitations:
+  - The GPU build imports `vulkan-1.dll` and will not start on a computer without a Vulkan
+    loader, so the feature is off by default; it shares the GPU's memory with Ollama (about
+    0.8 GB more) and there is no free-memory check before loading.
+  - Silero VAD v6.3 (released 2026-11-23) has no GGUF conversion yet; v6.2 stays.
+  - A resumed reply comes back after about 0.6-1.2 s of silence and continues mid-word.
+  - Whether Parakeet writes "mm-hmm" as one of the listed forms is unverified on real audio.
+  - A one-word stop word always wins over the echo check, so a reply that leaks back as just
+    "no" or "stop" stops itself (not seen on this laptop, whose driver removes the echo).
+  - No loudness floor on the barge-in gate yet; it needs real-room recordings to tune.
+- **Slice 25 -- voice commands for coding agents (milestone 5; built, not yet tried live).**
+  `coding_agents/` (detection, spoken names, grammar, read-back dialog, argument building, the
+  background runner), `platform/process.rs` (a process tree inside a kill-on-close job object),
+  `conversation/agents.rs` (the conversation side), and a "Coding agents" Settings screen.
+  - "Open Claude Code in <project>" opens a Windows Terminal tab running the real `claude.exe`
+    (never the npm `.cmd` shim) with `--permission-mode default`, then ends the conversation
+    so the task is dictated into Claude's own prompt. No spoken text goes on the terminal's
+    command line. "Ask Claude ..." runs `claude.exe -p` with read-only tools, `dontAsk`, the
+    folder's own hooks, tool servers and settings switched off, no saved session, and the
+    question on standard input; "stop that" or the hotkey kills its whole process tree.
+    "Open <project> in Cursor" opens the folder in Cursor.
+  - Every command is read back and needs a "yes" said after the read-back has finished. The
+    read-backs contain no stretch of words that itself counts as a yes (tested). Anything
+    else declines; 15 s of silence declines.
+  - Spoken names follow Talon community's rules plus a spaces-removed comparison; a name
+    matching no project or several is asked about. A guard refuses any argument list that
+    could skip permission checks, wherever it appears.
+  - Folders containing `;`, `%` or `"` are refused, because Windows Terminal splits at `;` even
+    inside quotes and expands `%NAME%`.
+  Verified live: the real Windows Terminal opens the tab in a folder whose path has spaces
+  and hands the program exactly `--permission-mode default`
+  (`real_windows_terminal_passes_the_folder_and_arguments_through`, with a stand-in for
+  `claude.exe`). Known limitations: Claude Code and Cursor themselves have not been launched
+  by voice yet; a real `claude -p` answer and its sign-in failure wording are unverified; an
+  answer begun within 150 ms of the read-back ending is ignored, and the user hears the
+  time-out line; "say that again" while a read-back waits declines it; Windows may not bring
+  the new tab to the front, so dictation could land elsewhere (the user sees where before
+  pressing Enter); Codex and Cursor Agent have no command-line tools installed, so they say
+  they are not set up.
 - Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
   SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
   hotkey.

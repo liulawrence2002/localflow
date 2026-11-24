@@ -6,6 +6,7 @@ use tauri::{AppHandle, State};
 
 use crate::{
     asr::{AsrProvider, MockAsrProvider},
+    coding_agents::CodingAgentSettings,
     insertion::{MockTextInserter, TextInserter},
     native_dictation::NativeDictationRuntime,
     privacy::redact_for_log,
@@ -46,6 +47,35 @@ impl LocalFlowRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = settings;
     }
+
+    /// Change the settings under the lock: `change` edits a copy, `persist` stores it, and
+    /// only if both succeed does the copy replace the current settings.
+    pub fn update_settings<T>(
+        &self,
+        change: impl FnOnce(&mut SettingsSnapshot) -> Result<T, String>,
+        persist: impl FnOnce(&SettingsSnapshot) -> Result<(), String>,
+    ) -> Result<T, String> {
+        let mut guard = self
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut next = guard.clone();
+        let value = change(&mut next)?;
+        persist(&next)?;
+        *guard = next;
+        Ok(value)
+    }
+}
+
+/// The settings to keep when the web UI saves `incoming`. Coding-agent projects are changed
+/// only through their own commands, which check every folder, so whatever the web UI sends
+/// for them is ignored and the current projects are kept.
+pub fn merge_saved_settings(
+    current: &SettingsSnapshot,
+    mut incoming: SettingsSnapshot,
+) -> SettingsSnapshot {
+    incoming.coding_agents = current.coding_agents.clone();
+    incoming
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +103,7 @@ pub struct SettingsSnapshot {
     pub replacements: Vec<ReplacementRule>,
     pub snippets: Vec<Snippet>,
     pub styles: Vec<StyleProfile>,
+    pub coding_agents: CodingAgentSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,9 +253,16 @@ pub fn save_settings(
     native: State<'_, NativeDictationRuntime>,
     settings: SettingsSnapshot,
 ) -> Result<AppStatus, String> {
-    crate::storage::save_settings(&app, &settings)
-        .map_err(|error| format!("Could not persist settings: {error}"))?;
-    *runtime.settings.lock().map_err(lock_error)? = settings;
+    runtime.update_settings(
+        |current| {
+            *current = merge_saved_settings(current, settings);
+            Ok(())
+        },
+        |next| {
+            crate::storage::save_settings(&app, next)
+                .map_err(|error| format!("Could not persist settings: {error}"))
+        },
+    )?;
     build_status(&runtime, Some(&native), Some(&app))
 }
 
@@ -461,6 +499,7 @@ impl Default for SettingsSnapshot {
                 aggressive_filler_removal: false,
                 allow_sentence_fragments: true,
             }],
+            coding_agents: CodingAgentSettings::default(),
         }
     }
 }
@@ -542,6 +581,58 @@ mod tests {
             serde_json::from_str(stored).expect("newer settings should still load");
 
         assert_eq!(settings.models.ollama_model, "x:1b");
+    }
+
+    #[test]
+    fn coding_projects_load_and_settings_without_them_still_load() {
+        let stored = r#"{"codingAgents": {"projects": [{"id": "p1", "path": "C:\\work\\app", "spokenNames": ["app"]}]}}"#;
+        let settings: SettingsSnapshot = serde_json::from_str(stored).unwrap();
+        assert_eq!(settings.coding_agents.projects[0].spoken_names, ["app"]);
+
+        let older: SettingsSnapshot = serde_json::from_str(r#"{"snippets": []}"#).unwrap();
+        assert!(older.coding_agents.projects.is_empty());
+    }
+
+    #[test]
+    fn a_general_save_cannot_change_coding_projects() {
+        let mut current = default_settings();
+        current
+            .coding_agents
+            .projects
+            .push(crate::coding_agents::CodingProject {
+                id: "p1".into(),
+                path: r"C:\work\app".into(),
+                spoken_names: vec!["app".into()],
+            });
+        let mut incoming = default_settings();
+        incoming.models.language = "de".into();
+        incoming
+            .coding_agents
+            .projects
+            .push(crate::coding_agents::CodingProject {
+                id: "evil".into(),
+                path: r"C:\work\a;calc".into(),
+                spoken_names: vec!["x".into()],
+            });
+
+        let merged = merge_saved_settings(&current, incoming);
+
+        assert_eq!(merged.models.language, "de");
+        assert_eq!(merged.coding_agents, current.coding_agents);
+    }
+
+    #[test]
+    fn a_failed_persist_leaves_the_settings_unchanged() {
+        let runtime = LocalFlowRuntime::default();
+        let result = runtime.update_settings(
+            |settings| {
+                settings.models.language = "fr".into();
+                Ok(())
+            },
+            |_| Err("disk full".into()),
+        );
+        assert_eq!(result, Err("disk full".to_string()));
+        assert_eq!(runtime.current_settings().models.language, "auto");
     }
 
     #[test]

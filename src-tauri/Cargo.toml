@@ -39,6 +39,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+# Smart Turn, the end-of-turn model conversation mode runs at each pause (audio/smart_turn.rs),
+# in-process through a pure-Rust ONNX runtime. Pinned exactly: answers were checked against
+# the reference runtime with this version. `multithread-mm` gives the model its own small
+# thread pool; without it smart_turn.rs does not compile.
+tract-linalg = { version = "=0.23.10", features = ["multithread-mm"] }
+tract-onnx = { version = "=0.23.10", default-features = false }
 # In-process speech-to-text (ggml). CPU build: default features would enable Metal only.
 transcribe-cpp = { version = "0.4.2", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
@@ -50,6 +56,7 @@ windows = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Ole",
     "Win32_System_ProcessStatus",
@@ -59,3 +66,15 @@ windows = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+# Only for examples/turn_judge_bench.rs, which decodes the FLAC test clips. Not linked into
+# the app.
+claxon = "0.4"
+
+[features]
+# Speech recognition on a discrete GPU through Vulkan, with the CPU as the fallback (see
+# src/asr/transcribe_cpp.rs). Off by default. Building it needs the Vulkan SDK: VULKAN_SDK
+# set, %VULKAN_SDK%\Bin (glslc) on PATH and %VULKAN_SDK%\Lib on LIB, or linking fails with
+# LNK1181 vulkan-1.lib. The statically linked executable then imports vulkan-1.dll.
+gpu-vulkan = ["transcribe-cpp/vulkan"]

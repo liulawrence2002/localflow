@@ -2,6 +2,7 @@ mod app_state;
 pub mod asr;
 pub mod audio;
 pub mod cancel;
+pub mod coding_agents;
 pub mod context;
 pub mod conversation;
 mod desktop_health;
@@ -43,6 +44,7 @@ pub fn run() {
         .manage(asr::engine_select::AsrEngines::default())
         .manage(overlay::OverlayRuntime::default())
         .manage(tts::TtsRuntime::default())
+        .manage(coding_agents::CodingAgentsRuntime::default())
         .setup(|app| {
             let database_path = storage::initialize(app.handle())?;
             tracing::info!(path = %database_path.display(), "initialized local settings database");
@@ -99,7 +101,12 @@ pub fn run() {
             conversation::conversation_status,
             conversation::toggle_conversation,
             llm::list_ollama_models,
-            page_reader::screen_reading_status
+            page_reader::screen_reading_status,
+            coding_agents::commands::list_coding_projects,
+            coding_agents::commands::save_coding_project,
+            coding_agents::commands::remove_coding_project,
+            coding_agents::commands::suggest_project_spoken_names,
+            coding_agents::commands::detect_coding_agents
         ])
         .build(tauri::generate_context!())
         .expect("error while building LocalFlow")

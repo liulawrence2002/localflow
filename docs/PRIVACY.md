@@ -82,6 +82,31 @@ Limits you should know about:
   occasionally be read aloud. Since nothing but your ears receives it, the harm is limited
   to hearing it.
 
+## Voice Commands for Coding Agents
+
+This is the one place where something you say can leave the computer, and only on your
+spoken "yes" to a read-back.
+
+- During a conversation you can say "open Claude Code in <project>", "ask Claude <question>"
+  or "open <project> in Cursor". Only folders you added under Settings, Coding agents, can be
+  named. Commands are matched by fixed rules on your own transcript; page text, model replies
+  and the assistant's own voice cannot produce or confirm one.
+- Every command is read back and runs only after a "yes" said once the read-back has
+  finished. Anything else, or 15 s of silence, declines it.
+- "Open Claude Code" opens a Windows Terminal tab running Claude Code in that folder;
+  LocalFlow passes it nothing: no task, no transcript. What you then type or dictate into
+  Claude Code goes to Anthropic under your own Claude subscription, as with any Claude Code
+  session. Claude Code starts in its normal permission mode and asks you before it edits
+  files or runs commands; LocalFlow never passes options that skip those prompts.
+- "Ask Claude" sends the question you spoke, and nothing else, to Claude Code on your
+  subscription, which sends it to Anthropic. It runs in that folder with read-only tools
+  (read and search files), without the folder's own hooks, tool servers or settings, and
+  without saving the session. The answer is spoken and is never acted on. "Stop that" ends
+  it.
+- LocalFlow itself still makes no network connection for this; the agent does. Logs record
+  which agent and which project name was used, never the question or the answer.
+- "Open in Cursor" only opens the folder in the Cursor editor.
+
 ## Stored Fields
 
 Milestone 1 initializes SQLite tables for:
@@ -132,6 +157,9 @@ Not allowed during ordinary dictation:
 - Telemetry.
 - Analytics.
 - Silent remote fallback.
+
+The single exception is a coding agent you start by voice and confirm (see "Voice Commands
+for Coding Agents"): the agent, not LocalFlow, connects to its own service.
 
 Automated checks cover the shared network policy and the shared Ollama provider. Remote Ollama URLs are rejected before `fetch` is called.
 

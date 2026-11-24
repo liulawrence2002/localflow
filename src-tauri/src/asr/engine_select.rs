@@ -12,7 +12,9 @@ use tauri::{AppHandle, Manager};
 use super::{
     model_label,
     provider::{FallbackProvider, SpeechToTextProvider},
-    transcribe_cpp::{is_transcribe_cpp_model, TranscribeCppConfig, TranscribeCppProvider},
+    transcribe_cpp::{
+        is_transcribe_cpp_model, TranscribeCppConfig, TranscribeCppOptions, TranscribeCppProvider,
+    },
     whisper_cli::{WhisperCliConfig, WhisperCliProvider},
     whisper_server::{WhisperServerConfig, WhisperServerProvider},
     WhisperDecodeOptions,
@@ -200,9 +202,14 @@ pub(crate) fn build_asr_provider(plan: &AsrEnginePlan) -> Arc<dyn SpeechToTextPr
             model_path,
             whisper_fallback,
         } => {
-            let in_process = TranscribeCppProvider::new(TranscribeCppConfig {
-                model_path: model_path.clone(),
-            });
+            // Thread count and device come from the defaults, overridable through the
+            // LOCALFLOW_ASR_THREADS and LOCALFLOW_ASR_DEVICE environment variables.
+            let in_process = TranscribeCppProvider::with_options(
+                TranscribeCppConfig {
+                    model_path: model_path.clone(),
+                },
+                TranscribeCppOptions::from_env(),
+            );
             match whisper_fallback {
                 Some(whisper) => Arc::new(FallbackProvider::new(
                     Box::new(in_process),

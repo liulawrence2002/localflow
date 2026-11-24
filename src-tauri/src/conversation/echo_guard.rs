@@ -41,6 +41,23 @@ pub fn is_echo_of(heard: &str, speaking: &str) -> bool {
     false
 }
 
+/// Whether `heard`, too short for [`is_echo_of`] to judge, is word for word a stretch of what
+/// was being `spoken`: the same words, in the same order, side by side.
+///
+/// Only for deciding whether a few words over a reply should stop it. It cannot tell the
+/// user's "a lock" from the assistant's, so it is used where wrongly ignoring the user costs
+/// little: the reply carries on and they can say more, or press the hotkey.
+pub fn is_fragment_of(heard: &str, speaking: &str) -> bool {
+    let heard = words(heard);
+    let speaking = words(speaking);
+    if heard.is_empty() || heard.len() >= MIN_WORDS {
+        return false;
+    }
+    speaking
+        .windows(heard.len())
+        .any(|window| window == heard.as_slice())
+}
+
 /// How many of `heard`, in order, can be found in `spoken` (longest common subsequence).
 fn matched_in_order(heard: &[String], spoken: &[String]) -> usize {
     let mut previous = vec![0usize; spoken.len() + 1];
@@ -127,6 +144,20 @@ mod tests {
         assert!(!is_echo_of("stop", REPLY));
         assert!(!is_echo_of("", REPLY));
         assert!(!is_echo_of("lets only one thread", ""));
+    }
+
+    #[test]
+    fn a_word_or_two_of_the_reply_side_by_side_is_a_fragment_of_it() {
+        assert!(is_fragment_of("a lock", REPLY));
+        assert!(is_fragment_of("Thread.", REPLY));
+        // The same words apart, or in another order, are not.
+        assert!(!is_fragment_of("mutex thread", REPLY));
+        assert!(!is_fragment_of("lock a", REPLY));
+        assert!(!is_fragment_of("deadlocks", REPLY));
+        // Nothing, and anything long enough for the full check, is not judged here.
+        assert!(!is_fragment_of("", REPLY));
+        assert!(!is_fragment_of("a lock that", REPLY));
+        assert!(!is_fragment_of("a lock", ""));
     }
 
     #[test]
