@@ -787,10 +787,15 @@ readiness check read `/api/tags` and leave out every entry with a cloud tag or a
 
 ## Readiness
 
-`readiness_status` (`readiness.rs`) answers the Home screen's Setup list: speech recognition
-(Parakeet, or the model set in Settings), the conversation voice, the Ollama model and the
-Whisper fallback (whisper.cpp and tiny.en) are required; Silero, Smart Turn and Fish S2 are
-optional. Each item has an id, a label, whether it is ready and required, and a fix that
+`readiness_status` (`readiness.rs`) answers the Home screen's Setup list: the speech model,
+the conversation voice, the Ollama model and the Whisper fallback (whisper.cpp and tiny.en)
+are required; Silero, Smart Turn and Fish S2 are optional. The speech model item is decided
+exactly as dictation decides it (`resolve_speech_model` in `runtime_paths.rs`, then
+`plan_asr_engine`), so it is ready whenever dictation works and is labelled with the model
+found. Two optional items appear only when they apply: `speech-model-upgrade` when dictation
+runs on tiny.en (Parakeet would be better), and `speech-model-path` when the model path in
+Settings names no file (dictation falls back to an installed model, so it only warns).
+Each item has an id, a label, whether it is ready and required, and a fix that
 names a script or a command, never a path. Files are looked for in the runtime folders
 (`runtime_paths.rs`). Ollama is asked once for its models, on its own thread, with a 2.5 s
 limit; a model with a cloud tag set in Settings gets "choose a local model". The settings

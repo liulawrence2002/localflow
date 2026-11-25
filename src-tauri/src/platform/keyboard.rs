@@ -28,6 +28,23 @@ pub fn modifiers_held() -> bool {
     false
 }
 
+/// Whether the dictation hotkey's main key (Space, in `Ctrl+Alt+Space` and
+/// `Ctrl+Alt+Shift+Space`) is physically down right now. Used to notice a release the
+/// global-shortcut plugin did not report.
+#[cfg(windows)]
+pub fn dictation_key_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SPACE};
+
+    let state = unsafe { GetAsyncKeyState(i32::from(VK_SPACE.0)) };
+    // The high bit of the result is set while the key is down.
+    state as u16 & 0x8000 != 0
+}
+
+#[cfg(not(windows))]
+pub fn dictation_key_down() -> bool {
+    false
+}
+
 /// Wait until no modifier key is held, for at most `timeout`. Returns whether they are up.
 pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     wait_until(|| !modifiers_held(), timeout, POLL)
@@ -108,7 +125,8 @@ mod tests {
 
     #[test]
     fn reading_the_key_state_does_not_fail() {
-        // Only checks the call works; the answer depends on the keyboard.
+        // Only checks the calls work; the answers depend on the keyboard.
         let _ = modifiers_held();
+        let _ = dictation_key_down();
     }
 }

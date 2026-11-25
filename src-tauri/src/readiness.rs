@@ -6,7 +6,6 @@
 //! a script or a command, never a local path, because paths carry the user's name.
 
 use std::{
-    env,
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
@@ -18,11 +17,14 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     app_state::LocalFlowRuntime,
+    asr::engine_select::plan_asr_engine,
     audio::{smart_turn::SMART_TURN_MODEL_FILE, speech_detector::SILERO_MODEL_FILE},
     llm::ollama::{is_cloud_model_tag, list_local_models, OLLAMA_MODEL},
     runtime_paths::{
-        preferred_model_candidates, runtime_candidates, whisper_program_dir,
-        FALLBACK_WHISPER_MODELS, PREFERRED_SPEECH_MODELS, WHISPER_CLI_FILE, WHISPER_SERVER_FILE,
+        preferred_model_candidates, resolve_speech_model, runtime_candidates,
+        speech_model_override, whisper_cli_path, whisper_program_dir, ResolvedSpeechModel,
+        SpeechModelResolution, SpeechModelSource, FALLBACK_WHISPER_MODELS, PREFERRED_SPEECH_MODELS,
+        WHISPER_CLI_FILE, WHISPER_SERVER_FILE,
     },
     tts::phonon::{PhononConfig, PhononProvider, PHONON_MODEL_DIR},
 };
@@ -37,7 +39,10 @@ const OLLAMA_CHECK_LIMIT: Duration = Duration::from_millis(2500);
 #[serde(rename_all = "camelCase")]
 pub struct ReadinessItem {
     /// Stable identifier: `speech-model`, `conversation-voice`, `silero-vad`, `smart-turn`,
-    /// `ollama`, `whisper-fallback` or `fish-s2`.
+    /// `ollama`, `whisper-fallback` or `fish-s2`, always present; and two optional warnings
+    /// that appear only when they apply, right after `speech-model`: `speech-model-path` (the
+    /// model path in Settings names no file) and `speech-model-upgrade` (dictation runs on
+    /// tiny.en; Parakeet would be better).
     pub id: String,
     /// What the item is, for people.
     pub label: String,
@@ -85,10 +90,15 @@ pub async fn readiness_status(app: AppHandle) -> Result<Vec<ReadinessItem>, Stri
 fn current_checklist(app: &AppHandle) -> Vec<ReadinessItem> {
     let ollama = probe_ollama_in_background();
     let settings = app.state::<LocalFlowRuntime>().current_settings();
-    // The same override the speech engine honours (see runtime_paths::speech_model_path).
-    let configured_model = env::var("LOCALFLOW_WHISPER_MODEL")
-        .unwrap_or_else(|_| settings.models.whisper_model_path.clone());
     let runtimes = runtime_candidates(app);
+    // Exactly what dictation will use (runtime_paths::speech_model_path and
+    // native_dictation's check before recording).
+    let speech = resolve_speech_model(
+        speech_model_override(),
+        &settings.models.whisper_model_path,
+        &runtimes,
+    );
+    let whisper_cli = whisper_cli_path(app).ok();
     let probe = match ollama.recv_timeout(OLLAMA_CHECK_LIMIT) {
         Ok(probe) => probe,
         Err(mpsc::RecvTimeoutError::Timeout) => OllamaProbe::TimedOut,
@@ -97,7 +107,8 @@ fn current_checklist(app: &AppHandle) -> Vec<ReadinessItem> {
 
     let items = checklist(
         &runtimes,
-        &configured_model,
+        &speech,
+        whisper_cli.as_deref(),
         &settings.models.ollama_model,
         &probe,
     );
@@ -130,16 +141,17 @@ fn probe_ollama_in_background() -> mpsc::Receiver<OllamaProbe> {
 }
 
 /// The whole checklist, in display order. `runtimes` are the runtime folders in search
-/// order, `configured_model` is the speech model path from settings (empty for the default)
-/// and `ollama_model` the Ollama model from settings.
+/// order, `speech` is the speech model dictation would load, `whisper_cli` the whisper.cpp
+/// program if one was found, and `ollama_model` the Ollama model from settings.
 pub(crate) fn checklist(
     runtimes: &[PathBuf],
-    configured_model: &str,
+    speech: &SpeechModelResolution,
+    whisper_cli: Option<&Path>,
     ollama_model: &str,
     ollama: &OllamaProbe,
 ) -> Vec<ReadinessItem> {
-    vec![
-        speech_model_item(runtimes, configured_model),
+    let mut items = speech_model_items(speech, whisper_cli);
+    items.extend([
         conversation_voice_item(runtimes),
         model_file_item(
             "silero-vad",
@@ -158,30 +170,93 @@ pub(crate) fn checklist(
         ollama_item(ollama_model, ollama),
         whisper_fallback_item(runtimes),
         fish_item(runtimes),
-    ]
+    ]);
+    items
 }
 
 fn any_file(candidates: impl IntoIterator<Item = PathBuf>) -> bool {
     candidates.into_iter().any(|path| path.is_file())
 }
 
-fn speech_model_item(runtimes: &[PathBuf], configured_model: &str) -> ReadinessItem {
-    let configured = configured_model.trim();
-    if !configured.is_empty() {
-        let fix = (!Path::new(configured).is_file()).then(|| {
-            "Clear the model path in Settings > Models, or choose a file that exists".to_string()
-        });
-        return ReadinessItem::new(
+/// The speech model item, ready whenever dictation would work, plus the two warnings that
+/// never block: a stale model path in Settings, and running on tiny.en rather than Parakeet.
+/// Decided from the same resolution and engine plan that dictation uses.
+fn speech_model_items(
+    speech: &SpeechModelResolution,
+    whisper_cli: Option<&Path>,
+) -> Vec<ReadinessItem> {
+    let mut items = Vec::new();
+
+    let main = match &speech.model {
+        Err(_) if speech.overridden => ReadinessItem::new(
             "speech-model",
-            "Speech recognition (the model set in Settings)",
+            "Speech model (LOCALFLOW_WHISPER_MODEL)",
             true,
-            fix,
-        );
+            Some("Point LOCALFLOW_WHISPER_MODEL at a model file that exists, or remove it".into()),
+        ),
+        Err(_) => ReadinessItem::new(
+            "speech-model",
+            "Speech model",
+            true,
+            Some("Run scripts\\Get-AsrModel.ps1".into()),
+        ),
+        Ok(model) => {
+            // A Whisper model runs in the whisper.cpp programs; a GGUF model in-process.
+            let runnable = plan_asr_engine(
+                model.path.clone(),
+                false,
+                whisper_cli.map(Path::to_path_buf),
+                None,
+                None,
+            )
+            .is_ok();
+            let fix = (!runnable)
+                .then(|| "Reinstall LocalFlow, or run scripts\\Get-WhisperRuntime.ps1".to_string());
+            ReadinessItem::new("speech-model", speech_model_label(model), true, fix)
+        }
+    };
+    items.push(main);
+
+    if speech.stale_configured_path && !speech.overridden {
+        items.push(ReadinessItem::new(
+            "speech-model-path",
+            "Model path in Settings (no file there)",
+            false,
+            Some("Clear the model path in Settings > Models, or choose a file that exists".into()),
+        ));
     }
 
-    let parakeet = preferred_model_candidates(runtimes, &PREFERRED_SPEECH_MODELS[..1]);
-    let fix = (!any_file(parakeet)).then(|| "Run scripts\\Get-AsrModel.ps1".to_string());
-    ReadinessItem::new("speech-model", "Speech recognition (Parakeet)", true, fix)
+    let on_fallback_model = matches!(
+        &speech.model,
+        Ok(model) if model.source == SpeechModelSource::Installed
+            && file_name(&model.path) != Some(PREFERRED_SPEECH_MODELS[0])
+    );
+    if on_fallback_model {
+        items.push(ReadinessItem::new(
+            "speech-model-upgrade",
+            "Better speech model (Parakeet)",
+            false,
+            Some("Optional: run scripts\\Get-AsrModel.ps1 for more accurate dictation".into()),
+        ));
+    }
+    items
+}
+
+/// The speech model's name for people, never its path.
+fn speech_model_label(model: &ResolvedSpeechModel) -> &'static str {
+    match model.source {
+        SpeechModelSource::Override => "Speech model (from LOCALFLOW_WHISPER_MODEL)",
+        SpeechModelSource::Configured => "Speech model (set in Settings)",
+        SpeechModelSource::Installed => match file_name(&model.path) {
+            Some(name) if name == PREFERRED_SPEECH_MODELS[0] => "Speech model (Parakeet)",
+            Some(name) if name.starts_with("ggml-tiny.en") => "Speech model (tiny.en, basic)",
+            _ => "Speech model",
+        },
+    }
+}
+
+fn file_name(path: &Path) -> Option<&str> {
+    path.file_name().and_then(|name| name.to_str())
 }
 
 fn conversation_voice_item(runtimes: &[PathBuf]) -> ReadinessItem {
@@ -336,7 +411,7 @@ fn fish_item(runtimes: &[PathBuf]) -> ReadinessItem {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        env, fs,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
@@ -394,6 +469,26 @@ mod tests {
         }
     }
 
+    /// The checklist for these runtime folders as the app builds it: the speech model
+    /// resolved with no override, and the whisper.cpp program found in the folders.
+    fn list(
+        runtimes: &[PathBuf],
+        configured: &str,
+        ollama_model: &str,
+        probe: &OllamaProbe,
+    ) -> Vec<ReadinessItem> {
+        let speech = resolve_speech_model(None, configured, runtimes);
+        let cli = runtimes
+            .iter()
+            .map(|runtime| whisper_program_dir(runtime).join(WHISPER_CLI_FILE))
+            .find(|path| path.is_file());
+        checklist(runtimes, &speech, cli.as_deref(), ollama_model, probe)
+    }
+
+    fn ids(items: &[ReadinessItem]) -> Vec<&str> {
+        items.iter().map(|item| item.id.as_str()).collect()
+    }
+
     fn ollama_with(models: &[&str]) -> OllamaProbe {
         OllamaProbe::Models(models.iter().map(|m| m.to_string()).collect())
     }
@@ -405,7 +500,7 @@ mod tests {
     #[test]
     fn the_checklist_has_every_item_in_order() {
         let runtime = TempRuntime::new("order");
-        let items = checklist(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
+        let items = list(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
 
         let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
         assert_eq!(
@@ -427,7 +522,7 @@ mod tests {
     #[test]
     fn an_empty_install_says_which_script_to_run_for_each_item() {
         let runtime = TempRuntime::new("empty");
-        let items = checklist(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
+        let items = list(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
 
         assert!(items.iter().all(|item| !item.ready));
         let fix = |id: &str| item(&items, id).fix.clone().unwrap();
@@ -459,7 +554,7 @@ mod tests {
         let runtime = TempRuntime::new("full");
         runtime.add_everything();
 
-        let items = checklist(
+        let items = list(
             &[runtime.path()],
             "",
             "llama3.2:3b",
@@ -482,7 +577,7 @@ mod tests {
             .add("models/ggml-tiny.en-q5_1.bin");
         per_user.add("models/parakeet-tdt-0.6b-v3-Q5_K_M.gguf");
 
-        let items = checklist(
+        let items = list(
             &[bundled.path(), per_user.path()],
             "",
             "",
@@ -494,34 +589,152 @@ mod tests {
     }
 
     #[test]
-    fn tiny_en_alone_does_not_count_as_the_speech_model() {
-        let runtime = TempRuntime::new("tiny-only");
-        runtime.add("models/ggml-tiny.en-q5_1.bin");
+    fn a_fresh_install_with_only_tiny_en_is_ready_and_suggests_parakeet() {
+        // What the installer ships, and an empty per-user folder.
+        let bundled = TempRuntime::new("fresh-bundled");
+        bundled
+            .add("whisper/Release/whisper-cli.exe")
+            .add("whisper/Release/whisper-server.exe")
+            .add("models/ggml-tiny.en-q5_1.bin");
+        let per_user = TempRuntime::new("fresh-per-user");
 
-        let items = checklist(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
+        let items = list(
+            &[bundled.path(), per_user.path()],
+            "",
+            "",
+            &OllamaProbe::NotAnswering,
+        );
 
-        assert!(!item(&items, "speech-model").ready);
+        let speech = item(&items, "speech-model");
+        assert!(speech.ready);
+        assert!(speech.required);
+        assert_eq!(speech.label, "Speech model (tiny.en, basic)");
+        assert_eq!(speech.fix, None);
+        let upgrade = item(&items, "speech-model-upgrade");
+        assert!(!upgrade.ready);
+        assert!(!upgrade.required);
+        assert_eq!(upgrade.label, "Better speech model (Parakeet)");
+        assert_eq!(
+            upgrade.fix.as_deref(),
+            Some("Optional: run scripts\\Get-AsrModel.ps1 for more accurate dictation")
+        );
+        assert_eq!(
+            &ids(&items)[..3],
+            ["speech-model", "speech-model-upgrade", "conversation-voice"]
+        );
     }
 
     #[test]
-    fn a_configured_model_is_checked_instead_of_parakeet() {
-        let runtime = TempRuntime::new("configured");
-        runtime.add("custom/my-model.bin");
-        let present = runtime.path().join("custom").join("my-model.bin");
-        let absent = runtime.path().join("custom").join("gone.bin");
+    fn parakeet_needs_no_upgrade_hint() {
+        let runtime = TempRuntime::new("parakeet-only");
+        runtime.add("models/parakeet-tdt-0.6b-v3-Q5_K_M.gguf");
 
-        let found = speech_model_item(&[], present.to_str().unwrap());
-        let missing = speech_model_item(&[runtime.path()], absent.to_str().unwrap());
+        let items = list(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
 
-        assert!(found.ready);
-        assert_eq!(
-            found.label,
-            "Speech recognition (the model set in Settings)"
+        let speech = item(&items, "speech-model");
+        assert!(
+            speech.ready,
+            "Parakeet runs in-process without the Whisper programs"
         );
-        assert!(!missing.ready);
+        assert_eq!(speech.label, "Speech model (Parakeet)");
+        assert!(!ids(&items).contains(&"speech-model-upgrade"));
+        assert!(!ids(&items).contains(&"speech-model-path"));
+    }
+
+    #[test]
+    fn tiny_en_without_the_whisper_programs_cannot_dictate() {
+        let runtime = TempRuntime::new("tiny-no-programs");
+        runtime.add("models/ggml-tiny.en-q5_1.bin");
+
+        let items = list(&[runtime.path()], "", "", &OllamaProbe::NotAnswering);
+
+        let speech = item(&items, "speech-model");
+        assert!(!speech.ready);
         assert_eq!(
-            missing.fix.as_deref(),
+            speech.fix.as_deref(),
+            Some("Reinstall LocalFlow, or run scripts\\Get-WhisperRuntime.ps1")
+        );
+    }
+
+    #[test]
+    fn a_configured_model_that_exists_is_the_speech_model() {
+        let runtime = TempRuntime::new("configured");
+        runtime.add("custom/my-model.gguf");
+        let mine = runtime.path().join("custom").join("my-model.gguf");
+
+        let items = list(
+            &[runtime.path()],
+            mine.to_str().unwrap(),
+            "",
+            &OllamaProbe::NotAnswering,
+        );
+
+        let speech = item(&items, "speech-model");
+        assert!(speech.ready);
+        assert_eq!(speech.label, "Speech model (set in Settings)");
+        assert!(!ids(&items).contains(&"speech-model-path"));
+        assert!(!ids(&items).contains(&"speech-model-upgrade"));
+    }
+
+    #[test]
+    fn a_stale_model_path_is_a_warning_not_a_blocker() {
+        let runtime = TempRuntime::new("stale-path");
+        runtime.add("models/parakeet-tdt-0.6b-v3-Q5_K_M.gguf");
+        let gone = runtime.path().join("custom").join("gone.bin");
+
+        let items = list(
+            &[runtime.path()],
+            gone.to_str().unwrap(),
+            "",
+            &OllamaProbe::NotAnswering,
+        );
+
+        let speech = item(&items, "speech-model");
+        assert!(speech.ready, "dictation falls back to Parakeet");
+        assert_eq!(speech.label, "Speech model (Parakeet)");
+        let path = item(&items, "speech-model-path");
+        assert!(!path.ready);
+        assert!(!path.required);
+        assert_eq!(
+            path.fix.as_deref(),
             Some("Clear the model path in Settings > Models, or choose a file that exists")
+        );
+        assert_eq!(&ids(&items)[..2], ["speech-model", "speech-model-path"]);
+    }
+
+    #[test]
+    fn a_stale_model_path_with_nothing_installed_still_names_the_script() {
+        let runtime = TempRuntime::new("stale-nothing");
+        let gone = runtime.path().join("gone.bin");
+
+        let items = list(
+            &[runtime.path()],
+            gone.to_str().unwrap(),
+            "",
+            &OllamaProbe::NotAnswering,
+        );
+
+        let speech = item(&items, "speech-model");
+        assert!(!speech.ready);
+        assert_eq!(speech.fix.as_deref(), Some("Run scripts\\Get-AsrModel.ps1"));
+        assert!(!item(&items, "speech-model-path").required);
+    }
+
+    #[test]
+    fn a_missing_override_is_reported_as_the_override() {
+        let runtime = TempRuntime::new("override");
+        runtime.add("models/parakeet-tdt-0.6b-v3-Q5_K_M.gguf");
+        let speech =
+            resolve_speech_model(Some(runtime.path().join("nope.bin")), "", &[runtime.path()]);
+
+        let items = speech_model_items(&speech, None);
+
+        assert_eq!(items.len(), 1);
+        assert!(!items[0].ready);
+        assert_eq!(items[0].label, "Speech model (LOCALFLOW_WHISPER_MODEL)");
+        assert_eq!(
+            items[0].fix.as_deref(),
+            Some("Point LOCALFLOW_WHISPER_MODEL at a model file that exists, or remove it")
         );
     }
 
@@ -648,7 +861,7 @@ mod tests {
     fn no_label_or_fix_contains_a_path() {
         let runtime = TempRuntime::new("private-user-name");
         let configured = runtime.path().join("missing-model.bin");
-        let items = checklist(
+        let items = list(
             &[runtime.path()],
             configured.to_str().unwrap(),
             "",

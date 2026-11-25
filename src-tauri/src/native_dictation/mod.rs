@@ -34,7 +34,7 @@ use cpal::{
 use tauri::{AppHandle, Manager};
 
 use self::{
-    gesture::{decide, is_auto_stop, ActiveRecording, Decision, RecorderInput},
+    gesture::{decide, is_auto_stop, ActiveRecording, Decision, RecorderInput, ReleaseWatch},
     latency::{
         audio_duration_ms, duration_ms_between, latency_diagnostics_for, push_latency_snapshot,
         BackgroundCleanupStatus, NativeLatencySnapshot,
@@ -56,9 +56,7 @@ use crate::{
         vad::{end_of_speech_timeout, EndOfSpeechDetector, StopReason},
     },
     insertion::{
-        clipboard_paste::{
-            paste_text, remember_own_clipboard_text, set_transient_clipboard_text, PendingRestore,
-        },
+        clipboard_paste::{paste_text, set_transient_clipboard_text, PendingRestore},
         target::{foreground_target, target_matches, TargetWindow},
     },
     llm::{
@@ -281,11 +279,9 @@ pub fn copy_last_transcript_to_clipboard(app: &AppHandle) -> Result<(), String> 
     let mut clipboard =
         Clipboard::new().map_err(|error| format!("Could not open clipboard: {error}"))?;
     // Kept out of clipboard history (Win+V) and cloud clipboard sync, like the paste itself.
+    // Those opt-outs alone do not make text private, so a later paste puts it back.
     set_transient_clipboard_text(&mut clipboard, &text)
-        .map_err(|error| format!("Could not set clipboard text: {error}"))?;
-    // The user asked for this text, so a later paste puts it back afterwards.
-    remember_own_clipboard_text();
-    Ok(())
+        .map_err(|error| format!("Could not set clipboard text: {error}"))
 }
 
 /// Return the most recent finalized transcript (or `null`) for the recovery UI.
@@ -1117,6 +1113,7 @@ fn run_level_meter(
     let mut fresh: Vec<f32> = Vec::new();
     let mut vad_chunk: Vec<f32> = Vec::new();
     let mut tick = 0u64;
+    let mut release_watch = ReleaseWatch::default();
 
     loop {
         thread::sleep(Duration::from_millis(
@@ -1127,6 +1124,19 @@ fn run_level_meter(
             break;
         }
         tick += 1;
+
+        // A release the global-shortcut plugin never reported would leave the key counted
+        // as held, so silence could not stop the recording. Report it instead.
+        if inputs.key_held.load(Ordering::SeqCst)
+            && release_watch.observe(Instant::now(), keyboard::dictation_key_down())
+        {
+            tracing::info!("hotkey release was not reported; treating the key as released");
+            let _ = command_tx.send(RecorderCommand {
+                app: app.clone(),
+                input: RecorderInput::Released,
+                received_at: Instant::now(),
+            });
+        }
 
         // Copy the new samples out and release the lock before any analysis, so the
         // audio callback is never kept waiting on the meter.

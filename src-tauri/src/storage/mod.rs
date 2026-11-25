@@ -4,6 +4,9 @@ pub mod redact;
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -20,6 +23,10 @@ pub const DATABASE_FILE_NAME: &str = "localflow.sqlite3";
 /// SQLite's companion files, moved together with a damaged database so a leftover journal
 /// is never applied to the new one.
 const DATABASE_SIDE_FILES: &[&str] = &["-journal", "-wal", "-shm"];
+/// How many times the database is tried when it is in use or not accessible (backup or
+/// antivirus software holding it, a permission, a read-only file), and how far apart.
+const ACCESS_ATTEMPTS: u32 = 3;
+const ACCESS_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS settings (
@@ -54,39 +61,60 @@ pub struct Initialized {
     pub replaced_damaged: Option<String>,
 }
 
-/// Why the database could not be opened. Safe to show: user folders are removed.
+/// Why the database could not be used. Safe to show: user folders are removed. In every
+/// case the file was left exactly as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageError(pub String);
+pub enum StorageError {
+    /// The file is there but could not be opened or read: in use by another program, not
+    /// permitted, or read-only. It is probably fine.
+    Inaccessible(String),
+    /// Anything else: the folder cannot be made, or a damaged file cannot be moved aside.
+    Failed(String),
+}
 
 impl std::fmt::Display for StorageError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
+        match self {
+            Self::Inaccessible(message) | Self::Failed(message) => formatter.write_str(message),
+        }
     }
 }
 
 impl std::error::Error for StorageError {}
 
-impl StorageError {
-    fn from_error(error: impl std::fmt::Display) -> Self {
-        Self(redact_user_paths(&error.to_string()).into_owned())
-    }
+fn redacted(error: impl std::fmt::Display) -> String {
+    redact_user_paths(&error.to_string()).into_owned()
 }
 
-/// Whether opening failed because the file itself is unusable (damaged, not a database, or
-/// not readable), in which case it is moved aside and a new one is made. A database that is
-/// merely busy is left alone: it may be fine.
-fn is_replaceable(error: &rusqlite::Error) -> bool {
+/// Whether the file itself is damaged: not a database, or failing its integrity check. Only
+/// then is it moved aside and replaced. Every other failure (in use, not permitted,
+/// read-only, busy, an I/O error) is about getting at the file, which may well be intact, so
+/// it is left alone.
+fn is_damaged(error: &rusqlite::Error) -> bool {
     matches!(
         error,
-        rusqlite::Error::SqliteFailure(failure, _) if matches!(
-            failure.code,
-            ErrorCode::DatabaseCorrupt
-                | ErrorCode::NotADatabase
-                | ErrorCode::CannotOpen
-                | ErrorCode::PermissionDenied
-                | ErrorCode::ReadOnly
-        )
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(failure.code, ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
     )
+}
+
+/// Run `attempt` until it succeeds, fails with damage, or has been tried
+/// [`ACCESS_ATTEMPTS`] times: a file held for a moment by backup or antivirus software is
+/// usually free again a fraction of a second later.
+fn with_access_retries<T>(
+    mut attempt: impl FnMut() -> Result<T, rusqlite::Error>,
+) -> Result<T, rusqlite::Error> {
+    let mut tries = 1;
+    loop {
+        match attempt() {
+            Err(error) if !is_damaged(&error) && tries < ACCESS_ATTEMPTS => {
+                tracing::info!(error = %error, tries, "settings database not accessible; retrying");
+                tries += 1;
+                thread::sleep(ACCESS_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
 }
 
 /// Open the database, check every page, and make sure the tables exist.
@@ -130,46 +158,68 @@ fn move_aside(path: &Path) -> io::Result<String> {
 }
 
 pub fn initialize_at(data_dir: &Path) -> Result<Initialized, StorageError> {
-    fs::create_dir_all(data_dir).map_err(StorageError::from_error)?;
+    fs::create_dir_all(data_dir).map_err(|error| StorageError::Failed(redacted(error)))?;
     let database_path = data_dir.join(DATABASE_FILE_NAME);
 
-    match open_checked(&database_path) {
+    match with_access_retries(|| open_checked(&database_path)) {
         Ok(_) => Ok(Initialized {
             path: database_path,
             replaced_damaged: None,
         }),
-        Err(error) if database_path.exists() && is_replaceable(&error) => {
+        Err(error) if database_path.exists() && is_damaged(&error) => {
             tracing::warn!(error = %error, "the settings database is damaged; replacing it");
             let kept = move_aside(&database_path).map_err(|rename_error| {
-                StorageError(format!(
-                    "The settings database ({DATABASE_FILE_NAME}) is damaged and could not be \
+                StorageError::Failed(format!(
+                    "the settings database ({DATABASE_FILE_NAME}) is damaged and could not be \
                      moved aside: {}",
-                    redact_user_paths(&rename_error.to_string())
+                    redacted(rename_error)
                 ))
             })?;
-            open_checked(&database_path).map_err(StorageError::from_error)?;
+            open_checked(&database_path).map_err(|error| StorageError::Failed(redacted(error)))?;
             Ok(Initialized {
                 path: database_path,
                 replaced_damaged: Some(kept),
             })
         }
-        Err(error) => Err(StorageError::from_error(error)),
+        Err(error) if database_path.exists() => Err(StorageError::Inaccessible(redacted(error))),
+        Err(error) => Err(StorageError::Failed(redacted(error))),
     }
 }
 
 /// Settings read from the database, and how many stored values had to be reset or corrected
-/// to read them.
+/// to read them. Start-up reads the row itself ([`start_at`]); this is for the tests.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct StoredSettings {
     pub settings: SettingsSnapshot,
     pub repaired: usize,
 }
 
+/// Set at start-up when the database could not be used. For the rest of the session nothing
+/// is written to it: the file may hold the user's settings, and a save would replace them
+/// with the defaults LocalFlow is running on.
+static SAVES_REFUSED: AtomicBool = AtomicBool::new(false);
+
+const SAVES_REFUSED_MESSAGE: &str = "settings are not being saved this session, because the \
+     settings database could not be opened when LocalFlow started and saving now could replace \
+     your saved settings. Restart LocalFlow to save again.";
+
 pub fn save_settings(
     app: &AppHandle,
     settings: &SettingsSnapshot,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    save_settings_to_path(&database_path(app)?, settings)
+    save_unless_refused(&SAVES_REFUSED, &database_path(app)?, settings)
+}
+
+fn save_unless_refused(
+    refused: &AtomicBool,
+    database_path: &Path,
+    settings: &SettingsSnapshot,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if refused.load(Ordering::SeqCst) {
+        return Err(StorageError::Failed(SAVES_REFUSED_MESSAGE.to_string()).into());
+    }
+    save_settings_to_path(database_path, settings)
 }
 
 pub fn preserve_unreadable_settings_at(
@@ -198,22 +248,25 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>>
     Ok(app.path().app_data_dir()?.join(DATABASE_FILE_NAME))
 }
 
-/// The stored settings, `None` when nothing was stored yet. An error means the row is not
-/// JSON at all; values that are merely out of range or of an unknown kind are corrected
-/// (see [`parse_settings`]).
-pub fn load_settings_from_path(
-    database_path: &Path,
-) -> Result<Option<StoredSettings>, Box<dyn std::error::Error>> {
-    let connection = Connection::open(database_path)?;
-    let value_json: Option<String> = connection
+/// The stored settings row, as text.
+fn read_settings_row(database_path: &Path) -> Result<Option<String>, rusqlite::Error> {
+    Connection::open(database_path)?
         .query_row(
             "SELECT value_json FROM settings WHERE key = ?1",
             params![SETTINGS_KEY],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+}
 
-    match value_json {
+/// The stored settings, `None` when nothing was stored yet. An error means the database
+/// could not be read or the row is not JSON at all; values that are merely out of range or
+/// of an unknown kind are corrected (see [`parse_settings`]).
+#[cfg(test)]
+pub fn load_settings_from_path(
+    database_path: &Path,
+) -> Result<Option<StoredSettings>, Box<dyn std::error::Error>> {
+    match read_settings_row(database_path)? {
         None => Ok(None),
         Some(json) => {
             let (settings, repaired) = parse_settings(&json)?;
@@ -242,13 +295,13 @@ pub fn save_settings_to_path(
         Ok(())
     })();
     // The message is shown in the settings window; keep the user's folder out of it.
-    result.map_err(|error| StorageError::from_error(error).into())
+    result.map_err(|error| StorageError::Failed(redacted(error)).into())
 }
 
 /// What start-up found in the settings database.
 #[derive(Debug, Clone)]
 pub struct StartupSettings {
-    /// The database, when it could be opened.
+    /// The database, when it could be used. `None` means nothing may be saved this session.
     pub database: Option<PathBuf>,
     /// The settings to run with; `None` means the defaults.
     pub settings: Option<SettingsSnapshot>,
@@ -258,23 +311,41 @@ pub struct StartupSettings {
     pub notice: Option<String>,
 }
 
+/// Running on defaults because the database could not be used; it is not touched.
+fn without_database(error: &StorageError) -> StartupSettings {
+    tracing::warn!(error = %error, "the settings database could not be used; not saving");
+    let notice = match error {
+        StorageError::Inaccessible(reason) => format!(
+            "LocalFlow started with default settings and cannot save changes until it is \
+             restarted, because its settings database is in use by another program or cannot \
+             be accessed ({reason}). Nothing in it was changed."
+        ),
+        StorageError::Failed(reason) => format!(
+            "LocalFlow started with default settings and cannot save changes until it is \
+             restarted, because its settings database could not be opened: {reason}. Nothing \
+             in it was changed."
+        ),
+    };
+    StartupSettings {
+        database: None,
+        settings: None,
+        seed_defaults: false,
+        notice: Some(notice),
+    }
+}
+
 /// Open the database under `data_dir` and read the settings, recovering what can be
-/// recovered. Never fails: at worst LocalFlow runs on defaults and says why.
+/// recovered. Never fails: at worst LocalFlow runs on defaults and says why. Only a damaged
+/// file is replaced; one that is merely in use or not accessible is left as it is.
 pub fn start_at(data_dir: &Path) -> StartupSettings {
     let initialized = match initialize_at(data_dir) {
         Ok(initialized) => initialized,
-        Err(error) => {
-            tracing::warn!(error = %error, "the settings database could not be opened");
-            return StartupSettings {
-                database: None,
-                settings: None,
-                seed_defaults: false,
-                notice: Some(format!(
-                    "LocalFlow is using default settings and cannot save changes, because \
-                     its settings database could not be opened: {error}"
-                )),
-            };
-        }
+        Err(error) => return without_database(&error),
+    };
+    let row = match with_access_retries(|| read_settings_row(&initialized.path)) {
+        Ok(row) => row,
+        // Opened a moment ago but not readable now: the same as not opening at all.
+        Err(error) => return without_database(&StorageError::Inaccessible(redacted(error))),
     };
     let mut startup = StartupSettings {
         database: Some(initialized.path.clone()),
@@ -288,27 +359,27 @@ pub fn start_at(data_dir: &Path) -> StartupSettings {
         }),
     };
 
-    match load_settings_from_path(&initialized.path) {
-        Ok(None) => startup.seed_defaults = true,
-        Ok(Some(stored)) if stored.repaired == 0 => startup.settings = Some(stored.settings),
-        Ok(Some(stored)) => {
+    match row.map(|json| parse_settings(&json)) {
+        None => startup.seed_defaults = true,
+        Some(Ok((settings, 0))) => startup.settings = Some(settings),
+        Some(Ok((settings, repaired))) => {
             tracing::warn!(
-                values = stored.repaired,
+                values = repaired,
                 "some stored settings could not be read and were reset"
             );
             // The next save overwrites the row; keep the original first.
             if let Err(error) = preserve_unreadable_settings_at(&initialized.path) {
                 tracing::warn!(error = %error, "could not keep a copy of the stored settings");
             }
-            startup.settings = Some(stored.settings);
+            startup.settings = Some(settings);
             startup.notice = Some(
                 "Some saved settings could not be read and were reset to their defaults. A copy \
                  of the saved settings was kept."
                     .to_string(),
             );
         }
-        Err(error) => {
-            tracing::warn!(error = %error, "could not load persisted settings; using defaults");
+        Some(Err(error)) => {
+            tracing::warn!(error = %error, "the stored settings are not JSON; using defaults");
             if let Err(error) = preserve_unreadable_settings_at(&initialized.path) {
                 tracing::warn!(error = %error, "could not keep a copy of the unreadable settings");
             }
@@ -322,21 +393,18 @@ pub fn start_at(data_dir: &Path) -> StartupSettings {
     startup
 }
 
-/// [`start_at`] for the app's data folder.
+/// [`start_at`] for the app's data folder. When the database cannot be used, saving is
+/// refused for the rest of the session (see [`save_settings`]).
 pub fn start(app: &AppHandle) -> StartupSettings {
-    match app.path().app_data_dir() {
+    let startup = match app.path().app_data_dir() {
         Ok(data_dir) => start_at(&data_dir),
-        Err(error) => StartupSettings {
-            database: None,
-            settings: None,
-            seed_defaults: false,
-            notice: Some(format!(
-                "LocalFlow is using default settings and cannot save changes, because its data \
-                 folder could not be found: {}",
-                redact_user_paths(&error.to_string())
-            )),
-        },
-    }
+        Err(error) => without_database(&StorageError::Failed(format!(
+            "its data folder could not be found ({})",
+            redacted(error)
+        ))),
+    };
+    SAVES_REFUSED.store(startup.database.is_none(), Ordering::SeqCst);
+    startup
 }
 
 /// The database's file name, for logs.
@@ -541,5 +609,218 @@ mod tests {
             .as_deref()
             .is_some_and(|notice| notice.contains("cannot save changes")));
         let _ = fs::remove_file(&test_dir);
+    }
+
+    fn sqlite_error(code: std::ffi::c_int) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+    }
+
+    /// A healthy database holding the user's settings, and its bytes.
+    fn healthy_database(name: &str) -> (PathBuf, PathBuf, Vec<u8>) {
+        let test_dir = test_dir(name);
+        let database_path = initialize_at(&test_dir).unwrap().path;
+        let mut settings = crate::app_state::default_settings();
+        settings.models.ollama_model = "mine:7b".to_string();
+        save_settings_to_path(&database_path, &settings).unwrap();
+        let bytes = fs::read(&database_path).unwrap();
+        (test_dir, database_path, bytes)
+    }
+
+    fn moved_aside(test_dir: &Path) -> bool {
+        fs::read_dir(test_dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".corrupt-")
+        })
+    }
+
+    #[test]
+    fn only_damage_counts_as_damage() {
+        use rusqlite::ffi;
+        for damaged in [ffi::SQLITE_CORRUPT, ffi::SQLITE_NOTADB] {
+            assert!(is_damaged(&sqlite_error(damaged)), "{damaged}");
+        }
+        // Getting at the file failed; the file itself may be fine.
+        for access in [
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_PERM,
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_BUSY,
+            ffi::SQLITE_LOCKED,
+            ffi::SQLITE_IOERR,
+            ffi::SQLITE_AUTH,
+            ffi::SQLITE_FULL,
+        ] {
+            assert!(!is_damaged(&sqlite_error(access)), "{access}");
+        }
+        assert!(!is_damaged(&rusqlite::Error::QueryReturnedNoRows));
+    }
+
+    #[test]
+    fn access_errors_are_tried_again_and_damage_is_not() {
+        let mut calls = 0;
+        let started = std::time::Instant::now();
+        let result: Result<(), _> = with_access_retries(|| {
+            calls += 1;
+            Err(sqlite_error(rusqlite::ffi::SQLITE_CANTOPEN))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, ACCESS_ATTEMPTS);
+        assert!(started.elapsed() >= ACCESS_RETRY_DELAY * (ACCESS_ATTEMPTS - 1));
+
+        // Free again on the last try.
+        let mut calls = 0;
+        let result = with_access_retries(|| {
+            calls += 1;
+            if calls < ACCESS_ATTEMPTS {
+                Err(sqlite_error(rusqlite::ffi::SQLITE_BUSY))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), ACCESS_ATTEMPTS);
+
+        // Damage is final at once.
+        let mut calls = 0;
+        let result: Result<(), _> = with_access_retries(|| {
+            calls += 1;
+            Err(sqlite_error(rusqlite::ffi::SQLITE_CORRUPT))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn a_page_that_fails_the_integrity_check_counts_as_damage() {
+        let (test_dir, database_path, mut bytes) = healthy_database("bad-page");
+        // Keep the header and the schema page; ruin the next page (a table's root).
+        let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+        let page = if page == 1 { 65_536 } else { page };
+        assert!(bytes.len() >= 2 * page, "the database has a second page");
+        bytes[page..2 * page].fill(0xA5);
+        fs::write(&database_path, &bytes).unwrap();
+
+        let startup = start_at(&test_dir);
+
+        assert!(startup
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("damaged")));
+        assert!(moved_aside(&test_dir));
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_database_held_by_another_program_is_left_alone_and_never_saved_over() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (test_dir, database_path, original) = healthy_database("held");
+        // As backup software can: open with no sharing at all.
+        let holder = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&database_path)
+            .unwrap();
+
+        let startup = start_at(&test_dir);
+
+        assert!(
+            startup.database.is_none(),
+            "nothing may be saved this session"
+        );
+        assert!(startup.settings.is_none());
+        let notice = startup.notice.expect("the user is told");
+        assert!(notice.contains("in use by another program"), "{notice}");
+        assert!(notice.contains("Nothing in it was changed"), "{notice}");
+        assert!(!notice.contains(&*test_dir.to_string_lossy()), "{notice}");
+        drop(holder);
+        assert!(!moved_aside(&test_dir));
+        assert_eq!(fs::read(&database_path).unwrap(), original);
+
+        // Later in the session the file is free again, but a save is still refused.
+        let refused = AtomicBool::new(true);
+        let error = save_unless_refused(
+            &refused,
+            &database_path,
+            &crate::app_state::default_settings(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not being saved this session"));
+        assert_eq!(fs::read(&database_path).unwrap(), original);
+        let kept = load_settings_from_path(&database_path).unwrap().unwrap();
+        assert_eq!(kept.settings.models.ollama_model, "mine:7b");
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_database_held_only_briefly_is_opened_on_a_later_try() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (test_dir, database_path, _) = healthy_database("briefly-held");
+        let holder = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&database_path)
+            .unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(250));
+            drop(holder);
+        });
+
+        let startup = start_at(&test_dir);
+        release.join().unwrap();
+
+        assert!(startup.database.is_some());
+        assert_eq!(
+            startup
+                .settings
+                .expect("the saved settings")
+                .models
+                .ollama_model,
+            "mine:7b"
+        );
+        assert!(startup.notice.is_none());
+        assert!(!moved_aside(&test_dir));
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn a_read_only_database_is_not_replaced() {
+        let (test_dir, database_path, original) = healthy_database("read-only");
+        let mut permissions = fs::metadata(&database_path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&database_path, permissions.clone()).unwrap();
+
+        let startup = start_at(&test_dir);
+
+        assert!(!moved_aside(&test_dir));
+        assert_eq!(fs::read(&database_path).unwrap(), original);
+        // Either it was read (SQLite opens such a file read-only) or it was left alone and
+        // saving is off; it is never replaced with defaults.
+        match startup.settings {
+            Some(settings) => assert_eq!(settings.models.ollama_model, "mine:7b"),
+            None => assert!(startup.database.is_none()),
+        }
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(&database_path, permissions);
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn saves_go_through_unless_refused() {
+        let (test_dir, database_path, _) = healthy_database("gate");
+        let mut changed = crate::app_state::default_settings();
+        changed.models.ollama_model = "other:1b".to_string();
+
+        save_unless_refused(&AtomicBool::new(false), &database_path, &changed).unwrap();
+
+        let stored = load_settings_from_path(&database_path).unwrap().unwrap();
+        assert_eq!(stored.settings.models.ollama_model, "other:1b");
+        let _ = fs::remove_dir_all(test_dir);
     }
 }

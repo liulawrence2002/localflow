@@ -6,13 +6,21 @@
 //! it, instead of after a fixed delay that a slow target (Remote Desktop, a busy Electron
 //! app) could outlast and then paste the *earlier* clipboard. When delayed rendering cannot
 //! be set up, the text is placed directly and restored after a delay that is longer in a
-//! remote session. Content another program marked as private (a password manager's secret)
-//! is never put back: the clipboard is cleared instead. Restored text always carries the
-//! history and cloud exclusions, so a restore never adds a clipboard-history entry.
+//! remote session.
+//!
+//! What was on the clipboard before decides the tidy-up:
+//! - content excluded from all clipboard monitoring (a password manager's secret) is never
+//!   read and never put back; the clipboard is cleared instead;
+//! - text is put back, always with the history and cloud opt-outs, so text that carried them
+//!   (a password manager's, or LocalFlow's own) keeps them and nothing new enters clipboard
+//!   history. This depends only on the markers on the clipboard, never on what this process
+//!   remembers, so it is the same after LocalFlow restarts;
+//! - when the clipboard could not be read (another program held it open too long), it is
+//!   left exactly as the paste left it rather than cleared.
 
 use std::{
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Condvar, Mutex,
     },
     thread,
@@ -26,8 +34,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::platform::clipboard::{
-    clipboard_sequence, privacy_markers, DelayedText, FinishOutcome, FinishRequest, Render,
+    clipboard_sequence, privacy_markers, DelayedText, FinishOutcome, FinishRequest, PrivacyMarkers,
+    Render,
 };
+
+/// How long reading the earlier clipboard keeps trying while another program has it open.
+const CLIPBOARD_BUSY_BUDGET: Duration = Duration::from_millis(500);
+const CLIPBOARD_BUSY_STEP: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PasteTimings {
@@ -48,10 +61,23 @@ pub(crate) struct PasteStart {
 pub(crate) enum PreviousClipboard {
     /// Plain text that may be put back.
     Text(String),
-    /// Content marked private by the program that copied it. Never read, never put back.
+    /// Content excluded from all monitoring by the program that copied it. Never read, never
+    /// put back.
     Private,
     /// Nothing, or something that is not text.
     Other,
+    /// The clipboard could not be read. Nothing is known, so nothing is touched afterwards.
+    Unknown,
+}
+
+/// The result of trying to read the clipboard's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TextRead {
+    Text(String),
+    /// The clipboard holds no text (it is empty, or holds an image or files).
+    NoText,
+    /// The clipboard stayed busy, or reading it failed.
+    Unreadable,
 }
 
 /// Paste `text` into the focused window of process `target_pid`.
@@ -107,15 +133,58 @@ pub(crate) fn paste_text(text: &str, target_pid: Option<u32>) -> Result<PasteSta
 
 /// Read what is on the clipboard now, without reading content marked private.
 pub(crate) fn read_previous_clipboard() -> PreviousClipboard {
-    let sequence = clipboard_sequence();
-    // Text LocalFlow itself put back carries the exclusion markers but is not a secret.
-    let ours = sequence.is_some() && sequence == own_text_sequence();
-    if !ours && privacy_markers().is_private() {
+    classify_previous(privacy_markers(), read_clipboard_text)
+}
+
+/// Decide what the earlier clipboard was from its markers, reading the text only when that
+/// is allowed. Pure apart from `read_text`, so every case is unit-tested.
+pub(crate) fn classify_previous(
+    markers: PrivacyMarkers,
+    read_text: impl FnOnce() -> TextRead,
+) -> PreviousClipboard {
+    if markers.is_private() {
         return PreviousClipboard::Private;
     }
-    match Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-        Ok(text) => PreviousClipboard::Text(text),
-        Err(_) => PreviousClipboard::Other,
+    match read_text() {
+        TextRead::Text(text) => PreviousClipboard::Text(text),
+        TextRead::NoText => PreviousClipboard::Other,
+        TextRead::Unreadable => PreviousClipboard::Unknown,
+    }
+}
+
+/// Read the clipboard's text, retrying for a bounded time while another program has the
+/// clipboard open.
+fn read_clipboard_text() -> TextRead {
+    retry_while_busy(
+        || match Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+            Ok(text) => Some(TextRead::Text(text)),
+            Err(arboard::Error::ContentNotAvailable) => Some(TextRead::NoText),
+            Err(arboard::Error::ClipboardOccupied) => None,
+            Err(_) => Some(TextRead::Unreadable),
+        },
+        CLIPBOARD_BUSY_BUDGET,
+        CLIPBOARD_BUSY_STEP,
+    )
+    .unwrap_or(TextRead::Unreadable)
+}
+
+/// Run `attempt` until it gives an answer (`Some`) or `budget` has passed; `None` means the
+/// clipboard was busy and the attempt may be repeated.
+pub(crate) fn retry_while_busy<T>(
+    mut attempt: impl FnMut() -> Option<T>,
+    budget: Duration,
+    step: Duration,
+) -> Option<T> {
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(answer) = attempt() {
+            return Some(answer);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        thread::sleep(step.min(deadline - now));
     }
 }
 
@@ -141,24 +210,6 @@ pub(crate) fn set_transient_clipboard_text(
     text: &str,
 ) -> Result<(), arboard::Error> {
     clipboard.set_text(text.to_string())
-}
-
-/// Remember that the clipboard now holds text LocalFlow put there that is not private (a
-/// restore, or "Copy last transcript"), so the next paste may put it back even though it
-/// carries the exclusion markers.
-pub(crate) fn remember_own_clipboard_text() {
-    if let Some(sequence) = clipboard_sequence() {
-        OWN_TEXT_SEQUENCE.store(sequence, Ordering::SeqCst);
-    }
-}
-
-static OWN_TEXT_SEQUENCE: AtomicU32 = AtomicU32::new(0);
-
-fn own_text_sequence() -> Option<u32> {
-    match OWN_TEXT_SEQUENCE.load(Ordering::SeqCst) {
-        0 => None,
-        sequence => Some(sequence),
-    }
 }
 
 pub(crate) fn send_ctrl_v() -> Result<(), String> {
@@ -203,7 +254,8 @@ pub(crate) enum ClipboardRestore {
     /// Nothing may be put back (the clipboard was empty, held something that is not text,
     /// or held content marked private), so remove the dictated text rather than leave it.
     Clear,
-    /// Something else was copied after the paste. Leave it alone.
+    /// Touch nothing: something else was copied after the paste, or what was there before
+    /// is unknown.
     Leave,
 }
 
@@ -218,6 +270,7 @@ pub(crate) fn plan_clipboard_restore(
     match previous {
         PreviousClipboard::Text(_) => ClipboardRestore::RestorePrevious,
         PreviousClipboard::Private | PreviousClipboard::Other => ClipboardRestore::Clear,
+        PreviousClipboard::Unknown => ClipboardRestore::Leave,
     }
 }
 
@@ -387,16 +440,10 @@ impl RestoreJob {
                 let target_read = delayed.render().is_some_and(|render| {
                     render.requester_pid.is_none() || render.requester_pid == target_pid
                 });
-                // The owner window checks itself whether another program has taken the
-                // clipboard since, and leaves it alone if so.
-                let request = match plan_clipboard_restore(&previous, false) {
-                    ClipboardRestore::RestorePrevious => match previous {
-                        PreviousClipboard::Text(text) => FinishRequest::Restore(text),
-                        _ => FinishRequest::Clear,
-                    },
-                    ClipboardRestore::Clear | ClipboardRestore::Leave => FinishRequest::Clear,
-                };
-                (delayed.finish(request), target_read)
+                (
+                    delayed.finish(delayed_finish_request(previous)),
+                    target_read,
+                )
             }
             Publication::Direct { sequence_after_set } => {
                 if !immediately {
@@ -416,9 +463,6 @@ impl RestoreJob {
             }
         };
 
-        if matches!(outcome, FinishOutcome::Restored { .. }) {
-            remember_own_clipboard_text();
-        }
         RestoreReport {
             outcome,
             waited: sent_at.elapsed(),
@@ -427,26 +471,31 @@ impl RestoreJob {
     }
 }
 
-/// Replace the clipboard with the earlier text (with the exclusions), or clear it.
-fn restore_directly(previous: &PreviousClipboard) -> FinishOutcome {
-    let Ok(mut clipboard) = Clipboard::new() else {
-        return FinishOutcome::Failed;
-    };
+/// What the owner window of a delayed publication is asked to do. It checks itself whether
+/// another program has taken the clipboard since, and then leaves it alone. Pure.
+pub(crate) fn delayed_finish_request(previous: PreviousClipboard) -> FinishRequest {
     match previous {
-        PreviousClipboard::Text(text) => match set_transient_clipboard_text(&mut clipboard, text) {
-            Ok(()) => {
-                remember_own_clipboard_text();
-                FinishOutcome::Restored {
-                    sequence: clipboard_sequence(),
-                }
-            }
-            Err(_) => FinishOutcome::Failed,
-        },
-        PreviousClipboard::Private | PreviousClipboard::Other => match clipboard.clear() {
-            Ok(()) => FinishOutcome::Cleared,
-            Err(_) => FinishOutcome::Failed,
-        },
+        PreviousClipboard::Text(text) => FinishRequest::Restore(text),
+        PreviousClipboard::Private | PreviousClipboard::Other => FinishRequest::Clear,
+        PreviousClipboard::Unknown => FinishRequest::Keep,
     }
+}
+
+/// Replace the clipboard with the earlier text (with the history and cloud opt-outs), or
+/// clear it. An unknown earlier clipboard is left alone.
+fn restore_directly(previous: &PreviousClipboard) -> FinishOutcome {
+    let result = match previous {
+        PreviousClipboard::Unknown => return FinishOutcome::LeftAlone,
+        PreviousClipboard::Text(text) => Clipboard::new()
+            .and_then(|mut clipboard| set_transient_clipboard_text(&mut clipboard, text))
+            .map(|()| FinishOutcome::Restored {
+                sequence: clipboard_sequence(),
+            }),
+        PreviousClipboard::Private | PreviousClipboard::Other => Clipboard::new()
+            .and_then(|mut clipboard| clipboard.clear())
+            .map(|()| FinishOutcome::Cleared),
+    };
+    result.unwrap_or(FinishOutcome::Failed)
 }
 
 /// Bumped to ask every waiting restore to finish now.
@@ -510,13 +559,147 @@ mod tests {
 
     #[test]
     fn content_marked_private_is_never_put_back() {
-        // A password manager's secret: cleared rather than restored, so it is not
-        // re-published into clipboard history or cloud sync, and does not outlive the
-        // password manager's own clearing.
+        // A secret excluded from all monitoring: cleared rather than restored, so it is not
+        // re-published, and it does not outlive the password manager's own clearing.
         assert_eq!(
             plan_clipboard_restore(&PreviousClipboard::Private, false),
             ClipboardRestore::Clear
         );
+        assert_eq!(
+            delayed_finish_request(PreviousClipboard::Private),
+            FinishRequest::Clear
+        );
+    }
+
+    #[test]
+    fn content_excluded_from_monitoring_is_never_even_read() {
+        let private = PrivacyMarkers {
+            exclude_from_monitoring: true,
+            ..PrivacyMarkers::default()
+        };
+
+        let previous = classify_previous(private, || panic!("private content must not be read"));
+
+        assert_eq!(previous, PreviousClipboard::Private);
+    }
+
+    /// The paragraph a user copied, after LocalFlow already restored it once: it now carries
+    /// the history and cloud opt-outs that every restore adds. Nothing in this process
+    /// remembers that restore (as after a restart), and it must be restored again.
+    #[test]
+    fn restored_text_is_restored_again_after_a_restart() {
+        let paragraph = "A paragraph copied before two dictations.";
+
+        let previous = classify_previous(PrivacyMarkers::LOCALFLOW_TEXT, || {
+            TextRead::Text(paragraph.to_string())
+        });
+
+        assert_eq!(previous, PreviousClipboard::Text(paragraph.to_string()));
+        assert_eq!(
+            plan_clipboard_restore(&previous, false),
+            ClipboardRestore::RestorePrevious
+        );
+        assert_eq!(
+            delayed_finish_request(previous),
+            FinishRequest::Restore(paragraph.to_string())
+        );
+    }
+
+    /// "Copy last transcript" writes with the same opt-outs as a restore; the next paste
+    /// must put that text back, not erase it.
+    #[test]
+    fn copy_last_transcript_text_is_restored_after_the_next_paste() {
+        let transcript = "The transcript the user copied to paste by hand.";
+
+        let previous = classify_previous(PrivacyMarkers::LOCALFLOW_TEXT, || {
+            TextRead::Text(transcript.to_string())
+        });
+
+        assert_eq!(
+            delayed_finish_request(previous),
+            FinishRequest::Restore(transcript.to_string())
+        );
+    }
+
+    #[test]
+    fn text_with_only_history_and_cloud_opt_outs_is_restored_with_them() {
+        // A password manager that opts out of history and sync but not of monitoring: its
+        // text is put back, and the restore carries the same opt-outs, so it keeps its
+        // markers and nothing new enters clipboard history.
+        let opted_out = PrivacyMarkers {
+            history_opt_out: true,
+            cloud_opt_out: false,
+            ..PrivacyMarkers::default()
+        };
+
+        let previous = classify_previous(opted_out, || TextRead::Text("s3cret".to_string()));
+
+        assert_eq!(
+            plan_clipboard_restore(&previous, false),
+            ClipboardRestore::RestorePrevious
+        );
+    }
+
+    #[test]
+    fn a_clipboard_that_cannot_be_read_is_left_alone() {
+        // Another program held the clipboard open past the retry budget: the user's text is
+        // unknown, so it is neither cleared nor replaced afterwards.
+        let previous = classify_previous(PrivacyMarkers::default(), || TextRead::Unreadable);
+
+        assert_eq!(previous, PreviousClipboard::Unknown);
+        assert_eq!(
+            plan_clipboard_restore(&previous, false),
+            ClipboardRestore::Leave
+        );
+        assert_eq!(delayed_finish_request(previous), FinishRequest::Keep);
+        assert_eq!(
+            restore_directly(&PreviousClipboard::Unknown),
+            FinishOutcome::LeftAlone
+        );
+    }
+
+    #[test]
+    fn an_empty_or_non_text_clipboard_is_cleared_afterwards() {
+        let previous = classify_previous(PrivacyMarkers::default(), || TextRead::NoText);
+
+        assert_eq!(previous, PreviousClipboard::Other);
+        assert_eq!(delayed_finish_request(previous), FinishRequest::Clear);
+    }
+
+    #[test]
+    fn a_busy_clipboard_is_retried_until_it_answers() {
+        let mut attempts = 0;
+
+        let answer = retry_while_busy(
+            || {
+                attempts += 1;
+                (attempts >= 4).then_some("text")
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        );
+
+        assert_eq!(answer, Some("text"));
+        assert_eq!(attempts, 4);
+    }
+
+    #[test]
+    fn a_clipboard_that_stays_busy_gives_up_within_the_budget() {
+        let started = Instant::now();
+
+        let answer: Option<()> = retry_while_busy(
+            || None,
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        );
+
+        assert_eq!(answer, None);
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(80), "{waited:?}");
+        assert!(waited < Duration::from_secs(2), "{waited:?}");
+        // The real budget is long enough to outlast a brief hold, and still bounded.
+        assert!(CLIPBOARD_BUSY_BUDGET >= Duration::from_millis(300));
+        assert!(CLIPBOARD_BUSY_BUDGET <= Duration::from_secs(1));
     }
 
     #[test]

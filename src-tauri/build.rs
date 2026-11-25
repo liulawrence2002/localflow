@@ -39,8 +39,9 @@ fn main() {
         }
     }
 
-    // Cargo's profile: "debug" for a dev build, which is the one with debug assertions.
-    let debug_build = std::env::var("PROFILE").as_deref() == Ok("debug");
+    // The same switch `lib.rs` uses (`cfg(debug_assertions)`), so the commands the handler
+    // registers and the permissions granted always agree, whatever the profile is called.
+    let debug_build = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
     let (commands, capabilities): (&'static [&'static str], &'static str) = if debug_build {
         let all: Vec<&'static str> = APP_COMMANDS
             .iter()

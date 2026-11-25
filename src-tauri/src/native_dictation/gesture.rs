@@ -8,10 +8,13 @@
 //! - A press within [`AFTER_AUTO_STOP_IGNORE_MS`] of an automatic stop is ignored: it was
 //!   almost certainly meant to stop the recording that had just stopped itself, and starting
 //!   a new one would supersede the dictation being transcribed.
+//! - A lost release never leaves a recording unstoppable: a fresh press while the key still
+//!   counts as held finishes it, and [`ReleaseWatch`] notices a key that has physically been
+//!   up for a while and reports the release itself.
 //!
 //! Pure, so every rule is unit-tested.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio::vad::StopReason;
 
@@ -19,6 +22,37 @@ use crate::audio::vad::StopReason;
 pub(crate) const QUICK_TAP_MS: u64 = 700;
 /// A press this soon after an automatic stop is ignored.
 pub(crate) const AFTER_AUTO_STOP_IGNORE_MS: u64 = 700;
+/// How long the hotkey must read as physically up, while the recording still counts it as
+/// held, before the release is taken as lost. The global-shortcut plugin reports a release
+/// within about 50 ms, so a real one always arrives first.
+pub(crate) const MISSED_RELEASE_AFTER_MS: u64 = 300;
+
+/// Notices a hotkey release that was never reported. Feed it the key's physical state while
+/// the recording counts the key as held; it answers true once per release.
+#[derive(Debug, Default)]
+pub(crate) struct ReleaseWatch {
+    up_since: Option<Instant>,
+    reported: bool,
+}
+
+impl ReleaseWatch {
+    /// Whether the release should be reported now.
+    pub(crate) fn observe(&mut self, now: Instant, key_down: bool) -> bool {
+        if key_down {
+            self.up_since = None;
+            self.reported = false;
+            return false;
+        }
+        let up_since = *self.up_since.get_or_insert(now);
+        if !self.reported
+            && now.duration_since(up_since) >= Duration::from_millis(MISSED_RELEASE_AFTER_MS)
+        {
+            self.reported = true;
+            return true;
+        }
+        false
+    }
+}
 
 /// An event for the recorder loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,13 +119,13 @@ pub(crate) fn decide(
             }
         }
         (RecorderInput::Pressed, Some(active)) => {
-            if active.key_held {
-                Decision::Ignore("press while the hotkey is already held")
-            } else if active.elapsed >= quick_tap {
-                // The second tap of tap-to-start, tap-to-stop.
-                Decision::Finish
-            } else {
+            if active.elapsed < quick_tap {
                 Decision::Ignore("second press too soon after the first")
+            } else {
+                // Hands-free: the second tap of tap-to-start, tap-to-stop. Still counted as
+                // held: a new press can only follow a release, so that release was lost and
+                // this press ends the recording.
+                Decision::Finish
             }
         }
 
@@ -212,6 +246,69 @@ mod tests {
             decide(stop(StopReason::MaxLength), held(120_000), None),
             Decision::Finish
         );
+    }
+
+    #[test]
+    fn a_press_after_a_lost_release_finishes_the_recording() {
+        // The release event never arrived, so the key still counts as held and silence
+        // cannot stop it. The user presses again to stop: that must work.
+        assert_eq!(
+            decide(RecorderInput::Pressed, held(QUICK_TAP_MS), None),
+            Decision::Finish
+        );
+        assert_eq!(
+            decide(RecorderInput::Pressed, held(45_000), None),
+            Decision::Finish
+        );
+        // Within the tap window it is still a bounce, not a stop.
+        assert_eq!(
+            decide(RecorderInput::Pressed, held(QUICK_TAP_MS - 1), None),
+            Decision::Ignore("second press too soon after the first")
+        );
+    }
+
+    #[test]
+    fn a_reported_release_after_a_lost_one_still_ends_push_to_talk() {
+        // The watch reports the missed release as an ordinary release.
+        assert_eq!(
+            decide(RecorderInput::Released, held(10_000), None),
+            Decision::Finish
+        );
+        // A tap whose release was lost becomes hands-free, as a reported one would.
+        assert_eq!(
+            decide(RecorderInput::Released, held(QUICK_TAP_MS - 100), None),
+            Decision::HandsFree
+        );
+    }
+
+    #[test]
+    fn the_watch_reports_a_key_that_stays_up() {
+        let start = Instant::now();
+        let mut watch = ReleaseWatch::default();
+
+        assert!(!watch.observe(start, true));
+        assert!(!watch.observe(start + ms(10), false));
+        assert!(!watch.observe(start + ms(10 + MISSED_RELEASE_AFTER_MS - 1), false));
+        assert!(watch.observe(start + ms(10 + MISSED_RELEASE_AFTER_MS), false));
+        // Once per release.
+        assert!(!watch.observe(start + ms(2_000), false));
+    }
+
+    #[test]
+    fn the_watch_ignores_a_key_that_is_held_or_only_briefly_up() {
+        let start = Instant::now();
+        let mut watch = ReleaseWatch::default();
+
+        for step in 0..100 {
+            assert!(!watch.observe(start + ms(step * 30), true));
+        }
+        // Up for less than the threshold, then down again: no report, and the clock resets.
+        assert!(!watch.observe(start + ms(3_000), false));
+        assert!(!watch.observe(start + ms(3_200), false));
+        assert!(!watch.observe(start + ms(3_250), true));
+        assert!(!watch.observe(start + ms(3_300), false));
+        assert!(!watch.observe(start + ms(3_550), false));
+        assert!(watch.observe(start + ms(3_300 + MISSED_RELEASE_AFTER_MS), false));
     }
 
     #[test]

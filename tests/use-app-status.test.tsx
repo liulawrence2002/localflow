@@ -90,6 +90,45 @@ describe("useAppStatus", () => {
     expect(result.current.saveState.kind).toBe("saved");
   });
 
+  it("does not show Saved when an older save answers while a newer edit waits to be saved", async () => {
+    const replies: Array<() => void> = [];
+    handlers.save_settings = (args) =>
+      new Promise<AppStatus>((resolve) => {
+        replies.push(() =>
+          resolve({ ...desktopStatus(), settings: args.settings as LocalFlowSettings }),
+        );
+      });
+    const { result } = renderHook(() => useAppStatus());
+    await waitFor(() => expect(result.current.settings).not.toBeNull());
+    vi.useFakeTimers();
+
+    // Edit A is sent; edit B is made before A's reply, so B's save is still waiting.
+    act(() => result.current.updateSettings((current) => withModel(current, "A")));
+    await act(async () => {
+      vi.advanceTimersByTime(saveDebounceMs);
+    });
+    expect(replies).toHaveLength(1);
+    act(() => result.current.updateSettings((current) => withModel(current, "B")));
+
+    await act(async () => {
+      replies[0]?.();
+    });
+    expect(result.current.saveState.kind).toBe("pending");
+    expect(result.current.settings?.models.ollamaModel).toBe("B");
+
+    // B's save goes out and succeeds: now everything is saved.
+    await act(async () => {
+      vi.advanceTimersByTime(saveDebounceMs);
+    });
+    expect(replies).toHaveLength(2);
+    expect(saves()[1]?.args.settings).toMatchObject({ models: { ollamaModel: "B" } });
+    await act(async () => {
+      replies[1]?.();
+    });
+    expect(result.current.saveState.kind).toBe("saved");
+    expect(result.current.settings?.models.ollamaModel).toBe("B");
+  });
+
   it("reports a failed save and can try again", async () => {
     let fail = true;
     handlers.save_settings = (args) => {

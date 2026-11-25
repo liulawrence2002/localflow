@@ -85,25 +85,104 @@ pub(crate) fn whisper_program_dir(runtime: &Path) -> PathBuf {
 /// Resolve the speech model: an explicit environment override, then the path from settings,
 /// then the best installed model.
 pub(crate) fn speech_model_path(app: &AppHandle, configured: &str) -> Result<PathBuf, String> {
-    if let Ok(path) = env::var("LOCALFLOW_WHISPER_MODEL") {
-        return require_file(PathBuf::from(path), "speech model");
+    let resolution = resolve_speech_model(
+        speech_model_override(),
+        configured,
+        &runtime_candidates(app),
+    );
+    if resolution.stale_configured_path {
+        // A stale path must not break dictation; an installed model is used instead.
+        tracing::warn!("configured speech model path does not exist; using an installed model");
+    }
+    resolution.model.map(|model| model.path)
+}
+
+/// `LOCALFLOW_WHISPER_MODEL`, a model file that takes the place of every other choice.
+pub(crate) fn speech_model_override() -> Option<PathBuf> {
+    env::var("LOCALFLOW_WHISPER_MODEL").ok().map(PathBuf::from)
+}
+
+/// Where the speech model in use came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpeechModelSource {
+    /// `LOCALFLOW_WHISPER_MODEL`.
+    Override,
+    /// The path in Settings > Models.
+    Configured,
+    /// The first installed of [`PREFERRED_SPEECH_MODELS`].
+    Installed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedSpeechModel {
+    pub(crate) path: PathBuf,
+    pub(crate) source: SpeechModelSource,
+}
+
+/// The outcome of choosing the speech model, shared by the speech engine and the readiness
+/// checklist so the two never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpeechModelResolution {
+    /// The model dictation will load, or why there is none.
+    pub(crate) model: Result<ResolvedSpeechModel, String>,
+    /// A path is set in Settings but no file is there. Not an error: an installed model is
+    /// used instead, when there is one.
+    pub(crate) stale_configured_path: bool,
+    /// `LOCALFLOW_WHISPER_MODEL` was set, so nothing else was considered.
+    pub(crate) overridden: bool,
+}
+
+/// Choose the speech model. Pure apart from checking which files exist.
+///
+/// An override must exist (it replaces every other choice); a configured path is used when
+/// its file exists and otherwise falls back, like having none; then the first installed of
+/// [`PREFERRED_SPEECH_MODELS`], by model preference first and runtime folder second.
+pub(crate) fn resolve_speech_model(
+    override_path: Option<PathBuf>,
+    configured: &str,
+    runtimes: &[PathBuf],
+) -> SpeechModelResolution {
+    if let Some(path) = override_path {
+        return SpeechModelResolution {
+            model: require_file(path, "speech model").map(|path| ResolvedSpeechModel {
+                path,
+                source: SpeechModelSource::Override,
+            }),
+            stale_configured_path: false,
+            overridden: true,
+        };
     }
 
     let configured = configured.trim();
+    let mut stale_configured_path = false;
     if !configured.is_empty() {
         let path = PathBuf::from(configured);
         if path.is_file() {
-            return Ok(path);
+            return SpeechModelResolution {
+                model: Ok(ResolvedSpeechModel {
+                    path,
+                    source: SpeechModelSource::Configured,
+                }),
+                stale_configured_path: false,
+                overridden: false,
+            };
         }
-        // A stale path must not break dictation; fall through to the bundled models.
-        tracing::warn!("configured speech model path does not exist; using an installed model");
+        stale_configured_path = true;
     }
 
-    let runtimes = runtime_candidates(app);
-    find_file(
+    let model = find_file(
         "speech model",
-        preferred_model_candidates(&runtimes, PREFERRED_SPEECH_MODELS),
+        preferred_model_candidates(runtimes, PREFERRED_SPEECH_MODELS),
     )
+    .map(|path| ResolvedSpeechModel {
+        path,
+        source: SpeechModelSource::Installed,
+    });
+    SpeechModelResolution {
+        model,
+        stale_configured_path,
+        overridden: false,
+    }
 }
 
 /// Candidate model paths ordered by model preference first, runtime folder second, so the
@@ -340,6 +419,116 @@ mod tests {
             "Missing whisper.cpp executable (whisper-cli.exe). Reinstall LocalFlow, or run \
              scripts\\Get-WhisperRuntime.ps1."
         );
+    }
+
+    /// A runtime folder with the given files under `models`, removed when dropped.
+    struct TempModels(PathBuf);
+
+    impl TempModels {
+        fn new(name: &str, files: &[&str]) -> Self {
+            let root = env::temp_dir().join(format!(
+                "localflow-runtime-paths-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("models")).unwrap();
+            for file in files {
+                std::fs::write(root.join("models").join(file), b"x").unwrap();
+            }
+            Self(root)
+        }
+    }
+
+    impl Drop for TempModels {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const PARAKEET: &str = "parakeet-tdt-0.6b-v3-Q5_K_M.gguf";
+    const TINY: &str = "ggml-tiny.en-q5_1.bin";
+
+    #[test]
+    fn parakeet_is_preferred_over_tiny_en() {
+        let runtime = TempModels::new("both", &[PARAKEET, TINY]);
+
+        let resolution = resolve_speech_model(None, "", &[runtime.0.clone()]);
+
+        let model = resolution.model.unwrap();
+        assert_eq!(model.path, runtime.0.join("models").join(PARAKEET));
+        assert_eq!(model.source, SpeechModelSource::Installed);
+        assert!(!resolution.stale_configured_path);
+    }
+
+    #[test]
+    fn tiny_en_alone_is_a_working_speech_model() {
+        let runtime = TempModels::new("tiny", &[TINY]);
+
+        let model = resolve_speech_model(None, "  ", &[runtime.0.clone()])
+            .model
+            .unwrap();
+
+        assert_eq!(model.path, runtime.0.join("models").join(TINY));
+    }
+
+    #[test]
+    fn a_stale_configured_path_falls_back_and_is_flagged() {
+        let runtime = TempModels::new("stale", &[TINY]);
+        let gone = runtime.0.join("gone.bin");
+
+        let resolution = resolve_speech_model(None, gone.to_str().unwrap(), &[runtime.0.clone()]);
+
+        assert!(resolution.stale_configured_path);
+        assert_eq!(
+            resolution.model.unwrap().path,
+            runtime.0.join("models").join(TINY)
+        );
+    }
+
+    #[test]
+    fn an_existing_configured_path_wins_over_installed_models() {
+        let runtime = TempModels::new("configured", &[PARAKEET, "mine.bin"]);
+        let mine = runtime.0.join("models").join("mine.bin");
+
+        let model = resolve_speech_model(None, mine.to_str().unwrap(), &[runtime.0.clone()])
+            .model
+            .unwrap();
+
+        assert_eq!(model.path, mine);
+        assert_eq!(model.source, SpeechModelSource::Configured);
+    }
+
+    #[test]
+    fn an_override_must_exist_and_never_falls_back() {
+        let runtime = TempModels::new("override", &[PARAKEET]);
+
+        let missing =
+            resolve_speech_model(Some(runtime.0.join("nope.bin")), "", &[runtime.0.clone()]);
+        let present = resolve_speech_model(
+            Some(runtime.0.join("models").join(PARAKEET)),
+            "ignored.bin",
+            &[],
+        );
+
+        assert_eq!(
+            missing.model.unwrap_err(),
+            "Missing speech model (nope.bin)."
+        );
+        assert_eq!(present.model.unwrap().source, SpeechModelSource::Override);
+        assert!(!present.stale_configured_path);
+        assert!(present.overridden && missing.overridden);
+    }
+
+    #[test]
+    fn no_model_anywhere_is_an_error_that_names_the_script() {
+        let runtime = TempModels::new("empty", &[]);
+
+        let resolution = resolve_speech_model(None, "", &[runtime.0.clone()]);
+
+        assert!(resolution
+            .model
+            .unwrap_err()
+            .ends_with("Run scripts\\Get-AsrModel.ps1."));
     }
 
     #[test]

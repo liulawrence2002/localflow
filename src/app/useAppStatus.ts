@@ -75,9 +75,13 @@ export function useAppStatus(): AppStatusApi {
           return;
         }
         setStatus((current) => ({ ...(current ?? next), ...next }));
-        if (editVersion === editVersionRef.current) {
-          adoptSettings(next.settings);
+        // An edit made while this save was in flight is not in it, and its own save may still
+        // be waiting for the pause: then nothing is "saved" yet and the state stays pending.
+        const nothingNewer = editVersion === editVersionRef.current && timerRef.current === null;
+        if (!nothingNewer) {
+          return;
         }
+        adoptSettings(next.settings);
         setSaveState({ kind: "saved", atMs: Date.now() });
       },
       (reason: unknown) => {

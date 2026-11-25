@@ -5,37 +5,46 @@
 //!   for it (`WM_RENDERFORMAT`). That request is how the paste learns that the target has
 //!   read the text, so the earlier clipboard is put back after the target has its copy rather
 //!   than after a guessed delay. Clipboard-history and cloud-sync exclusions are set with it.
-//! - [`privacy_markers`] reads the formats password managers add to keep a secret out of
-//!   clipboard history, cloud sync and clipboard managers, so such a secret is never put back
-//!   on the clipboard by LocalFlow.
+//! - [`privacy_markers`] reports the formats other programs add to say how the content on the
+//!   clipboard may be handled. Content excluded from all monitoring (a password manager's
+//!   secret) is never read or put back by LocalFlow.
 //!
 //! Nothing here logs clipboard contents.
 
 /// The standard Unicode text format.
 pub const CF_UNICODETEXT: u32 = 13;
 
-/// What other programs said about the content on the clipboard before the paste.
+/// Which marker formats the content on the clipboard carries. Only presence is recorded:
+/// that needs no access to the clipboard, so another program holding it open cannot distort
+/// the answer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PrivacyMarkers {
     /// `ExcludeClipboardContentFromMonitorProcessing` is present.
     pub exclude_from_monitoring: bool,
     /// `Clipboard Viewer Ignore` is present (the older convention clipboard managers honour).
     pub viewer_ignore: bool,
-    /// `CanIncludeInClipboardHistory`: `None` when absent, otherwise its DWORD value, or
-    /// `Some(u32::MAX)` when present but unreadable.
-    pub history: Option<u32>,
-    /// `CanUploadToCloudClipboard`, read the same way.
-    pub cloud: Option<u32>,
+    /// `CanIncludeInClipboardHistory` is present (an opt-out of clipboard history).
+    pub history_opt_out: bool,
+    /// `CanUploadToCloudClipboard` is present (an opt-out of cloud clipboard sync).
+    pub cloud_opt_out: bool,
 }
 
 impl PrivacyMarkers {
-    /// Whether the content was marked as something that must not be kept or shared. A marker
-    /// that is present but cannot be read counts as private.
+    /// What text LocalFlow puts on the clipboard itself carries (the paste, a restore, "Copy
+    /// last transcript"): the history and cloud opt-outs, nothing more.
+    pub const LOCALFLOW_TEXT: Self = Self {
+        exclude_from_monitoring: false,
+        viewer_ignore: false,
+        history_opt_out: true,
+        cloud_opt_out: true,
+    };
+
+    /// Whether the content must never be read or put back: its owner excluded it from every
+    /// clipboard monitor. The history and cloud opt-outs alone do not make content private;
+    /// such text is restored, and every restore carries those opt-outs again, so it keeps
+    /// its markers and nothing new enters clipboard history.
     pub fn is_private(&self) -> bool {
-        self.exclude_from_monitoring
-            || self.viewer_ignore
-            || matches!(self.history, Some(value) if value != 1)
-            || matches!(self.cloud, Some(value) if value != 1)
+        self.exclude_from_monitoring || self.viewer_ignore
     }
 }
 
@@ -54,6 +63,8 @@ pub enum FinishOutcome {
     Restored { sequence: Option<u32> },
     /// The dictated text was removed and nothing was put back.
     Cleared,
+    /// The dictated text was left on the clipboard, because what was there before is unknown.
+    Kept,
     /// Another program had put something on the clipboard since; it was left alone.
     LeftAlone,
     /// The clipboard could not be opened in time; the dictated text may still be there.
@@ -65,6 +76,9 @@ pub enum FinishOutcome {
 pub enum FinishRequest {
     Restore(String),
     Clear,
+    /// Touch nothing: the dictated text stays (handed over in full, so it survives the owner
+    /// window closing).
+    Keep,
 }
 
 #[cfg(windows)]
@@ -86,9 +100,9 @@ mod windows_impl {
         Win32::{
             Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
             System::DataExchange::{
-                CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner,
-                GetClipboardSequenceNumber, GetOpenClipboardWindow, IsClipboardFormatAvailable,
-                OpenClipboard, RegisterClipboardFormatW,
+                CloseClipboard, EmptyClipboard, GetClipboardOwner, GetClipboardSequenceNumber,
+                GetOpenClipboardWindow, IsClipboardFormatAvailable, OpenClipboard,
+                RegisterClipboardFormatW,
             },
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
@@ -117,7 +131,6 @@ mod windows_impl {
         fn GlobalLock(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
         fn GlobalUnlock(memory: *mut core::ffi::c_void) -> i32;
         fn GlobalFree(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-        fn GlobalSize(memory: *mut core::ffi::c_void) -> usize;
     }
 
     extern "C" {
@@ -231,56 +244,20 @@ mod windows_impl {
         let _ = set_bytes(cloud_format(), &zero);
     }
 
-    /// Read a DWORD marker from the open clipboard: `None` when absent, `Some(u32::MAX)` when
-    /// present but unreadable.
-    unsafe fn read_dword_marker(format: u32) -> Option<u32> {
-        if format == 0 || IsClipboardFormatAvailable(format).is_err() {
-            return None;
-        }
-        let Ok(handle) = GetClipboardData(format) else {
-            return Some(u32::MAX);
-        };
-        let memory = handle.0;
-        if GlobalSize(memory) < 4 {
-            return Some(u32::MAX);
-        }
-        let data = GlobalLock(memory) as *const u8;
-        if data.is_null() {
-            return Some(u32::MAX);
-        }
-        let mut value = [0u8; 4];
-        std::ptr::copy_nonoverlapping(data, value.as_mut_ptr(), 4);
-        GlobalUnlock(memory);
-        Some(u32::from_ne_bytes(value))
-    }
-
+    /// Whether the clipboard holds `format`. Needs no access to the clipboard, so it works
+    /// while another program has the clipboard open.
     fn format_present(format: u32) -> bool {
         format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok()
     }
 
-    /// The privacy markers on the current clipboard content. When the clipboard cannot be
-    /// opened the content is reported as private, so it is never restored blindly.
+    /// The marker formats on the current clipboard content.
     pub fn privacy_markers() -> PrivacyMarkers {
-        let exclude_from_monitoring = format_present(exclude_from_monitoring_format());
-        let viewer_ignore = format_present(viewer_ignore_format());
-        if !open_clipboard(None, Duration::from_millis(50)) {
-            return PrivacyMarkers {
-                exclude_from_monitoring: true,
-                ..PrivacyMarkers::default()
-            };
+        PrivacyMarkers {
+            exclude_from_monitoring: format_present(exclude_from_monitoring_format()),
+            viewer_ignore: format_present(viewer_ignore_format()),
+            history_opt_out: format_present(history_format()),
+            cloud_opt_out: format_present(cloud_format()),
         }
-        let markers = unsafe {
-            PrivacyMarkers {
-                exclude_from_monitoring,
-                viewer_ignore,
-                history: read_dword_marker(history_format()),
-                cloud: read_dword_marker(cloud_format()),
-            }
-        };
-        unsafe {
-            let _ = CloseClipboard();
-        }
-        markers
     }
 
     #[derive(Default)]
@@ -538,7 +515,7 @@ mod windows_impl {
             WM_FINISH => {
                 if let Some(shared) = shared_of(hwnd) {
                     let request = shared.lock().request.take();
-                    let outcome = finish_on_owner_thread(hwnd, request);
+                    let outcome = finish_on_owner_thread(hwnd, shared, request);
                     shared.lock().outcome = Some(outcome);
                     shared.changed.notify_all();
                 }
@@ -569,6 +546,28 @@ mod windows_impl {
         }
     }
 
+    /// Leave the dictated text on the clipboard. Text nobody asked for yet is handed over in
+    /// full first, because a delayed format whose owner window closes would be emptied.
+    unsafe fn keep_on_owner_thread(hwnd: HWND, shared: &Shared) -> FinishOutcome {
+        let text = std::mem::take(&mut shared.lock().text);
+        if text.is_empty() {
+            // Already rendered: the text is on the clipboard in full.
+            return FinishOutcome::Kept;
+        }
+        if !open_clipboard(Some(hwnd), OPEN_RETRY_FOR) {
+            return FinishOutcome::Failed;
+        }
+        let outcome = if GetClipboardOwner().ok() != Some(hwnd) {
+            FinishOutcome::LeftAlone
+        } else if set_bytes(CF_UNICODETEXT, &text) {
+            FinishOutcome::Kept
+        } else {
+            FinishOutcome::Failed
+        };
+        let _ = CloseClipboard();
+        outcome
+    }
+
     /// Hand the text to the program that asked for it. Runs inside `WM_RENDERFORMAT`, where
     /// the clipboard is already open by the requester and must not be opened again.
     unsafe fn render_text(shared: &Shared) {
@@ -592,9 +591,16 @@ mod windows_impl {
         shared.changed.notify_all();
     }
 
-    unsafe fn finish_on_owner_thread(hwnd: HWND, request: Option<FinishRequest>) -> FinishOutcome {
+    unsafe fn finish_on_owner_thread(
+        hwnd: HWND,
+        shared: &Shared,
+        request: Option<FinishRequest>,
+    ) -> FinishOutcome {
         if GetClipboardOwner().ok() != Some(hwnd) {
             return FinishOutcome::LeftAlone;
+        }
+        if request == Some(FinishRequest::Keep) {
+            return keep_on_owner_thread(hwnd, shared);
         }
         if !open_clipboard(Some(hwnd), OPEN_RETRY_FOR) {
             return FinishOutcome::Failed;
@@ -614,7 +620,7 @@ mod windows_impl {
                         FinishOutcome::Cleared
                     }
                 }
-                Some(FinishRequest::Clear) | None => FinishOutcome::Cleared,
+                Some(FinishRequest::Clear | FinishRequest::Keep) | None => FinishOutcome::Cleared,
             }
         };
         let _ = CloseClipboard();
@@ -672,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn password_manager_markers_make_content_private() {
+    fn exclusion_from_all_monitoring_makes_content_private() {
         let monitoring = PrivacyMarkers {
             exclude_from_monitoring: true,
             ..PrivacyMarkers::default()
@@ -681,17 +687,33 @@ mod tests {
             viewer_ignore: true,
             ..PrivacyMarkers::default()
         };
-        let history = PrivacyMarkers {
-            history: Some(0),
-            ..PrivacyMarkers::default()
-        };
-        let cloud = PrivacyMarkers {
-            cloud: Some(0),
-            ..PrivacyMarkers::default()
+        // Even with the history and cloud opt-outs alongside.
+        let both = PrivacyMarkers {
+            exclude_from_monitoring: true,
+            ..PrivacyMarkers::LOCALFLOW_TEXT
         };
 
-        for markers in [monitoring, viewer, history, cloud] {
+        for markers in [monitoring, viewer, both] {
             assert!(markers.is_private(), "{markers:?}");
+        }
+    }
+
+    #[test]
+    fn history_and_cloud_opt_outs_alone_are_not_private() {
+        // Text LocalFlow itself restored, or put there with "Copy last transcript", carries
+        // exactly these markers. It must not be taken for a secret, before or after a restart.
+        assert!(!PrivacyMarkers::LOCALFLOW_TEXT.is_private());
+        for markers in [
+            PrivacyMarkers {
+                history_opt_out: true,
+                ..PrivacyMarkers::default()
+            },
+            PrivacyMarkers {
+                cloud_opt_out: true,
+                ..PrivacyMarkers::default()
+            },
+        ] {
+            assert!(!markers.is_private(), "{markers:?}");
         }
     }
 
@@ -755,18 +777,9 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_permission_is_not_private_but_an_unreadable_marker_is() {
-        let allowed = PrivacyMarkers {
-            history: Some(1),
-            cloud: Some(1),
-            ..PrivacyMarkers::default()
-        };
-        assert!(!allowed.is_private());
-
-        let unreadable = PrivacyMarkers {
-            history: Some(u32::MAX),
-            ..PrivacyMarkers::default()
-        };
-        assert!(unreadable.is_private());
+    fn reading_the_markers_does_not_need_the_clipboard() {
+        // Only presence checks, which work while another program holds the clipboard open;
+        // the answer depends on what is on this machine's clipboard.
+        let _ = privacy_markers();
     }
 }
