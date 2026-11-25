@@ -2,8 +2,8 @@
 
 ## Wispr-class upgrade (spec-driven)
 
-Phase 0 (evidence-based audit): completed. See `../REPO_AUDIT.md` and
-`../PARITY_MATRIX.md` for current-state, discrepancies, risk-ranked debt, target
+Phase 0 (evidence-based audit): completed. See `../archive/REPO_AUDIT.md` and
+`../archive/PARITY_MATRIX.md` (historical snapshots) for current-state, discrepancies, risk-ranked debt, target
 architecture, and the ASR/refinement benchmark plan. Baseline: 77 frontend tests,
 14 Rust tests, all lint/format/type checks green.
 
@@ -149,16 +149,16 @@ Phase 1 (unify the production pipeline): in progress.
     fixed diagnostics text that still described whisper.cpp as the engine; added
     `.github/workflows/ci.yml`.
   - Measured local model latency for conversation (in `../VOICE_ASSISTANT_PLAN.md`).
-  +8 Rust tests (175 total, 4 ignored); 152 web tests unchanged.
-  Known limitations: the packaged app was not rebuilt or launched, so the security policy,
-  the per-window command permissions and the clipboard changes have not been exercised in
-  the real window. The policy was checked by loading the built web UI in headless Edge with
-  the same header (main, overlay and overlay-demo views rendered with no violations), which
-  does not cover Tauri IPC. The CI workflow has not run on GitHub. `cargo check` in the
-  debug profile was not run (tests ran in release).
-  Next risks: a command added without its `build.rs` and `capabilities/main.json` entries
-  fails only at run time in the web UI; clearing the clipboard after a paste removes an
-  image or file that was there before, which the paste had already replaced.
+    +8 Rust tests (175 total, 4 ignored); 152 web tests unchanged.
+    Known limitations: the packaged app was not rebuilt or launched, so the security policy,
+    the per-window command permissions and the clipboard changes have not been exercised in
+    the real window. The policy was checked by loading the built web UI in headless Edge with
+    the same header (main, overlay and overlay-demo views rendered with no violations), which
+    does not cover Tauri IPC. The CI workflow has not run on GitHub. `cargo check` in the
+    debug profile was not run (tests ran in release).
+    Next risks: a command added without its `build.rs` and `capabilities/main.json` entries
+    fails only at run time in the web UI; clearing the clipboard after a paste removes an
+    image or file that was there before, which the paste had already replaced.
 - **Slice 20 -- conversation mode, first version (done; not yet tried by a person).** A
   second mode beside dictation, toggled by `Ctrl+Alt+T` (fallback `Ctrl+Alt+Shift+T`), the
   tray, or the Home screen. See `../ARCHITECTURE.md` (Conversation Mode) and
@@ -177,18 +177,18 @@ Phase 1 (unify the production pipeline): in progress.
     the packaged web UI's policy no longer allows any network connection.
   - Measured: median 1,090 ms from end of speech to first reply audio (slowest 1,859 ms),
     down from 1,860 ms before the model was kept awake during the user's turn.
-  +98 Rust tests (273 total, 6 ignored), +7 web tests (159 total).
-  Known limitations: no person has yet spoken to it through a real microphone and speaker,
-  and nobody has judged the voice; the benchmark's questions are synthetic speech delivered
-  digitally. Interrupting is by hotkey only, because the microphone is ignored while the
-  assistant speaks. English only. The 700 ms end-of-turn wait and whole-utterance
-  transcription dominate the delay. The overlay reuses dictation's phases ("listening",
-  "processing", "refining") rather than having its own, and the tray icon does not change.
-  History is trimmed, not summarised. The voice and Silero models are read from the dev
-  runtime folder and are not in the installer. `Ctrl+Alt+T` may clash with other software.
-  Next risks: the in-process voice and voice detector add native code to the main process;
-  the keep-warm requests keep the GPU awake while the user speaks; a model that does not
-  fit in GPU memory will answer too slowly to be usable.
+    +98 Rust tests (273 total, 6 ignored), +7 web tests (159 total).
+    Known limitations: no person has yet spoken to it through a real microphone and speaker,
+    and nobody has judged the voice; the benchmark's questions are synthetic speech delivered
+    digitally. Interrupting is by hotkey only, because the microphone is ignored while the
+    assistant speaks. English only. The 700 ms end-of-turn wait and whole-utterance
+    transcription dominate the delay. The overlay reuses dictation's phases ("listening",
+    "processing", "refining") rather than having its own, and the tray icon does not change.
+    History is trimmed, not summarised. The voice and Silero models are read from the dev
+    runtime folder and are not in the installer. `Ctrl+Alt+T` may clash with other software.
+    Next risks: the in-process voice and voice detector add native code to the main process;
+    the keep-warm requests keep the GPU awake while the user speaks; a model that does not
+    fit in GPU memory will answer too slowly to be usable.
 - **Slice 21 -- read a window aloud (done; exercised on test pages, not yet on real sites by
   a person).** `Ctrl+Alt+R` (fallback `Ctrl+Alt+Shift+R`) reads the focused window word for
   word and stops when pressed again; in a conversation "read this page", "next paragraph",
@@ -207,8 +207,8 @@ Phase 1 (unify the production pipeline): in progress.
   - Checked in the running app by sending the real hotkey over test pages: the article was
     read aloud and stopped on the second press; an InPrivate window and a page with its
     password field focused were both refused with the reason shown and spoken.
-  +147 Rust tests (420 total, 6 ignored), +4 web tests (163 total).
-  Known limitations:
+    +147 Rust tests (420 total, 6 ignored), +4 web tests (163 total).
+    Known limitations:
   - Not tried on real websites by a person. Extraction on pages that do not mark their main
     content is a heuristic: comments, "read more" links and small sidebars can be included.
   - Hidden text: a block clipped in place, or laid one word per line over two other blocks, is
@@ -224,8 +224,8 @@ Phase 1 (unify the production pipeline): in progress.
   - The reading hotkey is ignored during a conversation (say "read this page" instead).
     Spoken reading commands are English phrases matched exactly.
   - The page does not scroll or highlight as it is read.
-  Next risks: asking a browser for its accessibility tree switches that feature on in the
-  browser; `Ctrl+Alt+R` may clash with other software.
+    Next risks: asking a browser for its accessibility tree switches that feature on in the
+    browser; `Ctrl+Alt+R` may clash with other software.
 - **Slice 22 -- natural turn-taking (done; interruption by voice not yet tried by a person).**
   See `../ARCHITECTURE.md` (Conversation Mode) and `../benchmarks/CONVERSATION_BENCHMARK.md`.
   - Transcribing during the turn: `conversation/assembler.rs` sends each phrase to the
@@ -242,8 +242,8 @@ Phase 1 (unify the production pipeline): in progress.
   - Measured: median 663 ms from end of speech to first reply audio over twelve turns
     (slowest 786 ms), against 1,090 ms and 1,859 ms before. On this laptop the audio driver
     already removes the speaker from the microphone (46-56 dB loss in three of four runs).
-  +76 Rust tests (496 total, 7 ignored); 163 web tests unchanged.
-  Known limitations:
+    +76 Rust tests (496 total, 7 ignored); 163 web tests unchanged.
+    Known limitations:
   - Nobody has talked over the assistant at a real microphone. The tests use scripted
     audio, and the echo canceller's final settings were not run against the real devices.
     One measurement run had the microphone 27 dB louder than the others for unknown
@@ -264,8 +264,8 @@ Phase 1 (unify the production pipeline): in progress.
   - A real interruption that repeats most of a sentence the assistant just said is
     discarded as echo. While the assistant is thinking, speech is still ignored (fixed in
     slice 24).
-  Next risks: an echo that slips through all three layers makes the assistant cut itself
-  off; the canceller adds 28 ms of delay to the microphone path.
+    Next risks: an echo that slips through all three layers makes the assistant cut itself
+    off; the canceller adds 28 ms of delay to the microphone path.
 - **Slice 23 -- code review fixes (done).** A review of the branch against `master` found
   ten issues; seven were fixed, three are recorded below.
   - Fixed: a conversation now stops a page reading when it starts, and read-aloud refuses to
@@ -328,7 +328,7 @@ Phase 1 (unify the production pipeline): in progress.
     clip, and a median response of 568 ms against 993 ms on the CPU in the same session.
     The CPU thread count stays at the library's default (8 here); every logical CPU (22)
     never finished the corpus.
-  Known limitations:
+    Known limitations:
   - The GPU build imports `vulkan-1.dll` and will not start on a computer without a Vulkan
     loader, so the feature is off by default; it shares the GPU's memory with Ollama (about
     0.8 GB more) and there is no free-memory check before loading.
@@ -357,23 +357,62 @@ Phase 1 (unify the production pipeline): in progress.
     could skip permission checks, wherever it appears.
   - Folders containing `;`, `%` or `"` are refused, because Windows Terminal splits at `;` even
     inside quotes and expands `%NAME%`.
-  Verified live: the real Windows Terminal opens the tab in a folder whose path has spaces
-  and hands the program exactly `--permission-mode default`
-  (`live_windows_terminal_passes_the_folder_and_arguments_through`, with `examples/wt_probe.rs`
-  standing in for `claude.exe`; opt-in with `LOCALFLOW_LIVE_WT=1`). A review of PR #2 found
-  and fixed: a confirmed question lost when the user talked over "Asking Claude"; "stop that"
-  not stopping an answer that arrived during a hold; folders whose path contains
-  "dangerously" or "acceptEdits" refused at launch; `//?/` paths accepted then failing; the
-  warm-up holding the model lock for dictation. Known limitations: Claude Code and Cursor themselves have not been launched
-  by voice yet; a real `claude -p` answer and its sign-in failure wording are unverified; an
-  answer begun within 150 ms of the read-back ending is ignored, and the user hears the
-  time-out line; "say that again" while a read-back waits declines it; Windows may not bring
-  the new tab to the front, so dictation could land elsewhere (the user sees where before
-  pressing Enter); Codex and Cursor Agent have no command-line tools installed, so they say
-  they are not set up.
-- Follow-ups (roadmap): unload the speech model when idle; Vulkan GPU builds; streaming partials; native
-  SQLite history retention jobs; UI Automation insertion; native context capture; paste-last-into-focus
-  hotkey.
+    Verified live: the real Windows Terminal opens the tab in a folder whose path has spaces
+    and hands the program exactly `--permission-mode default`
+    (`live_windows_terminal_passes_the_folder_and_arguments_through`, with `examples/wt_probe.rs`
+    standing in for `claude.exe`; opt-in with `LOCALFLOW_LIVE_WT=1`). A review of PR #2 found
+    and fixed: a confirmed question lost when the user talked over "Asking Claude"; "stop that"
+    not stopping an answer that arrived during a hold; folders whose path contains
+    "dangerously" or "acceptEdits" refused at launch; `//?/` paths accepted then failing; the
+    warm-up holding the model lock for dictation. Known limitations: Claude Code and Cursor themselves have not been launched
+    by voice yet; a real `claude -p` answer and its sign-in failure wording are unverified; an
+    answer begun within 150 ms of the read-back ending is ignored, and the user hears the
+    time-out line; "say that again" while a read-back waits declines it; Windows may not bring
+    the new tab to the front, so dictation could land elsewhere (the user sees where before
+    pressing Enter); Codex and Cursor Agent have no command-line tools installed, so they say
+    they are not set up.
+- **Slice 26 -- professional hardening (done; the installer has not been tried on a clean
+  machine).** Four read-only audits (security and privacy, native reliability, frontend and
+  UX, engineering and release) produced about 100 findings, none critical. Fixed in four
+  parallel batches:
+  - Dictation: holding the hotkey records until release (a pause no longer ends it); a tap
+    stops after the End-of-speech setting (was a fixed 550 ms); a press within 700 ms of an
+    automatic stop is ignored; a dictation superseded while transcribing is kept for Copy last
+    transcript; the paste waits for Ctrl/Alt/Shift/Win to be released; the clipboard is
+    restored after the target reads it (delayed rendering) and content another app marked
+    private is cleared, never restored, and never re-enters clipboard history; focus moving
+    within the target window and administrator windows block the paste with a clear message;
+    a missing engine is reported at the hotkey; whisper-cli runs in a kill-on-close job and
+    stale temp audio is swept; the recorder is supervised.
+  - App lifecycle: closing the settings window hides it; single instance; a damaged settings
+    database is moved aside and replaced, settings load leniently, and fatal start errors
+    show a message box; a size-capped log file (`app_log_dir\localflow.log`, user folders
+    redacted) and a panic hook that records only the thread and location; exit work capped
+    at 2 s off the main thread; slow commands off the main thread; atomic desktop-health
+    writes; Ollama cloud models refused by `/api/show`, not only by name; coding agents not
+    probed without projects; Fish S2 requests cancellable; page-reading status races fixed.
+  - Settings window: the layout regression fixed; native errors no longer replaced by mock
+    data; validated number fields; editing a row never deletes it; about 20 controls that did
+    nothing hidden; dictation, conversation and read-aloud errors shown on Home; a Setup
+    checklist (`readiness_status`); true privacy facts; light and dark themes; accessibility
+    fixes; `App.tsx` split by screen; diagnostics export redacts user folders and microphone
+    names.
+  - Release and repository: `MIT OR Apache-2.0` licence and third-party notices; models in a
+    per-user folder (`%LOCALAPPDATA%\LocalFlow`) with the checkout path only under the
+    default `dev-runtime` feature; every download pinned and hash-checked, including a pinned
+    whisper.cpp runtime; app-local VC++ runtime; a tag-triggered release workflow that strips
+    build paths and writes checksums; CI pins actions by SHA and runs clippy with
+    `-D warnings`, `npm audit` and the examples build; Dependabot; contributor, conduct,
+    security-reporting and issue files; an original icon; stale docs archived.
+  - Tests: 850 Rust (23 ignored), 257 frontend.
+    Known limitations: the release workflow and the installer have never run; the delayed-
+    rendering clipboard path is unit-tested but not tried on the real clipboard; the
+    installers are unsigned (SmartScreen will warn); the bundled whisper-server is an
+    unauthenticated loopback server (documented in SECURITY.md); speech from a video or call
+    could still trigger a coding-agent command; `rust-toolchain.toml` waits for disk space.
+- Follow-ups (roadmap): unload the speech model when idle; streaming partials; UI Automation
+  insertion; native context capture; paste-last-into-focus hotkey; code signing; a first
+  release dry run with a release-candidate tag.
 
 ## Milestone 1: Foundation
 

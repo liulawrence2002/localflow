@@ -46,29 +46,49 @@ Current tests cover:
 - Band-limited resampler: pass-band gain, alias rejection above 8 kHz, tone frequency, edge handling, unusual sample rates, and clamping.
 - In-memory WAV encoding and round trip.
 - Capture channel locking, the end-of-speech timeouts on empty polls, cloud-tagged Ollama model refusal, and cleanup-error redaction.
+- Engine planning (`plan_asr_engine`): GGUF models in-process, Whisper models in the server, low-resource mode, and missing pieces.
+- Read-aloud: text preparation and bounding, synthesis deadlines, the Fish S2 request against a stand-in HTTP server (text sent, WAV decoded, error status reported without the response body, junk audio rejected), missing-engine handling, install discovery, and playback sample preparation.
+- Runtime folders (`runtime_paths.rs`): the search order (bundled, per-user, then the checkout only with `dev-runtime`), and "missing" messages that name files and scripts but no folder.
+- The readiness checklist (`readiness.rs`): every item's ready state and fix for empty, partial and complete installs in temporary folders, Ollama answers (model present or missing, not answering, timed out, cloud-tagged), model names that are not echoed into a command, no path in any label or fix, and the camelCase shape the settings window reads.
+- Dictation's tap-or-hold rules (`gesture.rs`): a quick release goes hands-free and a late one ends push-to-talk, silence never stops a held hotkey but the maximum length does, a second tap stops hands-free only after 700 ms, a press within 700 ms of an automatic stop is ignored, and the End-of-speech wait is clamped to 300-3000 ms.
+- The recovery slot (`recovery.rs`): a late worker never replaces a newer transcript, a superseded transcript is kept and announced once, and only while it is still the one Copy last transcript returns.
+- The paste's checks: a focus change inside the same window and an unreadable focus at one end block it, higher-integrity (administrator) targets are detected, unknown integrity levels are not treated as blocked, and the modifier-key wait returns at once, waits, or gives up.
+- The clipboard: privacy markers make content private (an unreadable marker too), the restore plan for text, private content, other formats and a clipboard changed since the paste, the restore timing after the target's read, another program's read and no read, never earlier than the fixed delay, and longer waits in a remote session.
+- Messages, logs and health: user folders removed from messages, log lines and diagnostics; the log rotates at its cap, keeps whole records and counts an existing file; desktop health keeps no microphone name, loads older files that had one, and reports the last crash.
+- Settings storage: a damaged database is moved aside and replaced while a healthy one is kept, a data folder that cannot be made runs on defaults and says why, and settings load leniently (unknown values reset, out-of-range numbers clamped, readable list entries kept, a section of the wrong kind defaulted) with a copy of the original row kept.
+- The Ollama model check: `/api/show` answers that name a remote host or model are refused whatever the model is called, answers that describe no model are refused, and cloud entries are left out of the installed list.
+- The settings window (`tests/app.test.tsx` and others): only the screens that do something, the Home problem banner and how the last conversation ended, the Setup checklist shown only while something required is missing, save failures reported and editing locked when settings cannot load, validated number and text fields, list rows that are never deleted by emptying a field, read-aloud state, the diagnostics export removing the user folder and microphone names, the hotkey table, the privacy facts, and the version from the build.
 
-Run:
+Run everything with:
 
 ```powershell
 .\scripts\Run-Checks.ps1
 ```
 
-- Engine planning (`plan_asr_engine`): GGUF models in-process, Whisper models in the server, low-resource mode, and missing pieces.
-- Read-aloud: text preparation and bounding, synthesis deadlines, the Fish S2 request against a stand-in HTTP server (text sent, WAV decoded, error status reported without the response body, junk audio rejected), missing-engine handling, install discovery, and playback sample preparation.
+It runs the frontend checks (`npm run format`, `lint`, `test`, `build`), then in `src-tauri`
+`cargo fmt --check`, `cargo test --release --lib` and `cargo build --release --examples`.
 
-21 Rust tests are ignored by default because they need local models, a built stand-in
-program, real hardware, or are timing runs (the full table is in `DEVELOPMENT.md`):
+23 Rust tests are ignored by default because they need local models, a running Ollama, a
+built stand-in program, real hardware or the real clipboard, or are timing runs (the full
+table is in `DEVELOPMENT.md`):
 
 ```powershell
 cd src-tauri
-cargo test --release --lib real_ -- --ignored --test-threads=1          # real models: Parakeet, Whisper server, Silero, Smart Turn, Phonon
+cargo test --release --lib real_ -- --ignored --test-threads=1          # real models: Parakeet, Whisper server, Silero, Smart Turn, Phonon, and Ollama with llama3.2:3b
 cargo test --release --lib _speed -- --ignored --nocapture             # timing runs
 cargo build --release --example fake_agent
 cargo test --release --lib coding_agents -- --ignored                  # background-question runner against the stand-in
 cargo build --release --example wt_probe
 $env:LOCALFLOW_LIVE_WT = "1"
 cargo test --release --lib live_windows_terminal -- --ignored --nocapture   # opens a Windows Terminal tab
+$env:LOCALFLOW_LIVE_CLIPBOARD = "1"
+cargo test --release --lib live_delayed_rendering -- --ignored         # uses the real clipboard for a moment
 ```
+
+In Git Bash the last one is
+`LOCALFLOW_LIVE_CLIPBOARD=1 cargo test --release --lib live_delayed_rendering -- --ignored`.
+It replaces the clipboard briefly and puts its text back; it skips itself unless the
+clipboard holds plain text that no program marked private.
 
 The GPU build has one more, `real_parakeet_gpu_agrees_with_the_cpu_on_the_bench_corpus`
 (`--features gpu-vulkan`).
@@ -80,8 +100,9 @@ cache is large (it reached 13 GB); running tests with `--release` reuses the rel
 
 Read-aloud has no automated end-to-end test: it needs the s2.cpp engine built with
 `scripts\Build-FishS2.ps1`. Manual check: dictate a sentence, choose "Read last transcript
-aloud" from the tray, confirm speech plays, confirm "Stop reading" interrupts it, and confirm
-no `s2.exe` process remains five minutes later or after Quit.
+aloud" from the tray, confirm speech plays, confirm "Stop reading" interrupts it, confirm
+that stopping while it is still preparing speech ends `s2.exe`, and confirm no `s2.exe`
+process remains five minutes after the last reading or after Quit.
 
 ## Speech-to-Text Benchmark
 
@@ -104,17 +125,16 @@ not compile while it runs; the numbers are sensitive to CPU load.
 
 `scripts/Measure-OllamaCleanup.ps1` measures the background cleanup request.
 
-Current verification on this workstation:
+Latest verified results, on the development machine:
 
 - `npm run format`
 - `npm run lint`
-- `npm run test` with 163 passing tests.
+- `npm run test` with 257 passing tests (2026-11-25, after the hardening round). Earlier: 163.
 - `npm run build`
 - `cargo fmt --check`
-- `cargo test --release --lib` with 722 passing tests and 21 ignored (2026-11-24, after the PR #2 review fixes); the real-model, stand-in and live Windows Terminal tests pass with the models installed and the examples built. Earlier: 497 passing and 7 ignored (2026-11-23).
+- `cargo test --release --lib` with 850 passing tests and 23 ignored (2026-11-25, after the hardening round). Earlier: 722 passing and 21 ignored (2026-11-24, after the PR #2 review fixes), when the real-model, stand-in and live Windows Terminal tests passed with the models installed and the examples built; 497 passing and 7 ignored (2026-11-23).
 - `cargo test --release --lib real_phonon -- --ignored` and `real_silero -- --ignored`, both passing with the models installed.
-- `cargo check`
-- `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE.
+- `npm run tauri:build`, producing release EXE, MSI, and NSIS setup EXE (a local build with the development runtime; the release workflow's installers have not been run yet).
 - `.\scripts\Start-LocalFlow.ps1`, launching the release app without Vite.
 - `.\scripts\Check-Ollama.ps1`, confirming local model `llama3.2:3b`.
 - Direct local Ollama generate smoke test with `llama3.2:3b`, returning strict cleanup JSON.
@@ -181,12 +201,67 @@ Run with the packaged app and a real microphone; record hardware, Windows scalin
 5. Speak a short sentence.
 6. Pause briefly after speaking, or press the hotkey again.
 7. Confirm only the small frosted waveform pill appears above the taskbar while listening, with no larger transparent rectangle or outline; the waveform should change with speech pitch and volume, then switch to processing/refining after the pause or second hotkey press.
-8. Confirm deterministic text appears in the target field quickly after local Whisper finishes; local Ollama cleanup should continue in the background and update Diagnostics/Copy Last Transcript when available.
-9. Open Diagnostics, click Refresh, and record `Latency: speech end to visible text`, `Latency: Whisper sidecar`, `Latency: Ollama cleanup`, and the `ASR engine` row. The engine should read `transcribe-cpp` with the Parakeet model; `fallback engine used` means it failed and the Whisper CLI took over.
+8. Confirm deterministic text appears in the target field quickly after speech recognition finishes; local Ollama cleanup should continue in the background and update Diagnostics/Copy Last Transcript when available.
+9. Open Diagnostics, click Refresh, and record `Latency: speech end to visible text`, `Latency: Whisper sidecar` (the speech-recognition time), `Latency: Ollama cleanup`, and the `ASR engine` row. With Parakeet installed the engine should read `transcribe-cpp` with the Parakeet model; `fallback engine used` means it failed and the Whisper CLI took over.
 10. If you select a Whisper model instead, confirm one `whisper-server.exe` process exists after the first dictation, that it is gone after Quit from the tray, and that it is also gone after ending `localflow.exe` from Task Manager.
 11. Press Win+V after a dictation and confirm the dictated text is not in clipboard history.
 12. Confirm `Get-NetTCPConnection -LocalPort 1420 -State Listen` returns nothing during this release-app smoke test.
 
-This validates microphone capture, end-of-speech auto-stop, pitch-reactive overlay events, local `whisper.cpp` execution, deterministic quick insert, background local Ollama `llama3.2:3b` cleanup, JSON parsing, clipboard paste, and temporary file cleanup for the current native path.
+This validates microphone capture, end-of-speech auto-stop, pitch-reactive overlay events, local speech recognition (Parakeet in-process, or the whisper.cpp fallback), deterministic quick insert, background local Ollama `llama3.2:3b` cleanup, JSON parsing, and clipboard paste for the current native path.
+
+## Manual Checks for the November 2026 Changes
+
+These behaviours are unit-tested; these steps check them in the real app. Record the build
+and what you saw.
+
+1. **Tap.** Tap `Ctrl+Alt+Space`, speak and pause: it stops after the End-of-speech wait
+   (900 ms by default). Set the wait to 2000 ms in Settings > Dictation and confirm a 1 s
+   pause no longer ends it.
+2. **Hold.** Hold the hotkey, speak with a pause of several seconds, then let go: it does not
+   stop before you let go.
+3. **The 700 ms rule.** Tap, speak, let it stop by itself, and tap again at once: no new
+   recording starts and the first dictation is pasted.
+4. **Held modifiers.** Hold the hotkey, speak, let go of Space only and keep `Ctrl+Alt` down
+   for 3 s: nothing is pasted, and Home says "Keys were still held".
+5. **Focus inside a window.** In a classic Windows dialog with two text boxes (each its own
+   window), start a dictation in one and click into the other before it is pasted: nothing
+   is pasted, and Home offers Copy last transcript. In a browser page the same move is not
+   detected (see the user guide).
+6. **Administrator window.** Dictate into Notepad started with "Run as administrator":
+   nothing is typed, and Home says "Can't paste into an administrator window".
+7. **Superseded dictation.** Turn on Low-resource mode, so that transcription takes longer.
+   Hold the hotkey through a long sentence, let go, then at once tap it again and press
+   `Escape`: the first dictation is not pasted, Home says "Previous dictation was not
+   pasted", and Copy last transcript returns the first dictation's text. (A press within
+   700 ms of a dictation that stopped by itself is ignored, which is why this uses a hold.)
+8. **Clipboard.** Copy some text, dictate, then press `Win+V`: the earlier text is on the
+   clipboard and neither text is in the history. Copy a password from a password manager,
+   dictate, and confirm the clipboard is empty afterwards.
+9. **Tray and single instance.** Close the settings window: LocalFlow stays in the tray.
+   Start LocalFlow from the Start menu: the window comes back and Task Manager shows one
+   `localflow.exe`.
+10. **Quit.** Choose Quit in the tray while a dictation is transcribing: the process ends
+    within a few seconds and no `whisper-server.exe` or `s2.exe` remains.
+11. **Log.** Open `%LOCALAPPDATA%\app.localflow.desktop\logs\localflow.log`: it has lines from
+    this session, no dictated text and no user folder.
 
 Use `.\scripts\Start-Dev.ps1` only when intentionally testing the developer Vite/Tauri loop.
+
+## Installer Smoke Test (not yet run)
+
+On a clean Windows 11 computer or virtual machine without Visual Studio, Rust or the Visual
+C++ redistributable:
+
+1. Check both installers from a draft release against `SHA256SUMS`.
+2. Install with the `-setup.exe` (no administrator prompt expected), and separately with the
+   `.msi`. Confirm the install folder holds `localflow.exe`, `msvcp140.dll`,
+   `vcruntime140.dll`, `vcruntime140_1.dll`, `LICENSE.txt`, `THIRD_PARTY_NOTICES.md`,
+   `scripts\` and `localflow-runtime\whisper\Release\` with the Visual C++ DLLs beside the
+   whisper.cpp programs.
+3. Start LocalFlow from the Start menu with no models downloaded: the readiness checklist
+   lists what is missing with a script to run, and dictation works with the bundled tiny.en.
+4. Run the model scripts from the install folder as in the user guide; confirm the files land
+   in `%LOCALAPPDATA%\LocalFlow` and that LocalFlow then uses Parakeet and starts a
+   conversation.
+5. Select a Whisper model and dictate, to start `whisper-server.exe` from the install folder.
+6. Uninstall; confirm the models in `%LOCALAPPDATA%\LocalFlow` remain.

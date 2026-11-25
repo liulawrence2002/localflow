@@ -1,5 +1,7 @@
 # Voice Pipeline Review
 
+> **Research snapshot dated 2026-11-22.** Kept as written; model choices, measurements and plans may have changed since, and it may not match the current code. For what was decided and built, see [VOICE_ASSISTANT_PLAN.md](../VOICE_ASSISTANT_PLAN.md) and [development/PLAN.md](../development/PLAN.md).
+
 Date: 2026-11-22. Scope: a technical review of LocalFlow's voice pipeline, a survey of
 current speech models, the changes made as a result, and what remains.
 
@@ -42,19 +44,19 @@ and no silent network fallback. Hosted services appear below only as reference p
 Evidence is from reading the code at commit `eb17641` and from the architecture review in
 [`appendix/E-architecture-review.md`](appendix/E-architecture-review.md).
 
-| Area | State before | Consequence |
-|---|---|---|
-| Speech-to-text | A new `whisper-cli.exe` process per utterance, model `ggml-tiny.en-q5_1`, beam 5, 8 threads, audio and transcript passed through temp files | Process start and model load on every dictation; no way to swap engines |
-| Sidecar control | `Command::output()` with no timeout and no kill | A hung whisper left the overlay on "processing" and the audio file on disk |
-| Provider boundary | The existing `AsrProvider` trait took no audio and was used only by mock sessions | Engine, model, language, and flags were hardcoded in a 2,550-line module |
-| Resampling | Linear interpolation with no low-pass filter | At 48 kHz this is plain decimation by 3: everything from 8 to 24 kHz aliases into the speech band |
-| Channel selection | Loudest channel chosen per audio callback | The chosen channel could flip mid-word on a multi-channel microphone |
-| Voice activity | RMS thresholds; the watchdog skipped all timeouts when no samples arrived | An unplugged microphone left the session listening with Escape grabbed globally |
-| Clipboard | Dictated text written with no history or cloud-sync exclusion | Transcripts entered Win+V history and cloud clipboard |
-| Ollama client | Default HTTP client: honoured proxy variables, followed redirects, no context limit | Text could leave loopback through a proxy; on this machine the request failed outright (section 6) |
-| Observability | Per-stage latency shown for the last dictation only; no benchmark harness | No baseline existed |
-| Health file | Read and rewritten on every level-meter event, about 18 times a second | Disk I/O on the capture thread during dictation |
-| Packaging | Installer bundled all 37 runtime executables | About 6 MB of unused binaries, including test programs |
+| Area              | State before                                                                                                                                | Consequence                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Speech-to-text    | A new `whisper-cli.exe` process per utterance, model `ggml-tiny.en-q5_1`, beam 5, 8 threads, audio and transcript passed through temp files | Process start and model load on every dictation; no way to swap engines                            |
+| Sidecar control   | `Command::output()` with no timeout and no kill                                                                                             | A hung whisper left the overlay on "processing" and the audio file on disk                         |
+| Provider boundary | The existing `AsrProvider` trait took no audio and was used only by mock sessions                                                           | Engine, model, language, and flags were hardcoded in a 2,550-line module                           |
+| Resampling        | Linear interpolation with no low-pass filter                                                                                                | At 48 kHz this is plain decimation by 3: everything from 8 to 24 kHz aliases into the speech band  |
+| Channel selection | Loudest channel chosen per audio callback                                                                                                   | The chosen channel could flip mid-word on a multi-channel microphone                               |
+| Voice activity    | RMS thresholds; the watchdog skipped all timeouts when no samples arrived                                                                   | An unplugged microphone left the session listening with Escape grabbed globally                    |
+| Clipboard         | Dictated text written with no history or cloud-sync exclusion                                                                               | Transcripts entered Win+V history and cloud clipboard                                              |
+| Ollama client     | Default HTTP client: honoured proxy variables, followed redirects, no context limit                                                         | Text could leave loopback through a proxy; on this machine the request failed outright (section 6) |
+| Observability     | Per-stage latency shown for the last dictation only; no benchmark harness                                                                   | No baseline existed                                                                                |
+| Health file       | Read and rewritten on every level-meter event, about 18 times a second                                                                      | Disk I/O on the capture thread during dictation                                                    |
+| Packaging         | Installer bundled all 37 runtime executables                                                                                                | About 6 MB of unused binaries, including test programs                                             |
 
 Things that were already sound and were kept: session identity with supersede and cancel,
 target-window revalidation before paste, deterministic formatting, transcript-free logging,
@@ -90,14 +92,14 @@ memory and disk 10, licence 10, integration cost 10, dictation features (vocabul
 punctuation) 10. Scores are 1 to 5 and are judgement informed by the measurements; the
 total is out of 100.
 
-| Candidate | Accuracy | Latency | Footprint | Licence | Integration | Features | Total | Basis |
-|---|---|---|---|---|---|---|---|---|
-| Whisper tiny.en, persistent server (new default) | 2 | 5 | 5 | 5 | 5 | 4 | 77 | measured here |
-| Whisper base.en, persistent server (opt-in) | 3 | 3 | 5 | 5 | 5 | 4 | 74 | measured here |
-| Whisper small.en | 3.5 | 1 | 4 | 5 | 5 | 4 | 66 | measured here (latency), third-party (WER) |
-| Whisper large-v3-turbo, CPU | 4.5 | 1 | 2 | 5 | 5 | 5 | 71 | measured here (latency), GPU only in practice |
-| Parakeet TDT 0.6B v3, one process per utterance (opt-in) | 5 | 2 | 2 | 5 | 4 | 2 | 71 | measured here |
-| Parakeet 0.6B kept loaded in-process (roadmap) | 5 | 4 | 2 | 4 | 2 | 3 | 77 | estimate; latency not measured |
+| Candidate                                                | Accuracy | Latency | Footprint | Licence | Integration | Features | Total | Basis                                         |
+| -------------------------------------------------------- | -------- | ------- | --------- | ------- | ----------- | -------- | ----- | --------------------------------------------- |
+| Whisper tiny.en, persistent server (new default)         | 2        | 5       | 5         | 5       | 5           | 4        | 77    | measured here                                 |
+| Whisper base.en, persistent server (opt-in)              | 3        | 3       | 5         | 5       | 5           | 4        | 74    | measured here                                 |
+| Whisper small.en                                         | 3.5      | 1       | 4         | 5       | 5           | 4        | 66    | measured here (latency), third-party (WER)    |
+| Whisper large-v3-turbo, CPU                              | 4.5      | 1       | 2         | 5       | 5           | 5        | 71    | measured here (latency), GPU only in practice |
+| Parakeet TDT 0.6B v3, one process per utterance (opt-in) | 5        | 2       | 2         | 5       | 4           | 2        | 71    | measured here                                 |
+| Parakeet 0.6B kept loaded in-process (roadmap)           | 5        | 4       | 2         | 4       | 2           | 3        | 77    | estimate; latency not measured                |
 
 Reading: the shipped default and the roadmap engine tie for the best total. The roadmap
 engine trades integration effort for a large accuracy gain, and its score depends on a
@@ -105,13 +107,13 @@ latency estimate that must be measured before it is adopted.
 
 Best option by goal, speech recognition:
 
-| Goal | Choice | Status |
-|---|---|---|
-| Lowest latency on CPU | Whisper tiny.en on the persistent server, greedy decoding | Shipped as the default |
-| Highest accuracy available today | Parakeet TDT 0.6B v3 (CC-BY-4.0) | Shipped as an opt-in engine |
-| Efficient local deployment | tiny.en default (32 MB model, about 130 MB resident) | Shipped |
-| Lowest cost at scale | Local inference. Electricity is roughly USD 0.002 to 0.012 per 1,000 dictations against USD 0.33 to 0.87 hosted (estimate with stated assumptions, appendix F) | Not applicable to a single-user app |
-| Best overall balance | A 0.6B Parakeet-class model kept loaded, with Vulkan when a GPU exists | Roadmap; needs measurement |
+| Goal                             | Choice                                                                                                                                                         | Status                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Lowest latency on CPU            | Whisper tiny.en on the persistent server, greedy decoding                                                                                                      | Shipped as the default              |
+| Highest accuracy available today | Parakeet TDT 0.6B v3 (CC-BY-4.0)                                                                                                                               | Shipped as an opt-in engine         |
+| Efficient local deployment       | tiny.en default (32 MB model, about 130 MB resident)                                                                                                           | Shipped                             |
+| Lowest cost at scale             | Local inference. Electricity is roughly USD 0.002 to 0.012 per 1,000 dictations against USD 0.33 to 0.87 hosted (estimate with stated assumptions, appendix F) | Not applicable to a single-user app |
+| Best overall balance             | A 0.6B Parakeet-class model kept loaded, with Vulkan when a GPU exists                                                                                         | Roadmap; needs measurement          |
 
 ## 4. Text-to-speech: what the research found
 
@@ -132,14 +134,14 @@ no TTS, so this section is a recommendation for a possible read-back feature, no
 
 ### Fish Speech against the strongest alternatives
 
-| Constraint | Fish Drama 3 / S2-Pro | Kokoro-82M | Pocket TTS | Kitten TTS 2 mini |
-|---|---|---|---|---|
-| Download size | 41.5 GB / multi-GB | 86 to 326 MB | 100M parameters | 47 to 83 MB |
-| Runs on CPU only | No | Yes | Yes | Yes |
-| Commercial use | Under USD 500k revenue, with attribution; S2-Pro none | Unrestricted (Apache-2.0) | Unrestricted with attribution (MIT code, CC-BY-4.0 weights) | Unrestricted (Apache-2.0) |
-| Rust or ONNX runtime | None | Yes | Yes | Yes |
-| Voice cloning and emotion control | Yes | No | Cloning only | No |
-| Independent speed data | Partly reproduced | Yes | Yes | None yet (released 2026-11-13) |
+| Constraint                        | Fish Drama 3 / S2-Pro                                 | Kokoro-82M                | Pocket TTS                                                  | Kitten TTS 2 mini              |
+| --------------------------------- | ----------------------------------------------------- | ------------------------- | ----------------------------------------------------------- | ------------------------------ |
+| Download size                     | 41.5 GB / multi-GB                                    | 86 to 326 MB              | 100M parameters                                             | 47 to 83 MB                    |
+| Runs on CPU only                  | No                                                    | Yes                       | Yes                                                         | Yes                            |
+| Commercial use                    | Under USD 500k revenue, with attribution; S2-Pro none | Unrestricted (Apache-2.0) | Unrestricted with attribution (MIT code, CC-BY-4.0 weights) | Unrestricted (Apache-2.0)      |
+| Rust or ONNX runtime              | None                                                  | Yes                       | Yes                                                         | Yes                            |
+| Voice cloning and emotion control | Yes                                                   | No                        | Cloning only                                                | No                             |
+| Independent speed data            | Partly reproduced                                     | Yes                       | Yes                                                         | None yet (released 2026-11-13) |
 
 Fish leads on expressiveness, cloning, and emotional control. A read-back feature needs
 none of those; it needs intelligible speech from a preset voice, on CPU, under a permissive
@@ -148,43 +150,43 @@ licence. Voice cloning is also a liability for a privacy-first product.
 Weighted comparison (local CPU feasibility 25, licence 20, quality 20, footprint 10, Rust
 integration 15, maintenance 10; judgement scores, total out of 100):
 
-| Candidate | CPU | Licence | Quality | Footprint | Rust | Maintenance | Total |
-|---|---|---|---|---|---|---|---|
-| Kokoro-82M | 5 | 5 | 4 | 5 | 5 | 2 | 90 |
-| Pocket TTS | 5 | 4 | 3.5 | 5 | 5 | 5 | 90 |
-| Kitten TTS 2 mini | 5 | 5 | 3 | 5 | 3 | 4 | 84 |
-| Piper voice through sherpa-onnx | 5 | 3 | 2.5 | 5 | 5 | 2 | 76 |
-| Fish Drama 3 / S2-Pro | 1 | 1 | 5 | 1 | 1 | 5 | 44 |
-| F5-TTS, XTTS-v2 | 1 | 1 | 4 | 2 | 1 | 3 | 38 |
+| Candidate                       | CPU | Licence | Quality | Footprint | Rust | Maintenance | Total |
+| ------------------------------- | --- | ------- | ------- | --------- | ---- | ----------- | ----- |
+| Kokoro-82M                      | 5   | 5       | 4       | 5         | 5    | 2           | 90    |
+| Pocket TTS                      | 5   | 4       | 3.5     | 5         | 5    | 5           | 90    |
+| Kitten TTS 2 mini               | 5   | 5       | 3       | 5         | 3    | 4           | 84    |
+| Piper voice through sherpa-onnx | 5   | 3       | 2.5     | 5         | 5    | 2           | 76    |
+| Fish Drama 3 / S2-Pro           | 1   | 1       | 5       | 1         | 1    | 5           | 44    |
+| F5-TTS, XTTS-v2                 | 1   | 1       | 4       | 2         | 1    | 3           | 38    |
 
 Best option by goal, text-to-speech:
 
-| Goal | Choice |
-|---|---|
-| Highest quality, any deployment | Hosted leaders (ElevenLabs v4, Cartesia Sonic 3.6) or Fish Drama 3 on a datacentre GPU. All prohibited or impractical here |
-| Lowest-latency conversation | Hosted streaming APIs. Not applicable: LocalFlow has no conversational mode |
-| Efficient local deployment | Kokoro-82M or Pocket TTS through sherpa-onnx |
-| Lowest cost at scale | Local CPU: about USD 0.011 to 0.019 per 1,000 requests against USD 4.50 to 24 hosted (estimate, appendix F) |
-| Best balance for a read-back feature | Pocket TTS (actively maintained, streaming) with Kokoro as the alternative |
+| Goal                                 | Choice                                                                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Highest quality, any deployment      | Hosted leaders (ElevenLabs v4, Cartesia Sonic 3.6) or Fish Drama 3 on a datacentre GPU. All prohibited or impractical here |
+| Lowest-latency conversation          | Hosted streaming APIs. Not applicable: LocalFlow has no conversational mode                                                |
+| Efficient local deployment           | Kokoro-82M or Pocket TTS through sherpa-onnx                                                                               |
+| Lowest cost at scale                 | Local CPU: about USD 0.011 to 0.019 per 1,000 requests against USD 4.50 to 24 hosted (estimate, appendix F)                |
+| Best balance for a read-back feature | Pocket TTS (actively maintained, streaming) with Kokoro as the alternative                                                 |
 
 ## 5. Inference and audio engineering findings
 
 Reports: [`appendix/C-inference-optimisation.md`](appendix/C-inference-optimisation.md) and
 [`appendix/D-audio-engineering.md`](appendix/D-audio-engineering.md).
 
-| Technique | Finding | Decision |
-|---|---|---|
-| Persistent sidecar instead of a process per utterance | Removes process start, model load, and temp files | Adopted; measured |
-| Greedy decoding instead of beam 5 | Faster; accuracy difference not detectable on our corpus | Adopted; measured |
-| Threads limited to performance cores | Published guidance; here six threads were no slower than eight | Adopted (cap of six) |
-| Dynamic Whisper audio context | Large speed-up but an accuracy cost that grows as the margin tightens | Not enabled; measured |
-| Silero VAD gate in whisper.cpp | Removes hallucinated text on silence; small latency cost | Not enabled by default; measured, sample too small to conclude |
-| Quantisation q5_1 versus q8_0 | Evidence of benefit is weak | No change |
-| GPU build (CUDA) | Prebuilt zips are 285 to 766 MB; no Vulkan prebuilt for whisper.cpp | Roadmap; not measured |
-| ONNX Runtime with DirectML | Microsoft now lists DirectML as legacy | Rejected |
-| Band-limited resampler | Fixes a certain signal defect; no published WER evidence either way | Adopted; WER effect not measured |
-| Noise suppression before ASR | Three studies show it raises WER for Whisper-class models | Rejected |
-| Bounded Ollama context | Prevents a 10 GB allocation | Adopted; measured |
+| Technique                                             | Finding                                                               | Decision                                                       |
+| ----------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Persistent sidecar instead of a process per utterance | Removes process start, model load, and temp files                     | Adopted; measured                                              |
+| Greedy decoding instead of beam 5                     | Faster; accuracy difference not detectable on our corpus              | Adopted; measured                                              |
+| Threads limited to performance cores                  | Published guidance; here six threads were no slower than eight        | Adopted (cap of six)                                           |
+| Dynamic Whisper audio context                         | Large speed-up but an accuracy cost that grows as the margin tightens | Not enabled; measured                                          |
+| Silero VAD gate in whisper.cpp                        | Removes hallucinated text on silence; small latency cost              | Not enabled by default; measured, sample too small to conclude |
+| Quantisation q5_1 versus q8_0                         | Evidence of benefit is weak                                           | No change                                                      |
+| GPU build (CUDA)                                      | Prebuilt zips are 285 to 766 MB; no Vulkan prebuilt for whisper.cpp   | Roadmap; not measured                                          |
+| ONNX Runtime with DirectML                            | Microsoft now lists DirectML as legacy                                | Rejected                                                       |
+| Band-limited resampler                                | Fixes a certain signal defect; no published WER evidence either way   | Adopted; WER effect not measured                               |
+| Noise suppression before ASR                          | Three studies show it raises WER for Whisper-class models             | Rejected                                                       |
+| Bounded Ollama context                                | Prevents a 10 GB allocation                                           | Adopted; measured                                              |
 
 ## 6. What was changed
 
@@ -228,16 +230,16 @@ app's own provider code. `scripts/Get-AsrModel.ps1` is an explicit model downloa
 
 ### Decisions on the existing components
 
-| Component | Decision | Reason |
-|---|---|---|
-| whisper.cpp runtime | Retain, used differently | The persistent server was already in the runtime folder |
-| tiny.en model as default | Retain | Only model that meets the latency target on CPU; accuracy options are now opt-in |
-| One-shot CLI | Retain as fallback | Zero idle memory; known-good path |
-| Deterministic formatter | Retain | Not part of the bottleneck |
-| Ollama cleanup | Retain, bounded | Background only; the unbounded request was failing |
-| Linear resampler | Replace | Signal defect |
-| Parakeet | Combine, as opt-in | Large accuracy gain, but slow to start in this runtime |
-| TTS | Not added | No product requirement yet; shortlist recorded above |
+| Component                | Decision                 | Reason                                                                           |
+| ------------------------ | ------------------------ | -------------------------------------------------------------------------------- |
+| whisper.cpp runtime      | Retain, used differently | The persistent server was already in the runtime folder                          |
+| tiny.en model as default | Retain                   | Only model that meets the latency target on CPU; accuracy options are now opt-in |
+| One-shot CLI             | Retain as fallback       | Zero idle memory; known-good path                                                |
+| Deterministic formatter  | Retain                   | Not part of the bottleneck                                                       |
+| Ollama cleanup           | Retain, bounded          | Background only; the unbounded request was failing                               |
+| Linear resampler         | Replace                  | Signal defect                                                                    |
+| Parakeet                 | Combine, as opt-in       | Large accuracy gain, but slow to start in this runtime                           |
+| TTS                      | Not added                | No product requirement yet; shortlist recorded above                             |
 
 ## 7. Results in brief
 

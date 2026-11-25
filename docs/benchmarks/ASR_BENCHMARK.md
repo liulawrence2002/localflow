@@ -10,16 +10,16 @@ section lists what was not measured.
 
 On 136 clips of clean read speech, three passes each, CPU only:
 
-| | Original path | New default | Change (95 % interval) |
-|---|---|---|---|
-| Configuration | one `whisper-cli` process per utterance, beam 5, 8 threads | persistent `whisper-server`, greedy, 6 threads | |
-| Median transcription time | 780 ms | 437 ms | -44.0 % (-45.6 to -42.4) |
-| 95th percentile | 1,137 ms | 549 ms | -51.7 % (-54.9 to -48.0) |
-| Clips on which the new path was faster | | 136 of 136 | |
-| Word error rate | 3.18 % | 3.31 % | +0.13 points (-0.09 to +0.35) |
-| First request after 30 s idle | 837 ms | 447 ms | single observation each |
-| Peak resident memory of the engine | 150 MB per run, 0 between dictations | 132 MB, held while the app runs | |
-| Errors in 408 requests | 0 | 0 | |
+|                                        | Original path                                              | New default                                    | Change (95 % interval)        |
+| -------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------- | ----------------------------- |
+| Configuration                          | one `whisper-cli` process per utterance, beam 5, 8 threads | persistent `whisper-server`, greedy, 6 threads |                               |
+| Median transcription time              | 780 ms                                                     | 437 ms                                         | -44.0 % (-45.6 to -42.4)      |
+| 95th percentile                        | 1,137 ms                                                   | 549 ms                                         | -51.7 % (-54.9 to -48.0)      |
+| Clips on which the new path was faster |                                                            | 136 of 136                                     |                               |
+| Word error rate                        | 3.18 %                                                     | 3.31 %                                         | +0.13 points (-0.09 to +0.35) |
+| First request after 30 s idle          | 837 ms                                                     | 447 ms                                         | single observation each       |
+| Peak resident memory of the engine     | 150 MB per run, 0 between dictations                       | 132 MB, held while the app runs                |                               |
+| Errors in 408 requests                 | 0                                                          | 0                                              |                               |
 
 Both use the same model, `ggml-tiny.en-q5_1.bin`. The accuracy difference is three words in
 2,358 and its interval includes zero, so this corpus cannot tell the two apart. A small
@@ -37,17 +37,17 @@ After the comparison below, Parakeet TDT 0.6B v3 was integrated in-process throu
 transcribe.cpp so the model stays loaded, and it became the default speech model. Raw data:
 `asr-parakeet-raw.json` (three passes, 136 clips, CPU).
 
-| | tiny.en on the whisper server | Parakeet TDT 0.6B v3 (Q5_K_M), in-process | Change (95 % interval) |
-|---|---|---|---|
-| Word error rate | 3.31 % | 0.93 % | -2.37 points (-3.34 to -1.49) |
-| Median transcription time | 453 ms | 534 ms | +18.0 % (-2.6 to +24.2) |
-| 95th percentile | 588 ms | 1,280 ms | +118 % (+94 to +182) |
-| Median, clips up to 5 s (57 clips) | 424 ms | 334 ms | |
-| Median, clips over 10 s (36 clips) | 540 ms | 1,118 ms | |
-| First request after 30 s idle | 666 ms | 955 ms | single observation each |
-| Non-speech probes that produced text | 2 of 2 | 0 of 2 | |
-| Peak resident memory | 132 MB | 1,241 MB (whole benchmark process) | |
-| Model load | 236 ms | 533 ms | |
+|                                      | tiny.en on the whisper server | Parakeet TDT 0.6B v3 (Q5_K_M), in-process | Change (95 % interval)        |
+| ------------------------------------ | ----------------------------- | ----------------------------------------- | ----------------------------- |
+| Word error rate                      | 3.31 %                        | 0.93 %                                    | -2.37 points (-3.34 to -1.49) |
+| Median transcription time            | 453 ms                        | 534 ms                                    | +18.0 % (-2.6 to +24.2)       |
+| 95th percentile                      | 588 ms                        | 1,280 ms                                  | +118 % (+94 to +182)          |
+| Median, clips up to 5 s (57 clips)   | 424 ms                        | 334 ms                                    |                               |
+| Median, clips over 10 s (36 clips)   | 540 ms                        | 1,118 ms                                  |                               |
+| First request after 30 s idle        | 666 ms                        | 955 ms                                    | single observation each       |
+| Non-speech probes that produced text | 2 of 2                        | 0 of 2                                    |                               |
+| Peak resident memory                 | 132 MB                        | 1,241 MB (whole benchmark process)        |                               |
+| Model load                           | 236 ms                        | 533 ms                                    |                               |
 
 Readings:
 
@@ -135,26 +135,26 @@ model through transcribe.cpp), `server`, `cli`. Context applies to Whisper only:
 
 Raw data: `asr-final-raw.json`.
 
-| Configuration | p50 ms | p95 ms | Mean ms | p50 ms, clips up to 5 s | Real-time factor | WER % | Peak RSS MB | After 30 s idle, ms |
-|---|---|---|---|---|---|---|---|---|
-| `server:tiny.en:1:6` (new default) | 441 | 562 | 450 | 418 | 0.061 | 3.31 | 132 | 447 |
-| `cli:tiny.en:5:8` (original) | 784 | 1,163 | 832 | 697 | 0.113 | 3.18 | 150 | 837 |
-| `server:tiny.en:5:6` | 571 | 964 | 625 | 499 | 0.085 | 2.88 | 174 | 750 |
-| `cli:tiny.en:1:8` | 626 | 794 | 647 | 598 | 0.088 | 3.31 | 118 | 590 |
-| `server:tiny.en:1:8` | 429 | 564 | 447 | 401 | 0.061 | 3.31 | 132 | 548 |
+| Configuration                      | p50 ms | p95 ms | Mean ms | p50 ms, clips up to 5 s | Real-time factor | WER % | Peak RSS MB | After 30 s idle, ms |
+| ---------------------------------- | ------ | ------ | ------- | ----------------------- | ---------------- | ----- | ----------- | ------------------- |
+| `server:tiny.en:1:6` (new default) | 441    | 562    | 450     | 418                     | 0.061            | 3.31  | 132         | 447                 |
+| `cli:tiny.en:5:8` (original)       | 784    | 1,163  | 832     | 697                     | 0.113            | 3.18  | 150         | 837                 |
+| `server:tiny.en:5:6`               | 571    | 964    | 625     | 499                     | 0.085            | 2.88  | 174         | 750                 |
+| `cli:tiny.en:1:8`                  | 626    | 794    | 647     | 598                     | 0.088            | 3.31  | 118         | 590                 |
+| `server:tiny.en:1:8`               | 429    | 564    | 447     | 401                     | 0.061            | 3.31  | 132         | 548                 |
 
 Percentiles in this table are over all 408 requests. The paired figures below use each
 clip's median, which is why they differ by a few milliseconds.
 
 ### Where the gain comes from
 
-| Comparison (same model) | Median change | p95 change | WER difference, points |
-|---|---|---|---|
-| Original to new default | -44.0 % (-45.6 to -42.4) | -51.7 % (-54.9 to -48.0) | +0.13 (-0.09 to +0.35) |
-| Persistent server alone: `cli:1:8` to `server:1:8` | -31.0 % (-32.3 to -29.6) | -25.9 % (-30.2 to -21.5) | 0.00 |
+| Comparison (same model)                                  | Median change            | p95 change               | WER difference, points |
+| -------------------------------------------------------- | ------------------------ | ------------------------ | ---------------------- |
+| Original to new default                                  | -44.0 % (-45.6 to -42.4) | -51.7 % (-54.9 to -48.0) | +0.13 (-0.09 to +0.35) |
+| Persistent server alone: `cli:1:8` to `server:1:8`       | -31.0 % (-32.3 to -29.6) | -25.9 % (-30.2 to -21.5) | 0.00                   |
 | Greedy alone on the server: `server:5:6` to `server:1:6` | -22.9 % (-25.8 to -21.1) | -41.9 % (-45.3 to -35.9) | +0.42 (-0.08 to +1.00) |
-| Original to server with beam 5 | -27.3 % (-28.9 to -25.0) | -17.0 % (-22.0 to -13.9) | -0.30 (-0.89 to +0.17) |
-| Eight threads to six on the server | +1.6 % (0.0 to +3.7) | -0.8 % (-6.3 to +5.6) | 0.00 |
+| Original to server with beam 5                           | -27.3 % (-28.9 to -25.0) | -17.0 % (-22.0 to -13.9) | -0.30 (-0.89 to +0.17) |
+| Eight threads to six on the server                       | +1.6 % (0.0 to +3.7)     | -0.8 % (-6.3 to +5.6)    | 0.00                   |
 
 Readings:
 
@@ -176,18 +176,18 @@ Readings:
 
 Raw data: `asr-matrix-raw.json`.
 
-| Configuration | p50 ms | p95 ms | WER % | Peak RSS MB | Server ready ms | Crash recovery ms |
-|---|---|---|---|---|---|---|
-| `cli:tiny.en:5:8` (original) | 884 | 1,333 | 3.18 | 151 | | |
-| `cli:tiny.en:1:8` | 741 | 979 | 3.31 | 118 | | |
-| `server:tiny.en:1:8` | 522 | 699 | 3.31 | 132 | 451 | 909 |
-| `server:tiny.en:1:6` | 484 | 618 | 3.31 | 131 | 237 | 715 |
-| `server:tiny.en:5:6` | 636 | 1,042 | 2.88 | 169 | 229 | 1,169 |
-| `server:base.en:1:6` | 1,044 | 1,273 | 2.42 | 180 | 240 | 1,304 |
-| `server:base.en:1:8` | 1,051 | 1,371 | 2.42 | 181 | 441 | 1,613 |
-| `server:base.en:5:6` | 1,320 | 1,961 | 2.21 | 236 | 456 | 2,219 |
-| `cli:base.en:5:8` | 1,507 | 2,117 | 2.29 | 217 | | |
-| `parakeet:tdt-0.6b-v3-q8_0` (process per utterance) | 1,483 | 2,939 | 0.93 | 727 | | |
+| Configuration                                       | p50 ms | p95 ms | WER % | Peak RSS MB | Server ready ms | Crash recovery ms |
+| --------------------------------------------------- | ------ | ------ | ----- | ----------- | --------------- | ----------------- |
+| `cli:tiny.en:5:8` (original)                        | 884    | 1,333  | 3.18  | 151         |                 |                   |
+| `cli:tiny.en:1:8`                                   | 741    | 979    | 3.31  | 118         |                 |                   |
+| `server:tiny.en:1:8`                                | 522    | 699    | 3.31  | 132         | 451             | 909               |
+| `server:tiny.en:1:6`                                | 484    | 618    | 3.31  | 131         | 237             | 715               |
+| `server:tiny.en:5:6`                                | 636    | 1,042  | 2.88  | 169         | 229             | 1,169             |
+| `server:base.en:1:6`                                | 1,044  | 1,273  | 2.42  | 180         | 240             | 1,304             |
+| `server:base.en:1:8`                                | 1,051  | 1,371  | 2.42  | 181         | 441             | 1,613             |
+| `server:base.en:5:6`                                | 1,320  | 1,961  | 2.21  | 236         | 456             | 2,219             |
+| `cli:base.en:5:8`                                   | 1,507  | 2,117  | 2.29  | 217         |                 |                   |
+| `parakeet:tdt-0.6b-v3-q8_0` (process per utterance) | 1,483  | 2,939  | 0.93  | 727         |                 |                   |
 
 Run-to-run variation is visible: the original path measured 884 ms here and 784 to 820 ms
 in later runs. Single-pass differences under about 10 % should not be read as real.
@@ -219,17 +219,17 @@ window to the clip length plus a margin. Run 2 used a tight margin (audio + 5.1 
 contains. The margin is recorded in the JSON from run 3 onward; run 2's is recorded only
 here.
 
-| Configuration | p50 ms | p95 ms | WER % | Non-speech probes that produced text |
-|---|---|---|---|---|
-| `server:tiny.en:1:6`, full window | 472 | 638 | 3.31 | 2 of 2 |
-| `server:tiny.en:1:6`, dynamic, tight | 204 | 516 | 3.77 | 2 of 2 |
-| `server:tiny.en:1:6`, dynamic, wide | 250 | 475 | 3.77 | 1 of 2 |
-| `server:base.en:1:6`, full window | 1,104 | 1,358 | 2.42 | 2 of 2 |
-| `server:base.en:1:6`, dynamic, tight | 388 | 906 | 5.98 | 2 of 2 |
-| `server:base.en:1:6`, dynamic, wide | 521 | 1,007 | 2.97 | 1 of 2 |
-| `server:small.en:1:6`, dynamic, tight | 1,345 | 2,921 | 14.84 | 2 of 2 |
-| `server:base.en:1:6`, full window, Silero VAD | 1,171 | 1,447 | 2.71 | 0 of 2 |
-| `server:base.en:1:6`, dynamic tight, Silero VAD | 497 | 1,066 | 6.11 | 0 of 2 |
+| Configuration                                   | p50 ms | p95 ms | WER % | Non-speech probes that produced text |
+| ----------------------------------------------- | ------ | ------ | ----- | ------------------------------------ |
+| `server:tiny.en:1:6`, full window               | 472    | 638    | 3.31  | 2 of 2                               |
+| `server:tiny.en:1:6`, dynamic, tight            | 204    | 516    | 3.77  | 2 of 2                               |
+| `server:tiny.en:1:6`, dynamic, wide             | 250    | 475    | 3.77  | 1 of 2                               |
+| `server:base.en:1:6`, full window               | 1,104  | 1,358  | 2.42  | 2 of 2                               |
+| `server:base.en:1:6`, dynamic, tight            | 388    | 906    | 5.98  | 2 of 2                               |
+| `server:base.en:1:6`, dynamic, wide             | 521    | 1,007  | 2.97  | 1 of 2                               |
+| `server:small.en:1:6`, dynamic, tight           | 1,345  | 2,921  | 14.84 | 2 of 2                               |
+| `server:base.en:1:6`, full window, Silero VAD   | 1,171  | 1,447  | 2.71  | 0 of 2                               |
+| `server:base.en:1:6`, dynamic tight, Silero VAD | 497    | 1,066  | 6.11  | 0 of 2                               |
 
 - **Tight dynamic context is harmful.** base.en more than doubled its error rate and
   small.en reached 14.8 %. That is a real degradation.
@@ -261,10 +261,10 @@ quality against word error rate was found either.
 `scripts/Measure-OllamaCleanup.ps1`, model `llama3.2:3b`, nine requests per variant after
 one warm-up, on the RTX 4070 Laptop GPU. Raw data: `ollama-cleanup-raw.json`.
 
-| Request options | Succeeded | Median wall time | Median output tokens |
-|---|---|---|---|
-| Before: temperature only | 0 of 9 | | |
-| After: `num_ctx` 4096, `num_predict` 1024 | 9 of 9 | 3,363 ms | 221 |
+| Request options                           | Succeeded | Median wall time | Median output tokens |
+| ----------------------------------------- | --------- | ---------------- | -------------------- |
+| Before: temperature only                  | 0 of 9    |                  |                      |
+| After: `num_ctx` 4096, `num_predict` 1024 | 9 of 9    | 3,363 ms         | 221                  |
 
 Every "before" request failed with `llama-server reported out-of-memory during startup:
 failed to allocate buffer of size 10737418240` (a 10 GB context cache). With 8.5 GB of RAM

@@ -1,5 +1,7 @@
 # Local speech recognition for real-time dictation: state of the art and a recommendation for LocalFlow
 
+> **Research snapshot dated 2026-11-22.** Kept as written; model choices, measurements and plans may have changed since, and it may not match the current code. For what was decided and built, see [VOICE_ASSISTANT_PLAN.md](../../VOICE_ASSISTANT_PLAN.md) and [development/PLAN.md](../../development/PLAN.md).
+
 > Research appendix produced on 2026-11-22 by an independent research agent for the voice pipeline review. It is kept as written, apart from removing machine-specific paths. Line references to `native_dictation.rs` describe the code before the changes in `../VOICE_PIPELINE_REVIEW.md`. Figures are labelled by the author as vendor, third-party, reproduced, or unverified; treat unlabelled numbers as unverified.
 
 Research date: 2026-11-22. All versions, dates, sizes and scores below were checked on that date against the primary source cited. Nothing in the LocalFlow repository was modified.
@@ -17,12 +19,12 @@ Evidence labels used throughout:
 
 ### What to replace `tiny.en-q5_1` cold-spawn with
 
-| | Model | Runtime | Expected latency, 5 s utterance | File |
-|---|---|---|---|---|
-| **(a) CPU-only default** | NVIDIA **Parakeet Unified EN 0.6B**, Q8_0 GGUF, 731 MB | **`transcribe-cpp` Rust crate 0.4.2** (transcribe.cpp, MIT), loaded once in-process and kept warm | about 0.4 to 1.0 s after end of speech **[U, estimate]**. Basis: 14 to 15x realtime on an older 8-core Ryzen 7 4750U **[3P]**; and 0.8 to 1.0 s encode+decode for the sibling Parakeet TDT v3 in the slower whisper.cpp 1.9.1 build on this machine **[R]** | `parakeet-unified-en-0.6b-Q8_0.gguf` |
-| **(b) GPU option** | Same model, same file | Same crate with the `vulkan` feature (covers both the RTX 4070 and the Intel Arc iGPU with one build) | roughly 50 to 150 ms **[U, estimate]**. Basis: 25x realtime on a Renoir iGPU over Vulkan and 188x on M4 Max Metal **[3P]**; not measured on an RTX 4070 | same file |
-| Interim, zero new code | Whisper **base.en-q5_1**, 59.7 MB | Existing `whisper-cli.exe`, add `-bs 1 -bo 1 -ac 384` and VAD gating | 0.42 to 0.80 s cold spawn **[R]** | `ggml-base.en-q5_1.bin` |
-| Interim, binaries already on disk | **Parakeet TDT 0.6B v3** q8_0 ggml, 669 MB | Existing `parakeet-cli.exe` (whisper.cpp 1.9.1) | 1.9 to 2.1 s cold spawn, of which about 1.0 to 1.2 s is model load **[R]** | `ggml-parakeet-tdt-0.6b-v3-q8_0.bin` |
+|                                   | Model                                                  | Runtime                                                                                               | Expected latency, 5 s utterance                                                                                                                                                                                                                             | File                                 |
+| --------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **(a) CPU-only default**          | NVIDIA **Parakeet Unified EN 0.6B**, Q8_0 GGUF, 731 MB | **`transcribe-cpp` Rust crate 0.4.2** (transcribe.cpp, MIT), loaded once in-process and kept warm     | about 0.4 to 1.0 s after end of speech **[U, estimate]**. Basis: 14 to 15x realtime on an older 8-core Ryzen 7 4750U **[3P]**; and 0.8 to 1.0 s encode+decode for the sibling Parakeet TDT v3 in the slower whisper.cpp 1.9.1 build on this machine **[R]** | `parakeet-unified-en-0.6b-Q8_0.gguf` |
+| **(b) GPU option**                | Same model, same file                                  | Same crate with the `vulkan` feature (covers both the RTX 4070 and the Intel Arc iGPU with one build) | roughly 50 to 150 ms **[U, estimate]**. Basis: 25x realtime on a Renoir iGPU over Vulkan and 188x on M4 Max Metal **[3P]**; not measured on an RTX 4070                                                                                                     | same file                            |
+| Interim, zero new code            | Whisper **base.en-q5_1**, 59.7 MB                      | Existing `whisper-cli.exe`, add `-bs 1 -bo 1 -ac 384` and VAD gating                                  | 0.42 to 0.80 s cold spawn **[R]**                                                                                                                                                                                                                           | `ggml-base.en-q5_1.bin`              |
+| Interim, binaries already on disk | **Parakeet TDT 0.6B v3** q8_0 ggml, 669 MB             | Existing `parakeet-cli.exe` (whisper.cpp 1.9.1)                                                       | 1.9 to 2.1 s cold spawn, of which about 1.0 to 1.2 s is model load **[R]**                                                                                                                                                                                  | `ggml-parakeet-tdt-0.6b-v3-q8_0.bin` |
 
 Why this choice:
 
@@ -39,21 +41,21 @@ Choose **Parakeet TDT 0.6B v3** instead if either of these matters more than the
 
 Recommended (transcribe.cpp GGUF):
 
-| File | Bytes | URL |
-|---|---:|---|
-| `parakeet-unified-en-0.6b-Q8_0.gguf` | 731,357,568 | https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q8_0.gguf |
-| `parakeet-unified-en-0.6b-Q5_K_M.gguf` (smaller, same measured WER) | 540,795,264 | https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q5_K_M.gguf |
-| `parakeet-tdt-0.6b-v3-Q8_0.gguf` (CC-BY-4.0, multilingual alternative) | 739,508,576 | https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/main/parakeet-tdt-0.6b-v3-Q8_0.gguf |
-| `silero-vad-v6.2-F32.gguf` (VAD for transcribe.cpp) | 1,241,056 | https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/main/silero-vad-v6.2-F32.gguf |
+| File                                                                   |       Bytes | URL                                                                                                                   |
+| ---------------------------------------------------------------------- | ----------: | --------------------------------------------------------------------------------------------------------------------- |
+| `parakeet-unified-en-0.6b-Q8_0.gguf`                                   | 731,357,568 | https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q8_0.gguf   |
+| `parakeet-unified-en-0.6b-Q5_K_M.gguf` (smaller, same measured WER)    | 540,795,264 | https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q5_K_M.gguf |
+| `parakeet-tdt-0.6b-v3-Q8_0.gguf` (CC-BY-4.0, multilingual alternative) | 739,508,576 | https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/main/parakeet-tdt-0.6b-v3-Q8_0.gguf           |
+| `silero-vad-v6.2-F32.gguf` (VAD for transcribe.cpp)                    |   1,241,056 | https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/main/silero-vad-v6.2-F32.gguf                      |
 
 Interim (works with the whisper.cpp binaries already in `.localflow-runtime`):
 
-| File | Bytes | URL |
-|---|---:|---|
-| `ggml-base.en-q5_1.bin` | 59,721,011 | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin |
-| `ggml-small.en-q5_1.bin` | 190,098,681 | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin |
-| `ggml-parakeet-tdt-0.6b-v3-q8_0.bin` | 668,757,119 | https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin |
-| `ggml-silero-v6.2.0.bin` (VAD for `--vad -vm`) | 885,098 | https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin |
+| File                                           |       Bytes | URL                                                                                           |
+| ---------------------------------------------- | ----------: | --------------------------------------------------------------------------------------------- |
+| `ggml-base.en-q5_1.bin`                        |  59,721,011 | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin               |
+| `ggml-small.en-q5_1.bin`                       | 190,098,681 | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin              |
+| `ggml-parakeet-tdt-0.6b-v3-q8_0.bin`           | 668,757,119 | https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin |
+| `ggml-silero-v6.2.0.bin` (VAD for `--vad -vm`) |     885,098 | https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin               |
 
 Seven of these eight URLs returned HTTP 200 with the listed Content-Length on 2026-11-22; the Q5_K_M and TDT v3 GGUF sizes come from the Hugging Face file listing rather than a direct request, and the four interim files were actually downloaded and run.
 
@@ -74,17 +76,17 @@ Setup: Core Ultra 7 165H, whisper.cpp **1.9.1** CPU build from `.localflow-runti
 
 ### 5 s utterance ("And so my fellow Americans, ask not")
 
-| Model and flags | Wall time, cold spawn | Transcript |
-|---|---:|---|
-| tiny.en-q5_1, defaults (current LocalFlow) | 0.53 to 1.03 s | `And so my fellow Americans asked not` (wrong word, no punctuation) |
-| tiny.en-q5_1, `-bs 1 -bo 1 -ac 384` | 0.38 to 0.62 s | `And so my fellow Americans ask not...` |
-| base.en-q5_1, defaults | 0.82 to 1.91 s | `And so my fellow Americans ask not` |
-| base.en-q5_1, `-bs 1 -bo 1 -ac 384` | 0.42 to 0.80 s | `And so my fellow Americans asked not.` (wrong word) |
-| small.en-q5_1, defaults | 4.3 to 6.1 s | not captured |
-| small.en-q5_1, `-bs 1 -bo 1 -ac 384` | 1.17 to 2.04 s | `And so my fellow Americans, ask not.` |
-| large-v3-turbo-q5_0, defaults | 35.6 s | not captured |
-| large-v3-turbo-q5_0, `-bs 1 -bo 1 -ac 384` | 11.5 s | not captured |
-| Parakeet TDT 0.6B v3 q8_0 via `parakeet-cli.exe` | 1.9 to 2.1 s (an earlier batch gave 2.2 to 3.2 s with one 7.7 s outlier under load) | `And so, my fellow Americans, ask not!` |
+| Model and flags                                  |                                                               Wall time, cold spawn | Transcript                                                          |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------: | ------------------------------------------------------------------- |
+| tiny.en-q5_1, defaults (current LocalFlow)       |                                                                      0.53 to 1.03 s | `And so my fellow Americans asked not` (wrong word, no punctuation) |
+| tiny.en-q5_1, `-bs 1 -bo 1 -ac 384`              |                                                                      0.38 to 0.62 s | `And so my fellow Americans ask not...`                             |
+| base.en-q5_1, defaults                           |                                                                      0.82 to 1.91 s | `And so my fellow Americans ask not`                                |
+| base.en-q5_1, `-bs 1 -bo 1 -ac 384`              |                                                                      0.42 to 0.80 s | `And so my fellow Americans asked not.` (wrong word)                |
+| small.en-q5_1, defaults                          |                                                                        4.3 to 6.1 s | not captured                                                        |
+| small.en-q5_1, `-bs 1 -bo 1 -ac 384`             |                                                                      1.17 to 2.04 s | `And so my fellow Americans, ask not.`                              |
+| large-v3-turbo-q5_0, defaults                    |                                                                              35.6 s | not captured                                                        |
+| large-v3-turbo-q5_0, `-bs 1 -bo 1 -ac 384`       |                                                                              11.5 s | not captured                                                        |
+| Parakeet TDT 0.6B v3 q8_0 via `parakeet-cli.exe` | 1.9 to 2.1 s (an earlier batch gave 2.2 to 3.2 s with one 7.7 s outlier under load) | `And so, my fellow Americans, ask not!`                             |
 
 Parakeet's internal timers: load 1.0 to 1.2 s, encode 0.81 to 1.6 s, decode and predict about 20 ms. So about half of the cold-spawn wall time is model load, which a persistent process removes. Thread count barely mattered between 4 and 12 threads (encode 0.81 to 0.96 s); 16 was slower.
 
@@ -96,12 +98,12 @@ Conclusions:
 
 ### 11 s utterance
 
-| Model and flags | Wall time | Transcript quality |
-|---|---:|---|
-| tiny.en defaults | 1.6 s | correct words, missing comma |
-| base.en defaults | 2.4 s | correct |
-| small.en `-bs 1 -bo 1 -ac 768` | 3.4 s | correct |
-| Parakeet v3 q8_0 | 2.6 to 3.2 s | correct, best punctuation |
+| Model and flags                |    Wall time | Transcript quality           |
+| ------------------------------ | -----------: | ---------------------------- |
+| tiny.en defaults               |        1.6 s | correct words, missing comma |
+| base.en defaults               |        2.4 s | correct                      |
+| small.en `-bs 1 -bo 1 -ac 768` |        3.4 s | correct                      |
+| Parakeet v3 q8_0               | 2.6 to 3.2 s | correct, best punctuation    |
 
 ### `whisper-server.exe` persistent mode
 
@@ -109,11 +111,11 @@ base.en-q5_1, `-bs 1 -bo 1`, bound to 127.0.0.1, multipart POST to `/inference`:
 
 ### Silence, noise and very short audio
 
-| Input | tiny.en | base.en | small.en (`-ac 384`) | tiny.en + `--vad` (Silero v6.2.0) | tiny.en + `-sns` | Parakeet v3 |
-|---|---|---|---|---|---|---|
-| 3 s digital silence | `you` | `you` | `you` | *(empty)* | `you` | *(empty)* |
-| 3 s low Gaussian noise | `[BLANK_AUDIO]` | `(buzzing)` | `(crickets chirping)` | *(empty)* | `You` | *(empty)* |
-| 2 s speech "And so my fellow Americans" | `And so am I fellow Americans.` | `and so my fellow Americans.` | `And so my fellow Americans.` | same as tiny | same as tiny | `And so, my fellow Americans.` |
+| Input                                   | tiny.en                         | base.en                       | small.en (`-ac 384`)          | tiny.en + `--vad` (Silero v6.2.0) | tiny.en + `-sns` | Parakeet v3                    |
+| --------------------------------------- | ------------------------------- | ----------------------------- | ----------------------------- | --------------------------------- | ---------------- | ------------------------------ |
+| 3 s digital silence                     | `you`                           | `you`                         | `you`                         | _(empty)_                         | `you`            | _(empty)_                      |
+| 3 s low Gaussian noise                  | `[BLANK_AUDIO]`                 | `(buzzing)`                   | `(crickets chirping)`         | _(empty)_                         | `You`            | _(empty)_                      |
+| 2 s speech "And so my fellow Americans" | `And so am I fellow Americans.` | `and so my fellow Americans.` | `And so my fellow Americans.` | same as tiny                      | same as tiny     | `And so, my fellow Americans.` |
 
 The same 2 s clip through tiny.en with `-ac 256` gave `and so my fellow Americans and so my fellow Americans` (a repetition loop).
 
@@ -133,35 +135,35 @@ The leaderboard's RTFx is GPU batch throughput on a datacentre card. It says not
 
 Source: leaderboard Space data, version 1.16.2, read 2026-11-22 [1]. 68 rows in total; lower WER is better.
 
-| Rank | Model | Avg WER | RTFx | Open weights | Local on 8 GB |
-|---:|---|---:|---:|---|---|
-| 1 | zoom/scribe_v2.1_pro | 4.87 | n/a | no | no (cloud) |
-| 2 | OtterAI/speech-v3.1 | 5.21 | n/a | no | no |
-| 4 | microsoft/azure-speech-09-2026 | 5.50 | n/a | no | no |
-| 6 | Musci-research/Musci-ASR-qwen-1019-hf | 5.70 | 775 | yes | [U] |
-| 8 | elevenlabs/scribe_v2 | 5.93 | n/a | no | no |
-| 13 | FluidVoice-Labs/fluid-speech-pro | 6.06 | 3690 | yes | [U] |
-| 15, 16 | nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B (FP8, base) | 6.12, 6.13 | 418, 473 | yes | no (30B) |
-| 17 | Qwen/Qwen3-ASR-1.7B-hf | 6.15 | 836 | yes | yes |
-| 18 | assemblyai/universal-3-5-pro | 6.21 | n/a | no | no |
-| 22 | ibm-granite/granite-speech-5.0-2b | 6.68 | 548 | yes | yes |
-| 23 | CohereLabs/cohere-transcribe-03-2026 | 6.72 | 924 | yes | yes |
-| 25 | TheStageAI/thewhisper-large-v3-turbo | 6.74 | 1184 | yes | yes |
-| 27 | openai/gpt-transcribe | 6.80 | n/a | no | no |
-| 32 | nvidia/canary-qwen-2.5b | 6.92 | 882 | yes | yes |
-| 34 | **nvidia/parakeet-tdt-0.6b-v2** | **6.93** | 6148 | yes | yes, CPU-viable |
-| 37 | ibm-granite/granite-speech-5.0-470m-turboctc-nc | 6.98 | 21082 | yes | yes, CPU-viable |
-| 40 | **nvidia/parakeet-tdt-0.6b-v3** | **7.04** | 6322 | yes | yes, CPU-viable |
-| 43 | Qwen/Qwen3-ASR-0.6B-hf | 7.07 | 750 | yes | yes |
-| 46 | ibm-granite/granite-speech-5.0-470m-turboctc | 7.41 | 21435 | yes | yes, CPU-viable |
-| 47 | mistralai/Voxtral-Small-24B-2507 | 7.44 | 101 | yes | no |
-| 48 | nvidia/nemotron-speech-streaming-en-0.6b | 7.47 | 1116 | yes | yes, CPU-viable |
-| 51 | openai/whisper-large-v3 | 8.24 | 471 | yes | GPU only in practice |
-| 52 | mistralai/Voxtral-Mini-3B-2507 | 8.32 | 180 | yes | GPU |
-| 53 | nvidia/canary-1b-v2 | 8.43 | 1854 | yes | yes |
-| 56 | openai/whisper-large-v3-turbo | 8.75 | 809 | yes | GPU only in practice |
-| 61 | mistralai/Voxtral-Mini-4B-Realtime-2602 | 9.72 | 103 | yes | no (16 GB) |
-| 66 | nvidia/nemotron-3.5-asr-streaming-0.6b | 11.09 | 1353 | yes | yes |
+|   Rank | Model                                                     |    Avg WER |     RTFx | Open weights | Local on 8 GB        |
+| -----: | --------------------------------------------------------- | ---------: | -------: | ------------ | -------------------- |
+|      1 | zoom/scribe_v2.1_pro                                      |       4.87 |      n/a | no           | no (cloud)           |
+|      2 | OtterAI/speech-v3.1                                       |       5.21 |      n/a | no           | no                   |
+|      4 | microsoft/azure-speech-09-2026                            |       5.50 |      n/a | no           | no                   |
+|      6 | Musci-research/Musci-ASR-qwen-1019-hf                     |       5.70 |      775 | yes          | [U]                  |
+|      8 | elevenlabs/scribe_v2                                      |       5.93 |      n/a | no           | no                   |
+|     13 | FluidVoice-Labs/fluid-speech-pro                          |       6.06 |     3690 | yes          | [U]                  |
+| 15, 16 | nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B (FP8, base) | 6.12, 6.13 | 418, 473 | yes          | no (30B)             |
+|     17 | Qwen/Qwen3-ASR-1.7B-hf                                    |       6.15 |      836 | yes          | yes                  |
+|     18 | assemblyai/universal-3-5-pro                              |       6.21 |      n/a | no           | no                   |
+|     22 | ibm-granite/granite-speech-5.0-2b                         |       6.68 |      548 | yes          | yes                  |
+|     23 | CohereLabs/cohere-transcribe-03-2026                      |       6.72 |      924 | yes          | yes                  |
+|     25 | TheStageAI/thewhisper-large-v3-turbo                      |       6.74 |     1184 | yes          | yes                  |
+|     27 | openai/gpt-transcribe                                     |       6.80 |      n/a | no           | no                   |
+|     32 | nvidia/canary-qwen-2.5b                                   |       6.92 |      882 | yes          | yes                  |
+|     34 | **nvidia/parakeet-tdt-0.6b-v2**                           |   **6.93** |     6148 | yes          | yes, CPU-viable      |
+|     37 | ibm-granite/granite-speech-5.0-470m-turboctc-nc           |       6.98 |    21082 | yes          | yes, CPU-viable      |
+|     40 | **nvidia/parakeet-tdt-0.6b-v3**                           |   **7.04** |     6322 | yes          | yes, CPU-viable      |
+|     43 | Qwen/Qwen3-ASR-0.6B-hf                                    |       7.07 |      750 | yes          | yes                  |
+|     46 | ibm-granite/granite-speech-5.0-470m-turboctc              |       7.41 |    21435 | yes          | yes, CPU-viable      |
+|     47 | mistralai/Voxtral-Small-24B-2507                          |       7.44 |      101 | yes          | no                   |
+|     48 | nvidia/nemotron-speech-streaming-en-0.6b                  |       7.47 |     1116 | yes          | yes, CPU-viable      |
+|     51 | openai/whisper-large-v3                                   |       8.24 |      471 | yes          | GPU only in practice |
+|     52 | mistralai/Voxtral-Mini-3B-2507                            |       8.32 |      180 | yes          | GPU                  |
+|     53 | nvidia/canary-1b-v2                                       |       8.43 |     1854 | yes          | yes                  |
+|     56 | openai/whisper-large-v3-turbo                             |       8.75 |      809 | yes          | GPU only in practice |
+|     61 | mistralai/Voxtral-Mini-4B-Realtime-2602                   |       9.72 |      103 | yes          | no (16 GB)           |
+|     66 | nvidia/nemotron-3.5-asr-streaming-0.6b                    |      11.09 |     1353 | yes          | yes                  |
 
 `parakeet-unified-en-0.6b` is not on the leaderboard. NVIDIA's own card puts it at 5.91 average on the legacy eight-set mix, against 6.04 for Parakeet TDT v2 and 6.92 for Nemotron Speech Streaming EN in the same table **[V]** [5]. Reading across: the best cloud systems are about two WER points ahead of Parakeet-class local models on this benchmark, and the heaviest local-capable open models (Qwen3-ASR-1.7B) are about 0.8 points ahead.
 
@@ -169,36 +171,36 @@ Source: leaderboard Space data, version 1.16.2, read 2026-11-22 [1]. 68 rows in 
 
 Column key: LS is LibriSpeech test-clean WER and FL is FLEURS English WER, both as measured by the transcribe.cpp catalog on its GGUF ports (Q8_0 unless noted) **[3P]** [7]. "CPU x" and "iGPU x" are that catalog's speed-up over realtime on a Ryzen 7 PRO 4750U (CPU, and Vulkan on its integrated Radeon) **[3P]**; a 165H should be faster **[U]**. Leaderboard is the current Open ASR average **[R]**. PnC means native punctuation and capitalisation.
 
-| Model | Params | Licence | Languages | PnC | LS | FL | Leaderboard | CPU x | iGPU x | Q8_0 size | Notes |
-|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---|
-| Whisper tiny.en | 39M | Apache-2.0 on the GGUF card; OpenAI's repo is MIT | en | yes | 5.72 | 10.72 | absent | 41 | 47 | 43.6 MB (ggml q8_0) | current LocalFlow model, at q5_1 |
-| Whisper base.en | 74M | same | en | yes | 4.16 | 7.60 | absent | 21 | 32 | 85 MB | |
-| Whisper small.en | 244M | same | en | yes | 3.09 | 6.14 | absent | 6.3 | 12.5 | 270 MB | |
-| Whisper large-v3-turbo | 809M | MIT | 99 | yes | 2.01 | 4.38 | 8.75 | 1.4 | 3.1 | 886 MB | too slow on CPU [R] |
-| Whisper large-v3 | 1.55B | MIT | 99 | yes | n/a | n/a | 8.24 | n/a | n/a | n/a | 3.1 GB as full ggml |
-| distil-large-v3.5 | 756M | MIT | en | yes | 2.37 [V] | n/a | removed 2026-11-20 | n/a | n/a | n/a | about 1.5x turbo speed [V] [15] |
-| **Parakeet Unified EN 0.6B** | 600M | NVIDIA Open Model License | en | yes | **1.60** | **3.99** | absent | **14.0** | **25.3** | 731 MB | offline and buffered streaming from one model; released 2026-04-07 [5] |
-| Parakeet TDT 0.6B v2 | 600M | CC-BY-4.0 | en | yes | 1.69 | 4.11 | 6.93 | 14.3 | 27.4 | 730 MB | |
-| **Parakeet TDT 0.6B v3** | 600M | CC-BY-4.0 | 25 European, auto-detect | yes | 1.94 | 4.83 | 7.04 | 13.7 | 25.1 | 740 MB | supported by the whisper.cpp build already on disk |
-| moondream/parakeet-ultra | 600M | CC-BY-4.0 | 25 | yes | 1.80 | 4.26 | absent | 13.3 | 23.0 | n/a | fine-tune of TDT v3; claims 5.80 against 6.26 on seven English sets [V] [16] |
-| Parakeet TDT-CTC 110M | 110M | CC-BY-4.0 | en | [U] | 2.43 | 6.11 | absent | 50 | 76 | n/a | very fast, small |
-| Canary 1B v2 | 978M | CC-BY-4.0 | 25, plus translation | yes | 1.91 | 4.47 | 8.43 | 8.3 | 14.1 | n/a | |
-| Canary 180M Flash | 180M | CC-BY-4.0 | en, de, es, fr | yes | 1.93 | 5.98 | absent | 21.7 | 33.1 | n/a | |
-| Granite Speech 5.0 TurboCTC 470M | 470M | Apache-2.0 | 7 (en, fr, de, es, pt, it, ja) | yes, since the 2026-10-21 update [V] | 1.33 | 4.61 | 7.41 (6.98 for the `-nc` variant); the entry is still the older English-only release [V] | 17.2 | 22.9 | 506 MB | non-autoregressive CTC [17] |
-| Granite Speech 5.0 2B | 2B | [U] | multi | yes | n/a | n/a | 6.68 | n/a | n/a | n/a | |
-| Moonshine base (v1) | 61M | MIT | en | yes | 3.26 | 12.25 | absent | 23.5 | 35.6 | n/a | |
-| Moonshine Streaming medium (v2) | 245M | MIT | en | yes | 2.16 | 7.87 | absent; 6.65 on the legacy average [V] | 9.7 | 14.3 | 296 MB | sliding-window encoder, autoregressive decoder [18] |
-| Moonshine Streaming small (v2) | 123M | MIT | en | yes | 2.54 | 8.55 | absent; 7.84 legacy [V] | 13.5 | 21.8 | n/a | |
-| Nemotron Speech Streaming EN 0.6B | 600M | NVIDIA Open Model License | en | yes | 2.31 | 6.43 | 7.47 | 13.6 | 27.1 | 730 MB | cache-aware streaming, 80 ms to 1.12 s chunks [V] |
-| Nemotron 3.5 ASR Streaming 0.6B | 600M | OpenMDW-1.1 | 40 locales | yes | 3.05 | 7.90 | 11.09 | 10.6 | 17.1 | 751 MB | released 2026-06-04 [V] |
-| Qwen3-ASR 0.6B | 0.6B | Apache-2.0 | 30 languages and 22 Chinese dialects | yes | 2.11 | 4.23 | 7.07 | 5.3 | 9.7 | n/a | LLM-style decoder |
-| Qwen3-ASR 1.7B | 1.7B | Apache-2.0 | same | yes | n/a | n/a | 6.15 | n/a | n/a | 2.19 GB | best open model that fits 8 GB |
-| Cohere Transcribe 03-2026 | [U] | Apache-2.0 | 14 | yes | 1.27 | 5.08 | 6.72 | 4.3 | 8.1 | 2.41 GB | |
-| Voxtral Mini 4B Realtime 2602 | 4B | Apache-2.0 | 13 | yes | 2.07 | 6.27 | 9.72 | **0.58** | 0.76 | n/a | needs a GPU with at least 16 GB in BF16 [V]; slower than realtime on CPU [3P] |
-| Voxtral Mini 3B 2507 | 3B | [U] | multi | yes | n/a | n/a | 8.32 | n/a | n/a | n/a | |
-| Kyutai STT 1B en_fr | about 1B | CC-BY-4.0 | en, fr | yes | n/a | n/a | absent | n/a | n/a | n/a | 0.5 s delay, semantic VAD [V] [19] |
-| Kyutai STT 2.6B en | about 2.6B | CC-BY-4.0 | en | yes | n/a | n/a | absent | n/a | n/a | n/a | 2.5 s delay [V]; no transcribe.cpp port |
-| SenseVoice Small | [U] | FunASR model licence (custom) | zh, yue, en, ja, ko | [U] | 3.13 | 7.14 | absent | 19.7 | 27.7 | n/a | |
+| Model                             |     Params | Licence                                           | Languages                            | PnC                                  |       LS |       FL |                                                                              Leaderboard |    CPU x |   iGPU x |           Q8_0 size | Notes                                                                         |
+| --------------------------------- | ---------: | ------------------------------------------------- | ------------------------------------ | ------------------------------------ | -------: | -------: | ---------------------------------------------------------------------------------------: | -------: | -------: | ------------------: | ----------------------------------------------------------------------------- |
+| Whisper tiny.en                   |        39M | Apache-2.0 on the GGUF card; OpenAI's repo is MIT | en                                   | yes                                  |     5.72 |    10.72 |                                                                                   absent |       41 |       47 | 43.6 MB (ggml q8_0) | current LocalFlow model, at q5_1                                              |
+| Whisper base.en                   |        74M | same                                              | en                                   | yes                                  |     4.16 |     7.60 |                                                                                   absent |       21 |       32 |               85 MB |                                                                               |
+| Whisper small.en                  |       244M | same                                              | en                                   | yes                                  |     3.09 |     6.14 |                                                                                   absent |      6.3 |     12.5 |              270 MB |                                                                               |
+| Whisper large-v3-turbo            |       809M | MIT                                               | 99                                   | yes                                  |     2.01 |     4.38 |                                                                                     8.75 |      1.4 |      3.1 |              886 MB | too slow on CPU [R]                                                           |
+| Whisper large-v3                  |      1.55B | MIT                                               | 99                                   | yes                                  |      n/a |      n/a |                                                                                     8.24 |      n/a |      n/a |                 n/a | 3.1 GB as full ggml                                                           |
+| distil-large-v3.5                 |       756M | MIT                                               | en                                   | yes                                  | 2.37 [V] |      n/a |                                                                       removed 2026-11-20 |      n/a |      n/a |                 n/a | about 1.5x turbo speed [V] [15]                                               |
+| **Parakeet Unified EN 0.6B**      |       600M | NVIDIA Open Model License                         | en                                   | yes                                  | **1.60** | **3.99** |                                                                                   absent | **14.0** | **25.3** |              731 MB | offline and buffered streaming from one model; released 2026-04-07 [5]        |
+| Parakeet TDT 0.6B v2              |       600M | CC-BY-4.0                                         | en                                   | yes                                  |     1.69 |     4.11 |                                                                                     6.93 |     14.3 |     27.4 |              730 MB |                                                                               |
+| **Parakeet TDT 0.6B v3**          |       600M | CC-BY-4.0                                         | 25 European, auto-detect             | yes                                  |     1.94 |     4.83 |                                                                                     7.04 |     13.7 |     25.1 |              740 MB | supported by the whisper.cpp build already on disk                            |
+| moondream/parakeet-ultra          |       600M | CC-BY-4.0                                         | 25                                   | yes                                  |     1.80 |     4.26 |                                                                                   absent |     13.3 |     23.0 |                 n/a | fine-tune of TDT v3; claims 5.80 against 6.26 on seven English sets [V] [16]  |
+| Parakeet TDT-CTC 110M             |       110M | CC-BY-4.0                                         | en                                   | [U]                                  |     2.43 |     6.11 |                                                                                   absent |       50 |       76 |                 n/a | very fast, small                                                              |
+| Canary 1B v2                      |       978M | CC-BY-4.0                                         | 25, plus translation                 | yes                                  |     1.91 |     4.47 |                                                                                     8.43 |      8.3 |     14.1 |                 n/a |                                                                               |
+| Canary 180M Flash                 |       180M | CC-BY-4.0                                         | en, de, es, fr                       | yes                                  |     1.93 |     5.98 |                                                                                   absent |     21.7 |     33.1 |                 n/a |                                                                               |
+| Granite Speech 5.0 TurboCTC 470M  |       470M | Apache-2.0                                        | 7 (en, fr, de, es, pt, it, ja)       | yes, since the 2026-10-21 update [V] |     1.33 |     4.61 | 7.41 (6.98 for the `-nc` variant); the entry is still the older English-only release [V] |     17.2 |     22.9 |              506 MB | non-autoregressive CTC [17]                                                   |
+| Granite Speech 5.0 2B             |         2B | [U]                                               | multi                                | yes                                  |      n/a |      n/a |                                                                                     6.68 |      n/a |      n/a |                 n/a |                                                                               |
+| Moonshine base (v1)               |        61M | MIT                                               | en                                   | yes                                  |     3.26 |    12.25 |                                                                                   absent |     23.5 |     35.6 |                 n/a |                                                                               |
+| Moonshine Streaming medium (v2)   |       245M | MIT                                               | en                                   | yes                                  |     2.16 |     7.87 |                                                   absent; 6.65 on the legacy average [V] |      9.7 |     14.3 |              296 MB | sliding-window encoder, autoregressive decoder [18]                           |
+| Moonshine Streaming small (v2)    |       123M | MIT                                               | en                                   | yes                                  |     2.54 |     8.55 |                                                                  absent; 7.84 legacy [V] |     13.5 |     21.8 |                 n/a |                                                                               |
+| Nemotron Speech Streaming EN 0.6B |       600M | NVIDIA Open Model License                         | en                                   | yes                                  |     2.31 |     6.43 |                                                                                     7.47 |     13.6 |     27.1 |              730 MB | cache-aware streaming, 80 ms to 1.12 s chunks [V]                             |
+| Nemotron 3.5 ASR Streaming 0.6B   |       600M | OpenMDW-1.1                                       | 40 locales                           | yes                                  |     3.05 |     7.90 |                                                                                    11.09 |     10.6 |     17.1 |              751 MB | released 2026-06-04 [V]                                                       |
+| Qwen3-ASR 0.6B                    |       0.6B | Apache-2.0                                        | 30 languages and 22 Chinese dialects | yes                                  |     2.11 |     4.23 |                                                                                     7.07 |      5.3 |      9.7 |                 n/a | LLM-style decoder                                                             |
+| Qwen3-ASR 1.7B                    |       1.7B | Apache-2.0                                        | same                                 | yes                                  |      n/a |      n/a |                                                                                     6.15 |      n/a |      n/a |             2.19 GB | best open model that fits 8 GB                                                |
+| Cohere Transcribe 03-2026         |        [U] | Apache-2.0                                        | 14                                   | yes                                  |     1.27 |     5.08 |                                                                                     6.72 |      4.3 |      8.1 |             2.41 GB |                                                                               |
+| Voxtral Mini 4B Realtime 2602     |         4B | Apache-2.0                                        | 13                                   | yes                                  |     2.07 |     6.27 |                                                                                     9.72 | **0.58** |     0.76 |                 n/a | needs a GPU with at least 16 GB in BF16 [V]; slower than realtime on CPU [3P] |
+| Voxtral Mini 3B 2507              |         3B | [U]                                               | multi                                | yes                                  |      n/a |      n/a |                                                                                     8.32 |      n/a |      n/a |                 n/a |                                                                               |
+| Kyutai STT 1B en_fr               |   about 1B | CC-BY-4.0                                         | en, fr                               | yes                                  |      n/a |      n/a |                                                                                   absent |      n/a |      n/a |                 n/a | 0.5 s delay, semantic VAD [V] [19]                                            |
+| Kyutai STT 2.6B en                | about 2.6B | CC-BY-4.0                                         | en                                   | yes                                  |      n/a |      n/a |                                                                                   absent |      n/a |      n/a |                 n/a | 2.5 s delay [V]; no transcribe.cpp port                                       |
+| SenseVoice Small                  |        [U] | FunASR model licence (custom)                     | zh, yue, en, ja, ko                  | [U]                                  |     3.13 |     7.14 |                                                                                   absent |     19.7 |     27.7 |                 n/a |                                                                               |
 
 Answers by tier:
 
@@ -210,17 +212,17 @@ Answers by tier:
 
 ## 4. Runtimes for Windows and Rust
 
-| Runtime | Version (date) | Licence | Windows status | Relevance |
-|---|---|---|---|---|
-| **transcribe.cpp** and the `transcribe-cpp` crate | v0.4.2 (2026-11-12) [10] | MIT | Prebuilt `windows-x86_64-cpu-vulkan` (18 MB) and `windows-x86_64-cuda` (203 MB) archives; the crate builds from source with CMake | **Recommended.** ggml-based; 16 model families and 60+ variants in GGUF; Vulkan, CUDA, Metal, ROCm; in-process sessions, a streaming API, built-in Silero VAD v6.2, vocabulary and prompt options, memory-mapped weights. Crate features: `vulkan`, `cuda`, `dynamic-backends`, `openmp`, `serde` |
-| **whisper.cpp** | v1.9.5 (2026-10-06); nightly b5907 (2026-11-20). The local copy is **1.9.1** (2026-06-19) [2] | MIT | Prebuilt assets live on the `bNNNN` build tags: `whisper-bin-x64.zip` (9.2 MB, CPU), `whisper-blas-bin-x64.zip` (22 MB), `whisper-bin-win-cuda-12.4.0-x64.zip` (736 MB), `whisper-bin-win-cuda-11.8.0-x64.zip` (766 MB), plus Win32 and ARM64 builds. **No prebuilt Vulkan or OpenVINO** | Fine for Whisper. See below for Parakeet and VAD |
-| whisper-rs | 0.16.0 (2026-03-12), hosted on Codeberg | [U] | builds whisper.cpp from source | In-process Whisper only |
-| faster-whisper and CTranslate2 | 1.2.1 (2025-10-31) and 4.9.1 (2026-11-22) | MIT | Python; `ct2rs` 0.11.2 gives Rust bindings | Good for batch Whisper; adds a Python or CTranslate2 dependency with no gain for Parakeet |
-| sherpa-onnx | v2.0.3 (2026-11-22) | Apache-2.0 | Official safe Rust crate `sherpa-onnx` 2.0.3; large ONNX model zoo, for example `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` (487 MB) | Credible alternative: ONNX Runtime on CPU with int8 models, streaming zipformers, Silero and TEN VAD. `sherpa-rs` (0.6.8, 2025-10) is the older community binding |
-| transcribe-rs | 0.3.12 (2026-10-02) | [U] | Rust wrapper over ONNX and whisper engines | Handy's previous engine layer; Handy has since moved to `transcribe-cpp` |
-| parakeet-rs | 0.4.4 (2026-10-31) | MIT | ONNX via `ort` | Parakeet, streaming and diarization in Rust |
-| ONNX Runtime with DirectML | `ort` 2.0.0-rc.15 wraps ONNX Runtime 1.31 | MIT | Microsoft now lists DirectML as "legacy"; new work goes to Windows ML [21] | Not a path to start building on in 2026 |
-| parakeet.cpp | mudler/parakeet.cpp v0.6.1 (2026-10-07, ggml); frikallo/parakeet.cpp (Apple MPS focus) | MIT | [U] | Superseded for this purpose by transcribe.cpp |
+| Runtime                                           | Version (date)                                                                                | Licence    | Windows status                                                                                                                                                                                                                                                                           | Relevance                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **transcribe.cpp** and the `transcribe-cpp` crate | v0.4.2 (2026-11-12) [10]                                                                      | MIT        | Prebuilt `windows-x86_64-cpu-vulkan` (18 MB) and `windows-x86_64-cuda` (203 MB) archives; the crate builds from source with CMake                                                                                                                                                        | **Recommended.** ggml-based; 16 model families and 60+ variants in GGUF; Vulkan, CUDA, Metal, ROCm; in-process sessions, a streaming API, built-in Silero VAD v6.2, vocabulary and prompt options, memory-mapped weights. Crate features: `vulkan`, `cuda`, `dynamic-backends`, `openmp`, `serde` |
+| **whisper.cpp**                                   | v1.9.5 (2026-10-06); nightly b5907 (2026-11-20). The local copy is **1.9.1** (2026-06-19) [2] | MIT        | Prebuilt assets live on the `bNNNN` build tags: `whisper-bin-x64.zip` (9.2 MB, CPU), `whisper-blas-bin-x64.zip` (22 MB), `whisper-bin-win-cuda-12.4.0-x64.zip` (736 MB), `whisper-bin-win-cuda-11.8.0-x64.zip` (766 MB), plus Win32 and ARM64 builds. **No prebuilt Vulkan or OpenVINO** | Fine for Whisper. See below for Parakeet and VAD                                                                                                                                                                                                                                                  |
+| whisper-rs                                        | 0.16.0 (2026-03-12), hosted on Codeberg                                                       | [U]        | builds whisper.cpp from source                                                                                                                                                                                                                                                           | In-process Whisper only                                                                                                                                                                                                                                                                           |
+| faster-whisper and CTranslate2                    | 1.2.1 (2025-10-31) and 4.9.1 (2026-11-22)                                                     | MIT        | Python; `ct2rs` 0.11.2 gives Rust bindings                                                                                                                                                                                                                                               | Good for batch Whisper; adds a Python or CTranslate2 dependency with no gain for Parakeet                                                                                                                                                                                                         |
+| sherpa-onnx                                       | v2.0.3 (2026-11-22)                                                                           | Apache-2.0 | Official safe Rust crate `sherpa-onnx` 2.0.3; large ONNX model zoo, for example `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` (487 MB)                                                                                                                                            | Credible alternative: ONNX Runtime on CPU with int8 models, streaming zipformers, Silero and TEN VAD. `sherpa-rs` (0.6.8, 2025-10) is the older community binding                                                                                                                                 |
+| transcribe-rs                                     | 0.3.12 (2026-10-02)                                                                           | [U]        | Rust wrapper over ONNX and whisper engines                                                                                                                                                                                                                                               | Handy's previous engine layer; Handy has since moved to `transcribe-cpp`                                                                                                                                                                                                                          |
+| parakeet-rs                                       | 0.4.4 (2026-10-31)                                                                            | MIT        | ONNX via `ort`                                                                                                                                                                                                                                                                           | Parakeet, streaming and diarization in Rust                                                                                                                                                                                                                                                       |
+| ONNX Runtime with DirectML                        | `ort` 2.0.0-rc.15 wraps ONNX Runtime 1.31                                                     | MIT        | Microsoft now lists DirectML as "legacy"; new work goes to Windows ML [21]                                                                                                                                                                                                               | Not a path to start building on in 2026                                                                                                                                                                                                                                                           |
+| parakeet.cpp                                      | mudler/parakeet.cpp v0.6.1 (2026-10-07, ggml); frikallo/parakeet.cpp (Apple MPS focus)        | MIT        | [U]                                                                                                                                                                                                                                                                                      | Superseded for this purpose by transcribe.cpp                                                                                                                                                                                                                                                     |
 
 ### whisper.cpp details
 
@@ -232,13 +234,13 @@ Answers by tier:
 
 ### What other dictation apps run
 
-| App | Platform | Stack | Evidence |
-|---|---|---|---|
-| **Handy** 0.10.1 (2026-11-14) | Windows, macOS, Linux; Tauri 2 and Rust | `transcribe-cpp` 0.4.2 for every model: Vulkan on Windows x64, static CPU on Windows ARM, Metal on Apple Silicon. Silero VAD through transcribe.cpp plus an experimental `earshot` pure-Rust VAD; `rubato` for resampling; `handy-recorder`; `enigo` and `rdev` for input. The transcription backend runs in its own worker. Models: Whisper small, medium-q4_1, turbo, large-v3-q5_0, and Parakeet Unified EN Q8_0 marked "recommended" | `Cargo.toml` and README read directly [8][9] |
-| **VoiceInk** v2.27 (2026-11-11) | macOS, GPL-3.0 | whisper.cpp for Whisper, FluidAudio for Parakeet on CoreML, and transcribe.cpp through a Swift package for GGUF models | README [20] |
-| Superwhisper | macOS, closed | Whisper locally through whisper.cpp; Parakeet and cloud models on the paid tier | vendor docs seen only through a search summary **[V]** |
-| MacWhisper | macOS, closed | whisper.cpp and/or WhisperKit | **[U]**; sources disagree |
-| **Wispr Flow** | cloud only | Context-conditioned cloud ASR plus a personalised formatting LLM. Budget: under 200 ms ASR, under 200 ms LLM, 200 ms network, target 700 ms from end of speech | Wispr engineering post, 2025-09-11 **[V]** [22] |
+| App                             | Platform                                | Stack                                                                                                                                                                                                                                                                                                                                                                                                                                    | Evidence                                               |
+| ------------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Handy** 0.10.1 (2026-11-14)   | Windows, macOS, Linux; Tauri 2 and Rust | `transcribe-cpp` 0.4.2 for every model: Vulkan on Windows x64, static CPU on Windows ARM, Metal on Apple Silicon. Silero VAD through transcribe.cpp plus an experimental `earshot` pure-Rust VAD; `rubato` for resampling; `handy-recorder`; `enigo` and `rdev` for input. The transcription backend runs in its own worker. Models: Whisper small, medium-q4_1, turbo, large-v3-q5_0, and Parakeet Unified EN Q8_0 marked "recommended" | `Cargo.toml` and README read directly [8][9]           |
+| **VoiceInk** v2.27 (2026-11-11) | macOS, GPL-3.0                          | whisper.cpp for Whisper, FluidAudio for Parakeet on CoreML, and transcribe.cpp through a Swift package for GGUF models                                                                                                                                                                                                                                                                                                                   | README [20]                                            |
+| Superwhisper                    | macOS, closed                           | Whisper locally through whisper.cpp; Parakeet and cloud models on the paid tier                                                                                                                                                                                                                                                                                                                                                          | vendor docs seen only through a search summary **[V]** |
+| MacWhisper                      | macOS, closed                           | whisper.cpp and/or WhisperKit                                                                                                                                                                                                                                                                                                                                                                                                            | **[U]**; sources disagree                              |
+| **Wispr Flow**                  | cloud only                              | Context-conditioned cloud ASR plus a personalised formatting LLM. Budget: under 200 ms ASR, under 200 ms LLM, 200 ms network, target 700 ms from end of speech                                                                                                                                                                                                                                                                           | Wispr engineering post, 2025-09-11 **[V]** [22]        |
 
 ---
 
@@ -246,25 +248,25 @@ Answers by tier:
 
 The published prequantised ggml files use `q5_0`, `q5_1` and `q8_0` [6]; the `quantize` tool also accepts 4-bit types (the README example uses `q5_0`; the full type list is **[U]**, not read from source).
 
-| Model | full f16 | q8_0 | q5_1 | q5_0 |
-|---|---:|---:|---:|---:|
-| tiny.en | 77.7 MB | 43.6 MB | 32.2 MB | not published |
-| base.en | 148 MB | 81.8 MB | 59.7 MB | not published |
-| small.en | 488 MB | 264 MB | 190 MB | not published |
-| medium.en | 1.53 GB | 823 MB | not published | 539 MB |
-| large-v3-turbo | 1.62 GB | 874 MB | not published | 574 MB |
-| large-v3 | 3.10 GB | not published | not published | 1.08 GB |
+| Model          | full f16 |          q8_0 |          q5_1 |          q5_0 |
+| -------------- | -------: | ------------: | ------------: | ------------: |
+| tiny.en        |  77.7 MB |       43.6 MB |       32.2 MB | not published |
+| base.en        |   148 MB |       81.8 MB |       59.7 MB | not published |
+| small.en       |   488 MB |        264 MB |        190 MB | not published |
+| medium.en      |  1.53 GB |        823 MB | not published |        539 MB |
+| large-v3-turbo |  1.62 GB |        874 MB | not published |        574 MB |
+| large-v3       |  3.10 GB | not published | not published |       1.08 GB |
 
 Measured accuracy impact. The best controlled data I found is the transcribe.cpp catalog, which scores every quant on the full 2,620-utterance LibriSpeech test-clean split **[3P]** [7]. These are GGUF K-quants, not whisper.cpp's `q5_1`, but the bit depths are comparable:
 
-| Model | F16 | Q8_0 | Q6_K | Q5_K_M | Q4_K_M |
-|---|---:|---:|---:|---:|---:|
-| Whisper tiny.en | 5.78 | 5.72 | 5.83 | 5.91 | 5.96 |
-| Whisper base.en | 4.13 | 4.16 | 4.15 | 4.16 | 4.29 |
-| Whisper small.en | 2.97 | 3.09 | 2.97 | 3.11 | 3.09 |
-| Whisper large-v3-turbo | 2.01 | 2.01 | 2.01 | 2.03 | 2.04 |
-| Parakeet Unified EN | 1.59 | 1.60 | 1.61 | 1.58 | 1.62 |
-| Parakeet TDT v3 | 1.95 | 1.94 | 1.93 | 1.92 | 1.98 |
+| Model                  |  F16 | Q8_0 | Q6_K | Q5_K_M | Q4_K_M |
+| ---------------------- | ---: | ---: | ---: | -----: | -----: |
+| Whisper tiny.en        | 5.78 | 5.72 | 5.83 |   5.91 |   5.96 |
+| Whisper base.en        | 4.13 | 4.16 | 4.15 |   4.16 |   4.29 |
+| Whisper small.en       | 2.97 | 3.09 | 2.97 |   3.11 |   3.09 |
+| Whisper large-v3-turbo | 2.01 | 2.01 | 2.01 |   2.03 |   2.04 |
+| Parakeet Unified EN    | 1.59 | 1.60 | 1.61 |   1.58 |   1.62 |
+| Parakeet TDT v3        | 1.95 | 1.94 | 1.93 |   1.92 |   1.98 |
 
 Takeaways:
 
@@ -276,13 +278,13 @@ Takeaways:
 
 ## 6. VAD and endpointing
 
-| VAD | Version | Licence | Frame | Notes |
-|---|---|---|---|---|
-| **Silero VAD** | package v6.2.3 (2026-09-23); v6.2 model 2025-11-06 [14] | MIT | 512 samples, 32 ms at 16 kHz | Reference defaults: threshold 0.5, `neg_threshold` = threshold minus 0.15, min speech 250 ms, min silence 100 ms, speech pad 30 ms. v6.2 improved unusual, child, muted and phone-quality voices **[V]**. Available as ggml for whisper.cpp, GGUF for transcribe.cpp, and ONNX |
-| TEN VAD | 2025 releases | Apache-2.0 **with added conditions**: it may not be deployed in ways that compete with Agora, and derivative works stay under the same terms [23] | 10 or 16 ms hops | Claims faster speech-to-silence transitions and lower compute than Silero **[V]**; Rust crate `ten-vad-rs` 0.1.7. The licence conditions make it a poor default for an open local app |
-| WebRTC VAD | legacy | BSD [U] | 10, 20 or 30 ms | GMM-based and weak in noise **[U]**; only worth it as a near-free pre-filter |
-| earshot | 1.2.2 (2026-08) | [U] | 16 ms | Pure Rust; Handy ships it as an experimental alternative at threshold 0.5 |
-| whisper.cpp built-in | Silero v5.1.2 or v6.2.0 ggml | MIT | | Runs before Whisper and passes only speech segments; maps timestamps back to the original audio since 1.9.2 |
+| VAD                  | Version                                                 | Licence                                                                                                                                           | Frame                        | Notes                                                                                                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Silero VAD**       | package v6.2.3 (2026-09-23); v6.2 model 2025-11-06 [14] | MIT                                                                                                                                               | 512 samples, 32 ms at 16 kHz | Reference defaults: threshold 0.5, `neg_threshold` = threshold minus 0.15, min speech 250 ms, min silence 100 ms, speech pad 30 ms. v6.2 improved unusual, child, muted and phone-quality voices **[V]**. Available as ggml for whisper.cpp, GGUF for transcribe.cpp, and ONNX |
+| TEN VAD              | 2025 releases                                           | Apache-2.0 **with added conditions**: it may not be deployed in ways that compete with Agora, and derivative works stay under the same terms [23] | 10 or 16 ms hops             | Claims faster speech-to-silence transitions and lower compute than Silero **[V]**; Rust crate `ten-vad-rs` 0.1.7. The licence conditions make it a poor default for an open local app                                                                                          |
+| WebRTC VAD           | legacy                                                  | BSD [U]                                                                                                                                           | 10, 20 or 30 ms              | GMM-based and weak in noise **[U]**; only worth it as a near-free pre-filter                                                                                                                                                                                                   |
+| earshot              | 1.2.2 (2026-08)                                         | [U]                                                                                                                                               | 16 ms                        | Pure Rust; Handy ships it as an experimental alternative at threshold 0.5                                                                                                                                                                                                      |
+| whisper.cpp built-in | Silero v5.1.2 or v6.2.0 ggml                            | MIT                                                                                                                                               |                              | Runs before Whisper and passes only speech segments; maps timestamps back to the original audio since 1.9.2                                                                                                                                                                    |
 
 ### Recommended settings for push-to-talk dictation
 
@@ -290,13 +292,13 @@ For push-to-talk, key release is the endpoint. VAD has three smaller jobs: decid
 
 Handy's production values, read from source, are a good starting point [8]:
 
-| Parameter | Handy value | Silero reference default |
-|---|---:|---:|
-| Silero speech threshold | **0.3** | 0.5 |
-| Pre-roll (audio kept before speech onset) | **450 ms** | 30 ms pad |
-| Onset (consecutive speech needed to trigger) | **60 ms** | none |
-| Hangover, offline or push-to-talk | **450 ms** | 100 ms min silence |
-| Hangover, streaming or hands-free | **1650 ms** | none |
+| Parameter                                    | Handy value | Silero reference default |
+| -------------------------------------------- | ----------: | -----------------------: |
+| Silero speech threshold                      |     **0.3** |                      0.5 |
+| Pre-roll (audio kept before speech onset)    |  **450 ms** |                30 ms pad |
+| Onset (consecutive speech needed to trigger) |   **60 ms** |                     none |
+| Hangover, offline or push-to-talk            |  **450 ms** |       100 ms min silence |
+| Hangover, streaming or hands-free            | **1650 ms** |                     none |
 
 Suggested LocalFlow policy (my judgement, informed by the above):
 
@@ -309,27 +311,27 @@ Suggested LocalFlow policy (my judgement, informed by the above):
 
 This only matters for a hands-free mode, where a fixed silence timer cuts people off mid-thought.
 
-| Model | Input | Size and speed | Licence | Fit |
-|---|---|---|---|---|
-| **Pipecat Smart Turn v3.2** | raw audio, the last 8 s of the turn, 16 kHz | Whisper-tiny backbone; 8 MB int8 ONNX for CPU, 32 MB fp32; "as little as 10 ms on some CPUs", about 65 ms on a small cloud instance **[V]**; 23 languages | BSD-2-Clause | Best fit: audio-native, tiny, permissive. Run it only when Silero reports silence [25] |
-| LiveKit turn detector | **transcribed text**, up to 6 turns and 128 tokens | Distilled from Qwen2.5-0.5B, int8 ONNX; about 400 MB RAM and about 25 ms per inference **[V]**; 14 languages | custom LiveKit model licence | Needs a transcript first, and the licence is not a standard open one [26] |
-| Kyutai STT 1B "semantic VAD" | built into the ASR model | about 1B | CC-BY-4.0 | Ties you to that model **[V]** |
-| Deepgram Flux | built into cloud ASR | about 260 ms end-of-turn **[V]** | cloud | Not usable here |
+| Model                        | Input                                              | Size and speed                                                                                                                                            | Licence                      | Fit                                                                                    |
+| ---------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------- |
+| **Pipecat Smart Turn v3.2**  | raw audio, the last 8 s of the turn, 16 kHz        | Whisper-tiny backbone; 8 MB int8 ONNX for CPU, 32 MB fp32; "as little as 10 ms on some CPUs", about 65 ms on a small cloud instance **[V]**; 23 languages | BSD-2-Clause                 | Best fit: audio-native, tiny, permissive. Run it only when Silero reports silence [25] |
+| LiveKit turn detector        | **transcribed text**, up to 6 turns and 128 tokens | Distilled from Qwen2.5-0.5B, int8 ONNX; about 400 MB RAM and about 25 ms per inference **[V]**; 14 languages                                              | custom LiveKit model licence | Needs a transcript first, and the licence is not a standard open one [26]              |
+| Kyutai STT 1B "semantic VAD" | built into the ASR model                           | about 1B                                                                                                                                                  | CC-BY-4.0                    | Ties you to that model **[V]**                                                         |
+| Deepgram Flux                | built into cloud ASR                               | about 260 ms end-of-turn **[V]**                                                                                                                          | cloud                        | Not usable here                                                                        |
 
 ---
 
 ## 7. Streaming and partial transcripts
 
-| Approach | How it works | Realistic on this CPU? |
-|---|---|---|
-| **Whisper with LocalAgreement** (whisper_streaming, 2023) | Re-transcribe a growing buffer; commit the longest common prefix of consecutive hypotheses | Only with tiny or base, since every update re-runs the encoder (0.4 to 1 s each here **[R]**). Latency is at least two update intervals |
-| **SimulStreaming / AlignAtt** (2025), packaged in **WhisperLiveKit** v0.2.28 (2026-11-22, Apache-2.0, Python) | Uses cross-attention to decide when a token is stable; latency about 1 to 2x the chunk length | No. SimulStreaming's own docs say CPU "would be too slow for real-time" with large-v3 and recommend a 10 GB GPU [27]. It is also a Python server |
-| `whisper-stream.exe` (already on disk) | Naive sliding window every 500 ms | Demo quality; no stable prefix |
-| **Parakeet Unified EN, buffered streaming** | One model; left, chunk and right context are chosen at run time. WER on the legacy leaderboard sets: offline 5.91, 2.08 s latency 6.14, 1.12 s 6.29, 0.56 s 6.52, 0.24 s 7.35, 0.16 s 8.44 **[V]** [5]. transcribe.cpp implements all six configurations [7] | Plausible at the 1 to 2 s settings. Buffered streaming recomputes about 5.6 s of left context per chunk, so each step costs roughly an offline pass over 7 to 8 s of audio: about 0.5 s on a 14x-realtime CPU **[U, estimate]**. The 80 to 160 ms settings need a GPU |
-| **Nemotron Speech Streaming EN 0.6B** | Cache-aware FastConformer-RNNT: only new audio is processed; 80, 160, 560 or 1120 ms chunks | The most CPU-friendly true streaming model of this quality. Leaderboard 7.47 **[R]**; 13.6x realtime on CPU offline **[3P]** |
-| **Moonshine Streaming (v2)** | Sliding-window encoder with 80 ms lookahead, autoregressive decoder | Yes; designed for edge CPUs. Lower accuracy than Parakeet (FLEURS English 7.9 to 8.6 against 4.0 **[3P]**), and the card warns it can hallucinate or repeat on short or noisy segments [18] |
-| Kyutai STT | Delayed-streams model, 0.5 s or 2.5 s delay | GPU; no ggml port |
-| Voxtral Mini 4B Realtime | Native streaming, 240 ms to 2.4 s delay | No: 0.58x realtime on CPU **[3P]**, 16 GB GPU **[V]** |
+| Approach                                                                                                      | How it works                                                                                                                                                                                                                                                 | Realistic on this CPU?                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Whisper with LocalAgreement** (whisper_streaming, 2023)                                                     | Re-transcribe a growing buffer; commit the longest common prefix of consecutive hypotheses                                                                                                                                                                   | Only with tiny or base, since every update re-runs the encoder (0.4 to 1 s each here **[R]**). Latency is at least two update intervals                                                                                                                               |
+| **SimulStreaming / AlignAtt** (2025), packaged in **WhisperLiveKit** v0.2.28 (2026-11-22, Apache-2.0, Python) | Uses cross-attention to decide when a token is stable; latency about 1 to 2x the chunk length                                                                                                                                                                | No. SimulStreaming's own docs say CPU "would be too slow for real-time" with large-v3 and recommend a 10 GB GPU [27]. It is also a Python server                                                                                                                      |
+| `whisper-stream.exe` (already on disk)                                                                        | Naive sliding window every 500 ms                                                                                                                                                                                                                            | Demo quality; no stable prefix                                                                                                                                                                                                                                        |
+| **Parakeet Unified EN, buffered streaming**                                                                   | One model; left, chunk and right context are chosen at run time. WER on the legacy leaderboard sets: offline 5.91, 2.08 s latency 6.14, 1.12 s 6.29, 0.56 s 6.52, 0.24 s 7.35, 0.16 s 8.44 **[V]** [5]. transcribe.cpp implements all six configurations [7] | Plausible at the 1 to 2 s settings. Buffered streaming recomputes about 5.6 s of left context per chunk, so each step costs roughly an offline pass over 7 to 8 s of audio: about 0.5 s on a 14x-realtime CPU **[U, estimate]**. The 80 to 160 ms settings need a GPU |
+| **Nemotron Speech Streaming EN 0.6B**                                                                         | Cache-aware FastConformer-RNNT: only new audio is processed; 80, 160, 560 or 1120 ms chunks                                                                                                                                                                  | The most CPU-friendly true streaming model of this quality. Leaderboard 7.47 **[R]**; 13.6x realtime on CPU offline **[3P]**                                                                                                                                          |
+| **Moonshine Streaming (v2)**                                                                                  | Sliding-window encoder with 80 ms lookahead, autoregressive decoder                                                                                                                                                                                          | Yes; designed for edge CPUs. Lower accuracy than Parakeet (FLEURS English 7.9 to 8.6 against 4.0 **[3P]**), and the card warns it can hallucinate or repeat on short or noisy segments [18]                                                                           |
+| Kyutai STT                                                                                                    | Delayed-streams model, 0.5 s or 2.5 s delay                                                                                                                                                                                                                  | GPU; no ggml port                                                                                                                                                                                                                                                     |
+| Voxtral Mini 4B Realtime                                                                                      | Native streaming, 240 ms to 2.4 s delay                                                                                                                                                                                                                      | No: 0.58x realtime on CPU **[3P]**, 16 GB GPU **[V]**                                                                                                                                                                                                                 |
 
 For push-to-talk dictation that pastes on release, partials are a display nicety, not a correctness feature. A sound design is that **the final text always comes from one offline pass over the full utterance** (best accuracy, one paste), and the overlay may optionally show partials from the same Parakeet Unified model in streaming mode on machines with a GPU. With an offline pass that costs well under a second, streaming buys little for utterances of 2 to 30 s.
 
@@ -361,14 +363,14 @@ Mitigations, in order of value for LocalFlow:
 
 Cloud ASR is prohibited in LocalFlow. These numbers only calibrate what "good" looks like.
 
-| Service | Accuracy | Latency | Evidence |
-|---|---|---|---|
-| Zoom Scribe v2.1 Pro | 4.87, rank 1 on the Open ASR Leaderboard | n/a | [R] [1] |
-| ElevenLabs Scribe v2 and v2 Realtime | 5.93 on the leaderboard | about 150 ms median to committed transcript | [R], [V] [29] |
-| AssemblyAI Universal-3.5 Pro; U3 Pro Streaming | 6.21 on the leaderboard | about 150 ms P50 and 240 ms P90 after the VAD endpoint; the older Universal-Streaming about 300 ms to immutable text | [R], [V] [30] |
-| OpenAI GPT-Transcribe and GPT-Live-Transcribe (released 2026-07-28) | gpt-transcribe 6.80 on the leaderboard | streaming with tunable latency; $0.0045 and $0.017 per minute; gpt-4o-transcribe is no longer the recommended starting point | [R], [V] [31] |
-| Deepgram Nova-3 and Flux | Nova-3 5.26 % batch WER on Deepgram's own set | Flux end-of-turn about 260 ms; independent benchmarks report much higher WER and around 1 s time-to-first-token | [V], with conflicting third-party numbers [32] |
-| Wispr Flow | n/a | 700 ms from end of speech to formatted text, as a design target | [V] [22] |
+| Service                                                             | Accuracy                                      | Latency                                                                                                                      | Evidence                                       |
+| ------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Zoom Scribe v2.1 Pro                                                | 4.87, rank 1 on the Open ASR Leaderboard      | n/a                                                                                                                          | [R] [1]                                        |
+| ElevenLabs Scribe v2 and v2 Realtime                                | 5.93 on the leaderboard                       | about 150 ms median to committed transcript                                                                                  | [R], [V] [29]                                  |
+| AssemblyAI Universal-3.5 Pro; U3 Pro Streaming                      | 6.21 on the leaderboard                       | about 150 ms P50 and 240 ms P90 after the VAD endpoint; the older Universal-Streaming about 300 ms to immutable text         | [R], [V] [30]                                  |
+| OpenAI GPT-Transcribe and GPT-Live-Transcribe (released 2026-07-28) | gpt-transcribe 6.80 on the leaderboard        | streaming with tunable latency; $0.0045 and $0.017 per minute; gpt-4o-transcribe is no longer the recommended starting point | [R], [V] [31]                                  |
+| Deepgram Nova-3 and Flux                                            | Nova-3 5.26 % batch WER on Deepgram's own set | Flux end-of-turn about 260 ms; independent benchmarks report much higher WER and around 1 s time-to-first-token              | [V], with conflicting third-party numbers [32] |
+| Wispr Flow                                                          | n/a                                           | 700 ms from end of speech to formatted text, as a design target                                                              | [V] [22]                                       |
 
 So a warm local Parakeet at an estimated 0.4 to 1.0 s on CPU, or about 0.1 s on GPU, would be in the same latency class as the cloud products once their network hop is counted, at roughly one to two WER points behind the best of them on the leaderboard.
 

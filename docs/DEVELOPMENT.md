@@ -17,8 +17,9 @@ npm install
 The script checks Node.js, npm, Git, Rust (`cargo`, `rustc`, installed through rustup) and
 the Visual Studio C++ Build Tools; with `-Install` it installs the 2022 Build Tools with the
 VCTools workload and a Windows 11 SDK. WebView2 is also needed; Windows 11 includes it.
-Node.js 22 or newer and npm 10 or newer are expected. Restart the terminal if a new tool is still missing from
-`PATH`.
+Node.js 22 or newer and npm 10 or newer are expected (`.nvmrc` names 22), and Rust 1.96 or
+newer (`rust-version` in `src-tauri/Cargo.toml`); CI and releases build with 1.96. Restart the
+terminal if a new tool is still missing from `PATH`.
 
 Two more things must be on `PATH` in the shell that builds:
 
@@ -47,37 +48,43 @@ takes about 1 GB of extra disk for compiled shaders. The resulting executable im
 
 ### Runtime assets
 
-Everything the app loads at run time lives in `.localflow-runtime/` at the repository root.
-Git ignores it; never commit models or binaries (AGENTS.md).
+Everything a source build loads at run time lives in `.localflow-runtime/` at the repository
+root. Git ignores it; never commit models or binaries (AGENTS.md).
 
 ```text
 .localflow-runtime\
-  whisper\Release\whisper-cli.exe, whisper-server.exe, *.dll   bundled; every build needs them
-  models\ggml-tiny.en-q5_1.bin                                  bundled; every build needs it
-  models\parakeet-tdt-0.6b-v3-Q5_K_M.gguf                       Get-AsrModel.ps1
-  models\phonon\                                                 Get-PhononModel.ps1
-  models\silero-vad-v6.2-F32.gguf                               Get-VadModel.ps1
-  models\smart-turn-v3.2-gpu.onnx                               Get-SmartTurnModel.ps1
-  models\fish\, fish\                                           optional read-aloud voice
-  bench-corpus\manifest.tsv, wav\                               benchmarks and real-model tests
+  whisper\Release\whisper-cli.exe, whisper-server.exe,      Get-WhisperRuntime.ps1; bundled, every build needs them
+    whisper.dll, ggml.dll, ggml-base.dll, ggml-cpu-*.dll
+  models\ggml-tiny.en-q5_1.bin                       Get-AsrModel.ps1 -Model tiny.en; bundled, every build needs it
+  models\parakeet-tdt-0.6b-v3-Q5_K_M.gguf            Get-AsrModel.ps1
+  models\phonon\                                     Get-PhononModel.ps1
+  models\silero-vad-v6.2-F32.gguf                    Get-VadModel.ps1
+  models\smart-turn-v3.2-gpu.onnx                    Get-SmartTurnModel.ps1
+  models\fish\, fish\                                Get-FishModel.ps1, Build-FishS2.ps1 (optional)
+  bench-corpus\manifest.tsv, wav\                    benchmarks and real-model tests
+  bench-results\                                     Bench-AsrSpeed.ps1 output
 ```
 
-- The model scripts are listed in [USER_GUIDE.md](USER_GUIDE.md#models);
-  `Get-AsrModel.ps1 -Model tiny.en` gets the bundled model. Fish S2 is in
-  [MODEL_SETUP.md](MODEL_SETUP.md). The bench corpus is described in
+- Every `Get-*.ps1` script downloads a pinned revision, checks each file's SHA-256, and
+  takes `-Destination`. Run from a checkout they default to `.localflow-runtime`; run from
+  anywhere else (an installed copy) they default to `%LOCALAPPDATA%\LocalFlow`. The model
+  scripts are listed in [MODEL_SETUP.md](MODEL_SETUP.md); the bench corpus is described in
   [benchmarks/ASR_BENCHMARK.md](benchmarks/ASR_BENCHMARK.md).
-- **The whisper.cpp files have no script.** Unpack the Windows x64 binaries of a whisper.cpp
-  release so that `whisper-cli.exe`, `whisper-server.exe` and their DLLs sit in
-  `.localflow-runtime\whisper\Release` (the current files are from 1.9.1; see
-  [ROADMAP.md](ROADMAP.md)). Every DLL in that folder is bundled.
-- `tauri.conf.json` lists the whisper files and tiny.en as bundle resources, and the Tauri
-  build script copies them even for `cargo test`. Without them the build fails. CI stands in
-  empty files (`.github/workflows/ci.yml`); you can do the same if you only need Parakeet,
-  but the Whisper fallback will then not work. The build script also embeds the built web
-  UI, so run `npm run build` once before the first `cargo test`.
-- The app looks in its packaged resources first, then in `.localflow-runtime` next to the
-  source tree. That second path is compiled in (`runtime_paths.rs`), so a build reads models
-  from the checkout it was built from.
+- `Get-WhisperRuntime.ps1` extracts only the files LocalFlow runs from the pinned whisper.cpp
+  v1.9.5 Windows x64 release. `tauri.conf.json` lists exactly those files as bundle
+  resources (not `*.dll`, which would pull in SDL2 and the release's own `parakeet.dll`).
+  The programs need the Visual C++ runtime, which the Build Tools install; the release
+  workflow ships it beside them.
+- The Tauri build script copies the bundle resources even for `cargo test`, so without
+  these files the build fails. CI stands in an empty file for each one
+  (`.github/workflows/ci.yml`); you can do the same if you only need Parakeet, but the
+  Whisper fallback will then not work. The build script also embeds the built web UI, so
+  run `npm run build` once before the first `cargo test`.
+- The app looks for programs and models in `localflow-runtime` in its resource folder
+  (next to the executable), then in `%LOCALAPPDATA%\LocalFlow`, then in the checkout's
+  `.localflow-runtime` (`runtime_paths.rs`). The last one exists only with the `dev-runtime`
+  Cargo feature, which is on by default, so a local build reads the checkout it was built
+  from. Release builds turn it off (`--no-default-features`); see [Releases](#releases).
 
 ## Building
 
@@ -109,9 +116,20 @@ The testing reference, the manual checklists and the latest verified results are
 npm run test         # vitest, tests in tests/
 npm run lint
 npm run format       # prettier --check
-npm run build        # tsc and vite build
-npm run check        # all four
+npm run typecheck    # tsc -b: the SDK project, then the app and tests
+npm run build        # tsc -b, then vite build
+npm run check        # format, lint, test and build
 ```
+
+The app project (`tsconfig.json`) reads the SDK package (`packages/localflow-sdk`) through
+the declarations its own project (`tsconfig.sdk.json`) emits into `node_modules/.tmp`. On a
+fresh clone those do not exist yet, so run `npm run typecheck` or `npm run build` once before
+`npx tsc --noEmit`, which does not build referenced projects and otherwise reports the SDK's
+files as not built.
+
+The settings window lives in `src/app` (the shell and its hooks), `src/screens` (one
+component per screen), `src/components/ui`, `src/domain` and `src/styles`; there is no
+`src/App.tsx` any more. See [ARCHITECTURE.md](ARCHITECTURE.md#frontend-layer).
 
 ### Rust
 
@@ -123,26 +141,31 @@ cargo test --release --lib
 ```
 
 Always pass `--release`. The in-process speech engine compiles C++, and the debug profile's
-cache reached 13 GB; tests in release reuse the release cache. CI runs exactly these two.
-`.\scripts\Run-Checks.ps1` runs the frontend checks and then `cargo test` and `cargo check`
-in the debug profile, so it builds that large cache.
+cache reached 13 GB; tests in release reuse the release cache. CI runs `cargo fmt --check`,
+`cargo clippy --release --lib --examples --locked -- -D warnings`, the tests with `--locked`
+and `cargo build --release --examples --locked`, and on the web side
+`npm audit --omit=dev --audit-level=high` before the frontend checks.
+`.\scripts\Run-Checks.ps1` runs the frontend checks, then `cargo fmt --check`,
+`cargo test --release --lib` and `cargo build --release --examples`; it does not run clippy.
 
 ### Ignored tests
 
-Tests that need models, hardware, a stand-in agent or another program are marked
-`#[ignore = "..."]` with the reason. Run them by name with `-- --ignored`:
+Tests that need models, a running Ollama, hardware, the real clipboard, a stand-in agent or
+another program are marked `#[ignore = "..."]` with the reason. Run them by name with `-- --ignored`:
 
-| Filter                  | Needs                                                                               | Command                                                                                                        |
-| ----------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `real_parakeet`         | Parakeet and the bench corpus                                                       | `cargo test --release --lib real_parakeet -- --ignored`                                                        |
-| `real_server`           | `whisper-server.exe`, a Whisper model, the bench corpus                             | `cargo test --release --lib real_server -- --ignored`                                                          |
-| `real_smart_turn`       | the Smart Turn model                                                                | `cargo test --release --lib real_smart_turn -- --ignored`                                                      |
-| `real_silero`           | the Silero model                                                                    | `cargo test --release --lib real_silero -- --ignored`                                                          |
-| `real_phonon`           | the Phonon voice                                                                    | `cargo test --release --lib real_phonon -- --ignored`                                                          |
-| `real_parakeet_gpu`     | a GPU build and a discrete GPU                                                      | `cargo test --release --lib --features gpu-vulkan real_parakeet_gpu -- --ignored --nocapture --test-threads=1` |
-| `_speed`                | nothing; timing tests for the canceller, resampler and spectrum                     | `cargo test --release --lib _speed -- --ignored --nocapture`                                                   |
-| `coding_agents`         | `cargo build --release --example fake_agent` first                                  | `cargo test --release --lib coding_agents -- --ignored`                                                        |
-| `live_windows_terminal` | `cargo build --release --example wt_probe`; `LOCALFLOW_LIVE_WT=1`; opens a real tab | `cargo test --release --lib live_windows_terminal -- --ignored --nocapture`                                    |
+| Filter                   | Needs                                                                               | Command                                                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `real_parakeet`          | Parakeet and the bench corpus                                                       | `cargo test --release --lib real_parakeet -- --ignored`                                                        |
+| `real_server`            | `whisper-server.exe`, a Whisper model, the bench corpus                             | `cargo test --release --lib real_server -- --ignored`                                                          |
+| `real_smart_turn`        | the Smart Turn model                                                                | `cargo test --release --lib real_smart_turn -- --ignored`                                                      |
+| `real_silero`            | the Silero model                                                                    | `cargo test --release --lib real_silero -- --ignored`                                                          |
+| `real_phonon`            | the Phonon voice                                                                    | `cargo test --release --lib real_phonon -- --ignored`                                                          |
+| `real_ollama`            | Ollama running, with `llama3.2:3b` pulled; read-only (`/api/show`)                  | `cargo test --release --lib real_ollama -- --ignored`                                                          |
+| `real_parakeet_gpu`      | a GPU build and a discrete GPU                                                      | `cargo test --release --lib --features gpu-vulkan real_parakeet_gpu -- --ignored --nocapture --test-threads=1` |
+| `_speed`                 | nothing; timing tests for the canceller, resampler and spectrum                     | `cargo test --release --lib _speed -- --ignored --nocapture`                                                   |
+| `coding_agents`          | `cargo build --release --example fake_agent` first                                  | `cargo test --release --lib coding_agents -- --ignored`                                                        |
+| `live_windows_terminal`  | `cargo build --release --example wt_probe`; `LOCALFLOW_LIVE_WT=1`; opens a real tab | `cargo test --release --lib live_windows_terminal -- --ignored --nocapture`                                    |
+| `live_delayed_rendering` | `LOCALFLOW_LIVE_CLIPBOARD=1`; replaces the real clipboard for a moment              | `LOCALFLOW_LIVE_CLIPBOARD=1 cargo test --release --lib live_delayed_rendering -- --ignored`                    |
 
 - The `coding_agents` run includes `detects_what_is_installed_here`, which prints what this
   computer has and launches nothing. The other tests there run `examples/fake_agent.rs`, a
@@ -152,6 +175,14 @@ Tests that need models, hardware, a stand-in agent or another program are marked
   the folder and arguments it received, then exits) in a temporary folder with a space in its
   name. It does nothing unless `LOCALFLOW_LIVE_WT=1` is set, so a plain `-- --ignored` run
   never opens a window.
+- `live_delayed_rendering_round_trip` (`platform/clipboard.rs`) runs the paste's clipboard
+  path on the real Windows clipboard: it publishes text with delayed rendering, reads it from
+  another thread, checks that the read was seen and the earlier text put back, then checks
+  that text copied by someone else in between is left alone. It does nothing unless
+  `LOCALFLOW_LIVE_CLIPBOARD=1` is set, skips itself unless the clipboard holds plain text
+  that no program marked private, and puts that text back at the end. In PowerShell, set the
+  variable with `$env:LOCALFLOW_LIVE_CLIPBOARD = "1"` first; the `VAR=1 command` form above
+  is for Git Bash.
 - Before sending LocalFlow hotkeys from a script in a live test, confirm that the foreground
   window is your test window: the reading hotkey reads whatever has the focus aloud, and
   dictation pastes into it.
@@ -177,13 +208,70 @@ Notes:
 - Run the Rust harnesses from `src-tauri`. `asr_bench` options (engines, `--sweep-threads`,
   `--list-devices`, the GPU device field) are documented at the top of
   `examples/asr_bench.rs`.
-- The GPU part of `Bench-AsrSpeed.ps1` builds with `--features gpu-vulkan`; its
-  `-VulkanSdk` default is a path on the development laptop.
+- The GPU part of `Bench-AsrSpeed.ps1` builds with `--features gpu-vulkan`; `-VulkanSdk`
+  defaults to `$env:VULKAN_SDK`. Results go to `.localflow-runtime\bench-results`; copy a
+  run you want to keep into `docs\benchmarks`.
 - `conversation_bench` needs Ollama running with the model, plus the voice and Silero. To
   measure the GPU path, build it with `--features gpu-vulkan`.
 - The Smart Turn test clips are third-party data (CC-BY-4.0, 344 MB). Keep them out of the
   repository and delete the folder afterwards. While `turn_judge_bench.exe` runs, copy it out
   of `target` first: a running executable there blocks other builds on Windows.
+
+## Releases
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed. It:
+
+1. checks that the tag matches the version in `package.json` (which `tauri.conf.json` reads)
+   and `src-tauri/Cargo.toml`;
+2. installs Rust 1.96 (or the toolchain `rust-toolchain.toml` names) and runs `npm ci`, with no dependency
+   caches;
+3. refuses to continue if `THIRD_PARTY_NOTICES.md` is out of date;
+4. fetches the whisper.cpp programs and tiny.en with the same scripts as above;
+5. copies the Visual C++ runtime (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`,
+   and `vcomp140.dll` for the ggml DLLs) from the runner's Visual Studio into
+   `.localflow-runtime`, and `src-tauri/tauri.release.conf.json` maps them next to
+   `localflow.exe` and next to the whisper.cpp programs;
+6. builds with `npx tauri build --config src-tauri/tauri.release.conf.json -- --no-default-features --locked`:
+   the CPU build without `dev-runtime`, with the workspace and Cargo's home remapped in debug
+   paths and the executable stripped (`[profile.release.package.localflow]` in
+   `Cargo.toml`);
+7. checks with `dumpbin` that every shipped program loads only Windows DLLs or DLLs beside
+   it, so the installers work on a computer without the Visual C++ redistributable;
+8. attaches the MSI, the NSIS installer and `SHA256SUMS` to a **draft** GitHub release, with
+   the version's section of `CHANGELOG.md` as the notes. A maintainer publishes it.
+
+To release: move the `Unreleased` entries in `CHANGELOG.md` under a new version heading,
+set the same version in `package.json` and `src-tauri/Cargo.toml`, merge, then tag the
+merge commit (`git tag v0.1.0`, `git push origin v0.1.0`).
+
+To try a release-like build locally, without the checkout's runtime folder:
+
+```powershell
+npm run tauri:build -- --no-bundle -- --no-default-features
+```
+
+Such a build looks for models only next to the executable and in
+`%LOCALAPPDATA%\LocalFlow`, and ignores `LOCALFLOW_WHISPER_CLI`.
+
+### Third-party notices
+
+`THIRD_PARTY_NOTICES.md` is installed next to the app. Its crate and npm lists are generated
+from the lock files; the sections above them (ported code, the bundled whisper.cpp programs
+and model, model credits) are written by hand. After changing dependencies:
+
+```powershell
+.\scripts\Generate-ThirdPartyNotices.ps1        # -Check only reports whether it is current
+npx prettier --write THIRD_PARTY_NOTICES.md
+```
+
+### Desktop shortcut smoke check
+
+`.\scripts\Test-DesktopBoot.ps1` checks a checkout-based desktop setup: that the desktop
+shortcut runs `Start-LocalFlow.vbs` from the repository, that the launchers start the
+release executable, that the window settings and hotkey registration are as expected, and
+the health file the app writes (`-RequireRunning`, `-ExpectRecentHotkeySeconds`). It reads
+source files to do so, so update it when those change. It does not apply to an installed
+copy.
 
 ## Rules for contributors
 
@@ -270,11 +358,10 @@ Control phrases live in `conversation/router.rs` as lists per intent (`END_PHRAS
 
 ## Gotchas
 
-- **CRLF and prettier.** Git checks the repository out with CRLF line endings
-  (`core.autocrlf`), and prettier expects LF, so `npm run format` reports Markdown files at
-  the root on a fresh checkout. `npm run format:write`, or `npx prettier --write <file>`,
-  rewrites them with LF; Git sees no change in content. `npm run format` checks root-level
-  `*.md` but not `docs/`; run prettier on docs you change.
+- **Line endings.** `.gitattributes` checks text files out with LF on every platform, as
+  prettier and rustfmt expect, whatever `core.autocrlf` says. A checkout made before that
+  file existed may still have CRLF files: `git add --renormalize .` fixes it. Run
+  `npx prettier --write` on any Markdown you change, including under `docs/`.
 - **Cargo from PowerShell.** Cargo is in `%USERPROFILE%\.cargo\bin`, which a Git Bash or other
   non-login shell may not have on `PATH`. `tauri dev` and `tauri build` call cargo, so they
   fail the same way. Run Rust commands from PowerShell with that folder added, or through the
@@ -285,9 +372,19 @@ Control phrases live in `conversation/router.rs` as lists per intent (`END_PHRAS
 - **A running app locks its executable.** Quit LocalFlow from the tray before rebuilding
   `target\release\localflow.exe`. A running example executable in `target` blocks builds
   the same way.
+- **One copy at a time.** The single-instance lock is named after the app identifier, so
+  while any LocalFlow runs, a second start (a `tauri dev` build included) only shows the
+  running copy's settings window and exits. Quit the tray copy first. Closing the settings
+  window does not quit; it hides.
+- **Logs.** A release build has no console. Its log is
+  `%LOCALAPPDATA%\app.localflow.desktop\logs\localflow.log` (and `.log.1`); a debug build
+  prints the same lines to its console too. The filter is fixed in `init_logging`
+  (`localflow=info,tauri=warn`); `RUST_LOG` does not change it.
 - **New Tauri commands** must be added to `APP_COMMANDS` in `src-tauri/build.rs`,
   `capabilities/main.json` and `generate_handler!` in `lib.rs`. A missing entry fails only at
-  run time, in the web UI.
+  run time, in the web UI. A debug-only command goes in `DEBUG_ONLY_COMMANDS` instead, with
+  `#[cfg(debug_assertions)]` in `lib.rs` and its permission in `capabilities/debug/`, which
+  only a debug build reads (the mock dictation commands are the example).
 - **New settings fields** need a default: the settings structs are `#[serde(default)]` so
   older stored settings still load.
 - **One Ollama context size.** Every caller uses `OLLAMA_NUM_CTX` (4096). Asking for another

@@ -210,7 +210,29 @@ Not yet measured: a person at a real microphone and speaker, and how the voice s
 6. **Summarise, explain, what changed.** Page text passed to the local model as quoted data,
    a snapshot diff kept in memory only, and a fixture corpus of malicious pages.
 7. **Charts and release hardening.** Screenshot plus local vision as an opt-in, integrity
-   checks on bundled binaries, a release log file, an installer smoke test.
+   checks on bundled binaries, a release log file, an installer smoke test. Part of the
+   release hardening is done: a release workflow, pinned and hash-checked downloads, a
+   per-user model folder, and release builds without the development runtime path (see
+   [CHANGELOG.md](../CHANGELOG.md)).
+
+### Beyond the milestones
+
+Open work outside the milestones above, carried over from the former `ROADMAP.md`:
+
+- **Try it for real.** Conversation and page reading with a real microphone and speaker;
+  talking over the assistant; page reading on the sites people actually use; the manual
+  dictation checklist in [TESTING.md](TESTING.md) (Notepad, browser fields, VS Code); the
+  installers on a clean computer.
+- **Dictation.** Record real 48 kHz dictations and compare builds end to end (the benchmark
+  so far covers clean read speech only); streaming partial transcripts on the
+  `StreamingAsrProvider` foundation; unloading the speech model after a period without use.
+- **Settings that are shown but not yet used.** Microphone selection and device-disconnect
+  handling; the privacy and retention settings, persisted through native SQLite and enforced
+  there; changeable hotkeys.
+- **Insertion and context.** Windows UI Automation insertion before the clipboard fallback;
+  native context capture.
+- **Later.** Style profiles in the clean-up prompt; command mode and selected-text
+  transforms; start at login, crash recovery, sleep and resume; a code-signed installer.
 
 ### Milestone 5 in detail
 
@@ -317,11 +339,11 @@ code was read for ideas only.
 
 Found by the audit and not addressed in milestone 1:
 
-- Release builds honour `LOCALFLOW_WHISPER_*` overrides and a development path baked in at
-  compile time, and launch sidecars without an integrity check.
+- Sidecars are launched without an integrity check. (Release builds no longer carry the
+  development path or honour `LOCALFLOW_WHISPER_CLI`, and start programs only from the app's
+  own folder and `%LOCALAPPDATA%\LocalFlow`.)
 - A model path saved in settings is checked only for existence before being parsed in-process.
 - Release builds have no log file or crash marker; a failed settings save falls back silently
   in the web UI.
 - Ollama is trusted by port number alone.
-- Model downloads are verified by size, not hash.
 - The privacy and microphone settings shown in the UI are not read by the native path.

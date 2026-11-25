@@ -1,5 +1,7 @@
 # Voice quality and audio engineering for LocalFlow
 
+> **Research snapshot dated 2026-11-22.** Kept as written; model choices, measurements and plans may have changed since, and it may not match the current code. For what was decided and built, see [VOICE_ASSISTANT_PLAN.md](../../VOICE_ASSISTANT_PLAN.md) and [development/PLAN.md](../../development/PLAN.md).
+
 > Research appendix produced on 2026-11-22 by an independent research agent for the voice pipeline review. It is kept as written, apart from removing machine-specific paths. Line references to `native_dictation.rs` describe the code before the changes in `../VOICE_PIPELINE_REVIEW.md`. Figures are labelled by the author as vendor, third-party, reproduced, or unverified; treat unlabelled numbers as unverified.
 
 Research date: 2026-11-22. Scope: Part A covers the dictation input chain (to be implemented); Part B covers TTS output quality (report only).
@@ -18,13 +20,13 @@ Numbers are cited to sources in the numbered list at the end. Where I state some
 
 File: `src-tauri\src\native_dictation.rs`
 
-| Stage | Current behaviour | Issue |
-|---|---|---|
-| Downmix (`downmix_input_callback`, `loudest_channel`) | Picks the highest-energy channel **per audio callback** | The selected channel can change between consecutive callbacks (every few ms), splicing two different signals together and creating discontinuities |
-| End of speech (`EndOfSpeechDetector`) | RMS thresholds 0.008 start / 0.0045 continue, 120 ms confirm, 550 ms silence timeout, 55 ms poll | Fixed absolute thresholds: no noise-floor adaptation, sensitive to mic gain and DC offset |
-| Resample (`resample_to_16khz`) | Two-point linear interpolation, no low-pass | For 48 kHz input the ratio is exactly 3, so every output sample lands on an input sample: this is plain decimation with **zero** anti-alias filtering |
-| WAV (`write_wav`) | 16-bit PCM, 16 kHz mono, `round(x * 32767)` | Fine |
-| Whisper invocation | `whisper-cli -m -f -oj -of -np -nt -l en -t` | No VAD flags, no minimum-length padding |
+| Stage                                                 | Current behaviour                                                                                | Issue                                                                                                                                                 |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Downmix (`downmix_input_callback`, `loudest_channel`) | Picks the highest-energy channel **per audio callback**                                          | The selected channel can change between consecutive callbacks (every few ms), splicing two different signals together and creating discontinuities    |
+| End of speech (`EndOfSpeechDetector`)                 | RMS thresholds 0.008 start / 0.0045 continue, 120 ms confirm, 550 ms silence timeout, 55 ms poll | Fixed absolute thresholds: no noise-floor adaptation, sensitive to mic gain and DC offset                                                             |
+| Resample (`resample_to_16khz`)                        | Two-point linear interpolation, no low-pass                                                      | For 48 kHz input the ratio is exactly 3, so every output sample lands on an input sample: this is plain decimation with **zero** anti-alias filtering |
+| WAV (`write_wav`)                                     | 16-bit PCM, 16 kHz mono, `round(x * 32767)`                                                      | Fine                                                                                                                                                  |
+| Whisper invocation                                    | `whisper-cli -m -f -oj -of -np -nt -l en -t`                                                     | No VAD flags, no minimum-length padding                                                                                                               |
 
 The bundled `whisper-cli.exe` in `.localflow-runtime\whisper\Release` already exposes `--vad`, `-vm`, `-vt`, `-vspd`, `-vsd`, `-vmsd`, `-vp`, `-vo` (verified by running `--help`), and a `parakeet-cli.exe` is also present. `.localflow-runtime\bench-corpus` already holds `jfk.wav` and a LibriSpeech folder.
 
@@ -44,7 +46,7 @@ What I found:
 - Reference Whisper never sees naive resampling: `load_audio` shells out to ffmpeg with `-ac 1 -acodec pcm_s16le -ar 16000`, so the model was trained and evaluated on ffmpeg-quality (anti-aliased) resampling [1]. Naive decimation is therefore an out-of-distribution input.
 - Other dictation projects have filed the same bug with signal-level proof but no WER: a 12 kHz tone captured at 48 kHz and converted to 16 kHz produced a dominant peak near 4 kHz [4]; a second project reports high-frequency microphone noise aliasing into Whisper's speech band [5]. Both state the WER effect is expected, not measured.
 - A vendor blog claims "4-7% WER improvement" from switching to a high-quality resampler but gives no method; treat as unverified [6].
-- Counter-evidence worth knowing: a 2025 study on very low sample rates (320-1600 Hz) found ASR models *trained on* aliased audio exploit the aliased information and get lower WER than with filtered resampling [2]. That is a train-time effect at extreme rates and does not transfer to Whisper inference, but it shows aliasing is not automatically catastrophic.
+- Counter-evidence worth knowing: a 2025 study on very low sample rates (320-1600 Hz) found ASR models _trained on_ aliased audio exploit the aliased information and get lower WER than with filtered resampling [2]. That is a train-time effect at extreme rates and does not transfer to Whisper inference, but it shows aliasing is not automatically catastrophic.
 - A commercial-engine test found identical accuracy (98.0%) for 48 kHz and 16 kHz 16-bit WAV input, i.e. nothing above 8 kHz is needed provided the downsampling is done properly [3].
 
 Engineering analysis of the current resampler (calculated, not sourced):
@@ -56,26 +58,26 @@ Engineering analysis of the current resampler (calculated, not sourced):
 
 Two implementation options:
 
-| Option | Pros | Cons |
-|---|---|---|
-| Hand-rolled polyphase Kaiser-windowed sinc (recommended) | Zero new dependencies, about 80 lines, fully unit-testable, deterministic | You own the code |
-| `rubato` 5.1.0, `Fft` resampler with `process_all()` | MIT/Apache-2.0, maintained; docs call `Fft` the natural choice for a fixed ratio and offline conversion [7] | Pulls `realfft`, `audioadapter`, `audioadapter-buffers`, `num-integer`, `num-traits`, `visibility`, `windowfunctions` [7]. Do not use `Async::new_poly`: the docs say it has no anti-alias filtering [7] |
+| Option                                                   | Pros                                                                                                        | Cons                                                                                                                                                                                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hand-rolled polyphase Kaiser-windowed sinc (recommended) | Zero new dependencies, about 80 lines, fully unit-testable, deterministic                                   | You own the code                                                                                                                                                                                         |
+| `rubato` 5.1.0, `Fft` resampler with `process_all()`     | MIT/Apache-2.0, maintained; docs call `Fft` the natural choice for a fixed ratio and offline conversion [7] | Pulls `realfft`, `audioadapter`, `audioadapter-buffers`, `num-integer`, `num-traits`, `visibility`, `windowfunctions` [7]. Do not use `Async::new_poly`: the docs say it has no anti-alias filtering [7] |
 
 **Concrete filter design (hand-rolled):**
 
-| Parameter | Value | Reason |
-|---|---|---|
-| Structure | Rational polyphase FIR, L = 16000 / gcd(fs_in, 16000), M = fs_in / gcd | 48 kHz: L=1, M=3. 44.1 kHz: L=160, M=441. 32 kHz: L=1, M=2. 96 kHz: L=1, M=6 |
-| Passband edge | 7.0 kHz | Keeps almost all of Whisper's 0-8 kHz mel range |
-| Stopband edge | 8.0 kHz (new Nyquist) | Nothing above Nyquist survives, so no fold-back at all |
-| Cutoff (-6 dB) | 7.5 kHz | Midpoint of the transition band |
-| Stopband attenuation | 80 dB | Whisper's feature floor is 80 dB below the per-clip peak [1], so anything lower is invisible to the model |
-| Window | Kaiser, beta = 7.857 | beta = 0.1102 x (80 - 8.7) |
-| Taps at input rate | N = 2 x ceil(40 x fs_in / 16000) + 1 | 241 at 48 kHz, 223 at 44.1 kHz, 481 at 96 kHz (the Kaiser estimate for a 1 kHz transition at 80 dB gives 241 at 48 kHz) |
-| Upsampling case (fs_in < 16 kHz, e.g. Bluetooth hands-free at 8 kHz) | Cutoff 0.47 x fs_in, 81 taps | Suppresses images rather than aliases; same code path |
-| Per-phase gain | Normalise each phase's coefficients to sum to 1.0 | Exact unity DC gain, no amplitude ripple between phases |
-| Edges | Zero-extend the input by (N-1)/2 on both sides | Output length = ceil(len x L / M), no delay to compensate |
-| Arithmetic | f32 samples, f64 for coefficient generation | |
+| Parameter                                                            | Value                                                                  | Reason                                                                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Structure                                                            | Rational polyphase FIR, L = 16000 / gcd(fs_in, 16000), M = fs_in / gcd | 48 kHz: L=1, M=3. 44.1 kHz: L=160, M=441. 32 kHz: L=1, M=2. 96 kHz: L=1, M=6                                            |
+| Passband edge                                                        | 7.0 kHz                                                                | Keeps almost all of Whisper's 0-8 kHz mel range                                                                         |
+| Stopband edge                                                        | 8.0 kHz (new Nyquist)                                                  | Nothing above Nyquist survives, so no fold-back at all                                                                  |
+| Cutoff (-6 dB)                                                       | 7.5 kHz                                                                | Midpoint of the transition band                                                                                         |
+| Stopband attenuation                                                 | 80 dB                                                                  | Whisper's feature floor is 80 dB below the per-clip peak [1], so anything lower is invisible to the model               |
+| Window                                                               | Kaiser, beta = 7.857                                                   | beta = 0.1102 x (80 - 8.7)                                                                                              |
+| Taps at input rate                                                   | N = 2 x ceil(40 x fs_in / 16000) + 1                                   | 241 at 48 kHz, 223 at 44.1 kHz, 481 at 96 kHz (the Kaiser estimate for a 1 kHz transition at 80 dB gives 241 at 48 kHz) |
+| Upsampling case (fs_in < 16 kHz, e.g. Bluetooth hands-free at 8 kHz) | Cutoff 0.47 x fs_in, 81 taps                                           | Suppresses images rather than aliases; same code path                                                                   |
+| Per-phase gain                                                       | Normalise each phase's coefficients to sum to 1.0                      | Exact unity DC gain, no amplitude ripple between phases                                                                 |
+| Edges                                                                | Zero-extend the input by (N-1)/2 on both sides                         | Output length = ceil(len x L / M), no delay to compensate                                                               |
+| Arithmetic                                                           | f32 samples, f64 for coefficient generation                            |                                                                                                                         |
 
 Kernel: `h(t) = (2 fc / fs_in) * sinc(2 fc t / fs_in) * kaiser(t / half_width)` evaluated at `t = k - frac` for each of the L phases, where output sample n sits at input position `n * M / L`.
 
@@ -95,14 +97,14 @@ Unit tests to write (pure functions, no Tauri):
 
 **How the models see level.** Whisper computes log-mel, clamps to `max - 8.0` in log10 power units (an 80 dB window under the clip's loudest bin), then applies `(x + 4) / 4` [1]. The clamp is relative to the clip peak; the final offset is absolute, so features do shift with gain, but the model was trained on audio with uncontrolled levels. Parakeet-class NeMo models take 16 kHz mono [15]; their default feature pipeline uses per-feature normalisation, which makes them largely gain-invariant (not sourced: from the NeMo default config, verify before relying on it).
 
-| Topic | Recommendation | Value | Evidence |
-|---|---|---|---|
-| DC offset / high-pass | One 2nd-order Butterworth high-pass (biquad) before the RMS detector and before resampling | 80 Hz cutoff at the capture rate | **None found** for a WER effect. Justification is engineering: DC and rumble bias the RMS endpoint thresholds and waste headroom. Cheap, linear, harmless |
-| Level normalisation | Static per-utterance peak gain, applied once after capture | If peak < -12 dBFS, scale so peak = -3 dBFS; cap gain at +30 dB; never attenuate | **None found**: no published Whisper gain sweep. Rationale: keeps the signal well above the 16-bit quantisation floor. 10-12 bit effective resolution is reported as still stable for ASR, degrading at 8 bits and below [14] |
-| LUFS normalisation | Not needed | n/a | **None found**. LUFS is a perceptual playback measure; peak or RMS is sufficient for a recogniser |
-| AGC (time-varying) | Do not add | n/a | **Anecdotal**. Time-varying gain pumps the noise floor during pauses, which is the kind of input that triggers Whisper hallucinations (A3). Static gain gets the benefit without the pumping |
-| Clipping | Detect and warn; do not try to repair | Flag when more than 0.1% of samples have abs >= 0.99 | **Measured that clipping is harmful, weakly attributed**: a 2026 robustness benchmark reports large WER increases under hard clipping [13] (I confirmed the paper and its seven-system scope, not the per-model figure). No evidence found that declipping helps |
-| Noise suppression (RNNoise, DeepFilterNet 3, NSNet, Windows APO) | **Do not add a denoiser by default** | n/a | **Measured**, see below |
+| Topic                                                            | Recommendation                                                                             | Value                                                                            | Evidence                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DC offset / high-pass                                            | One 2nd-order Butterworth high-pass (biquad) before the RMS detector and before resampling | 80 Hz cutoff at the capture rate                                                 | **None found** for a WER effect. Justification is engineering: DC and rumble bias the RMS endpoint thresholds and waste headroom. Cheap, linear, harmless                                                                                                        |
+| Level normalisation                                              | Static per-utterance peak gain, applied once after capture                                 | If peak < -12 dBFS, scale so peak = -3 dBFS; cap gain at +30 dB; never attenuate | **None found**: no published Whisper gain sweep. Rationale: keeps the signal well above the 16-bit quantisation floor. 10-12 bit effective resolution is reported as still stable for ASR, degrading at 8 bits and below [14]                                    |
+| LUFS normalisation                                               | Not needed                                                                                 | n/a                                                                              | **None found**. LUFS is a perceptual playback measure; peak or RMS is sufficient for a recogniser                                                                                                                                                                |
+| AGC (time-varying)                                               | Do not add                                                                                 | n/a                                                                              | **Anecdotal**. Time-varying gain pumps the noise floor during pauses, which is the kind of input that triggers Whisper hallucinations (A3). Static gain gets the benefit without the pumping                                                                     |
+| Clipping                                                         | Detect and warn; do not try to repair                                                      | Flag when more than 0.1% of samples have abs >= 0.99                             | **Measured that clipping is harmful, weakly attributed**: a 2026 robustness benchmark reports large WER increases under hard clipping [13] (I confirmed the paper and its seven-system scope, not the per-model figure). No evidence found that declipping helps |
+| Noise suppression (RNNoise, DeepFilterNet 3, NSNet, Windows APO) | **Do not add a denoiser by default**                                                       | n/a                                                                              | **Measured**, see below                                                                                                                                                                                                                                          |
 
 **Denoising evidence (measured, consistent across three independent studies):**
 
@@ -124,14 +126,14 @@ If a noisy-environment mode is ever wanted: make it opt-in, apply the enhancer a
 
 **Current versions and defaults (measured from primary sources):**
 
-| Engine | Version / status | Defaults |
-|---|---|---|
-| Silero VAD | v6.2.3 is latest; v6.0 claims 16% fewer errors on noisy real-life data; v6.2 improves edge cases and out-of-distribution stability [17] | threshold 0.5, neg_threshold = max(threshold - 0.15, 0.01), min_speech 250 ms, min_silence 100 ms, speech_pad 30 ms, 512-sample (32 ms) window at 16 kHz [16] |
-| whisper.cpp built-in VAD | Silero v6.2.0 as ggml (`ggml-silero-v6.2.0.bin`, fetched by `models/download-vad-model.cmd`) [18] | Same as Silero: 0.50 / 250 / 100 / 30 ms, overlap 0.10 s [18] |
-| faster-whisper | Silero | threshold 0.5, min_speech 0, **min_silence 2000 ms, speech_pad 400 ms** [19] |
-| LiveKit agents (Silero) | Real-time turn detection | min_speech 50 ms, **min_silence 550 ms, prefix padding 500 ms**, activation 0.5 [20] |
-| TEN VAD | Apache 2.0 "with additional conditions"; 16 kHz, 10 or 16 ms hops; 508 KB on Windows x64; ONNX model available; no Rust binding listed [21] | Vendor claims better precision than Silero and WebRTC and faster speech-to-silence transitions [21]. Unverified: one community test on a single file shows the two disagreeing wildly (Silero 13.0% speech vs TEN 78.8%) [22] |
-| WebRTC VAD | Legacy | In the hallucination study below it was far worse than Silero as a Whisper front-end [23] |
+| Engine                   | Version / status                                                                                                                            | Defaults                                                                                                                                                                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Silero VAD               | v6.2.3 is latest; v6.0 claims 16% fewer errors on noisy real-life data; v6.2 improves edge cases and out-of-distribution stability [17]     | threshold 0.5, neg_threshold = max(threshold - 0.15, 0.01), min_speech 250 ms, min_silence 100 ms, speech_pad 30 ms, 512-sample (32 ms) window at 16 kHz [16]                                                                 |
+| whisper.cpp built-in VAD | Silero v6.2.0 as ggml (`ggml-silero-v6.2.0.bin`, fetched by `models/download-vad-model.cmd`) [18]                                           | Same as Silero: 0.50 / 250 / 100 / 30 ms, overlap 0.10 s [18]                                                                                                                                                                 |
+| faster-whisper           | Silero                                                                                                                                      | threshold 0.5, min_speech 0, **min_silence 2000 ms, speech_pad 400 ms** [19]                                                                                                                                                  |
+| LiveKit agents (Silero)  | Real-time turn detection                                                                                                                    | min_speech 50 ms, **min_silence 550 ms, prefix padding 500 ms**, activation 0.5 [20]                                                                                                                                          |
+| TEN VAD                  | Apache 2.0 "with additional conditions"; 16 kHz, 10 or 16 ms hops; 508 KB on Windows x64; ONNX model available; no Rust binding listed [21] | Vendor claims better precision than Silero and WebRTC and faster speech-to-silence transitions [21]. Unverified: one community test on a single file shows the two disagreeing wildly (Silero 13.0% speech vs TEN 78.8%) [22] |
+| WebRTC VAD               | Legacy                                                                                                                                      | In the hallucination study below it was far worse than Silero as a Whisper front-end [23]                                                                                                                                     |
 
 Note the spread: the "transcription" defaults (faster-whisper: 2000 ms / 400 ms) are an order of magnitude more conservative than the raw Silero defaults (100 ms / 30 ms). The raw defaults are for detection, not for cutting audio you intend to transcribe.
 
@@ -143,17 +145,17 @@ Note the spread: the "transcription" defaults (faster-whisper: 2000 ms / 400 ms)
 
 **Recommended parameters:**
 
-| Item | Value | Evidence |
-|---|---|---|
-| Speech probability threshold | 0.5 on, 0.35 off | Measured defaults [16] |
-| Live auto-stop silence (toggle mode) | 700 ms (range 550 to 800) | Anecdotal: LiveKit uses 550 ms [20]; current code uses 550 ms. Dictation tolerates slightly longer pauses than conversation. Make it a setting |
-| Minimum speech to count as started | 100 to 250 ms | Defaults [16][20]; the current 120 ms is fine |
-| Pre-roll | 400 ms (range 300 to 500) | Anecdotal plus one measurement [26] |
-| Padding kept around speech when trimming | 200 ms each side (range 200 to 400) | Anecdotal: faster-whisper uses 400 ms [19]. Never use the 30 ms default for audio that will be transcribed |
-| Internal silence | Leave pauses under 2 s untouched; shorten longer ones to about 500 ms | Derived from [19] and [23] |
-| Leading/trailing silence | Trim to the padding above | Measured benefit [23] |
-| Minimum clip length | Zero-pad the tail to at least 1.1 s | Measured symptom [25]; Whisper zero-pads to 30 s internally anyway [1] |
-| Post-filter | If the whole transcript is one of the top hallucination strings ("thank you", "thanks for watching", "you", "so") and the clip was short or low-energy, discard | Measured [23] |
+| Item                                     | Value                                                                                                                                                           | Evidence                                                                                                                                       |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Speech probability threshold             | 0.5 on, 0.35 off                                                                                                                                                | Measured defaults [16]                                                                                                                         |
+| Live auto-stop silence (toggle mode)     | 700 ms (range 550 to 800)                                                                                                                                       | Anecdotal: LiveKit uses 550 ms [20]; current code uses 550 ms. Dictation tolerates slightly longer pauses than conversation. Make it a setting |
+| Minimum speech to count as started       | 100 to 250 ms                                                                                                                                                   | Defaults [16][20]; the current 120 ms is fine                                                                                                  |
+| Pre-roll                                 | 400 ms (range 300 to 500)                                                                                                                                       | Anecdotal plus one measurement [26]                                                                                                            |
+| Padding kept around speech when trimming | 200 ms each side (range 200 to 400)                                                                                                                             | Anecdotal: faster-whisper uses 400 ms [19]. Never use the 30 ms default for audio that will be transcribed                                     |
+| Internal silence                         | Leave pauses under 2 s untouched; shorten longer ones to about 500 ms                                                                                           | Derived from [19] and [23]                                                                                                                     |
+| Leading/trailing silence                 | Trim to the padding above                                                                                                                                       | Measured benefit [23]                                                                                                                          |
+| Minimum clip length                      | Zero-pad the tail to at least 1.1 s                                                                                                                             | Measured symptom [25]; Whisper zero-pads to 30 s internally anyway [1]                                                                         |
+| Post-filter                              | If the whole transcript is one of the top hallucination strings ("thank you", "thanks for watching", "you", "so") and the clip was short or low-energy, discard | Measured [23]                                                                                                                                  |
 
 **Pre-roll and the privacy posture.** A true pre-roll needs the microphone open before the hotkey, which conflicts with a privacy-first default. Suggested order:
 
@@ -187,14 +189,14 @@ Note the spread: the "transcription" defaults (faster-whisper: 2000 ms / 400 ms)
 
 **Recommendation:**
 
-| Rule | Detail |
-|---|---|
-| Decide once per utterance, not per callback | Store interleaved frames (or per-channel buffers) during capture; choose at `finish_recording` |
-| Default: best single channel for the whole utterance | Highest RMS over the speech region. No comb-filter risk; handles the common "one channel is dead or near-silent" device |
-| Ignore dead channels | Drop any channel more than 20 dB below the loudest |
-| Optional refinement | If the top two channels are within 3 dB and their zero-lag normalised correlation exceeds 0.9, average them; otherwise keep the single best |
-| Never | Sum without halving (clips), or take channel 0 blindly (the microphone is not always on channel 0) |
-| Live level meter | Can keep using the per-callback loudest channel, since it only drives the overlay |
+| Rule                                                 | Detail                                                                                                                                      |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decide once per utterance, not per callback          | Store interleaved frames (or per-channel buffers) during capture; choose at `finish_recording`                                              |
+| Default: best single channel for the whole utterance | Highest RMS over the speech region. No comb-filter risk; handles the common "one channel is dead or near-silent" device                     |
+| Ignore dead channels                                 | Drop any channel more than 20 dB below the loudest                                                                                          |
+| Optional refinement                                  | If the top two channels are within 3 dB and their zero-lag normalised correlation exceeds 0.9, average them; otherwise keep the single best |
+| Never                                                | Sum without halving (clips), or take channel 0 blindly (the microphone is not always on channel 0)                                          |
+| Live level meter                                     | Can keep using the per-callback loudest channel, since it only drives the overlay                                                           |
 
 The thresholds in this table (20 dB, 3 dB, 0.9) are my engineering suggestions, not sourced values.
 
@@ -202,30 +204,30 @@ The thresholds in this table (20 dB, 3 dB, 0.9) are my engineering suggestions, 
 
 **Metrics:**
 
-| Metric | Use | Tooling |
-|---|---|---|
-| WER (normalised) | Headline accuracy, comparable with published numbers | `jiwer.process_words` gives the alignment and error counts in one call [30]. The Open ASR Leaderboard removes punctuation and casing and applies a normaliser that closely follows Whisper's (numbers, spellings, filler removal) [29]; Whisper's English normaliser lives in the openai/whisper repo |
-| CER | Sensitive to small spelling and name errors; useful for short utterances | `jiwer.process_characters` [30] |
-| Formatted WER (WER_pc) | Dictation users see punctuation and case, so score them | Same alignment without lowercasing or punctuation stripping. LibriSpeech-PC defines WER, WER_c and WER_pc plus a Punctuation Error Rate that scores only the punctuation tokens [31]. An extended-Levenshtein method reports orthographic errors separately from word errors [32] |
-| Hallucination rate | Fraction of silence or noise clips yielding any text | Count non-empty outputs on non-speech clips, following [23] |
-| First-word and last-word accuracy | Directly measures pre-roll and endpointing | Compare first and last reference word with the hypothesis |
-| Latency | Already captured by `NativeLatencySnapshot` | RTFx = audio seconds / processing seconds [29] |
+| Metric                            | Use                                                                      | Tooling                                                                                                                                                                                                                                                                                               |
+| --------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WER (normalised)                  | Headline accuracy, comparable with published numbers                     | `jiwer.process_words` gives the alignment and error counts in one call [30]. The Open ASR Leaderboard removes punctuation and casing and applies a normaliser that closely follows Whisper's (numbers, spellings, filler removal) [29]; Whisper's English normaliser lives in the openai/whisper repo |
+| CER                               | Sensitive to small spelling and name errors; useful for short utterances | `jiwer.process_characters` [30]                                                                                                                                                                                                                                                                       |
+| Formatted WER (WER_pc)            | Dictation users see punctuation and case, so score them                  | Same alignment without lowercasing or punctuation stripping. LibriSpeech-PC defines WER, WER_c and WER_pc plus a Punctuation Error Rate that scores only the punctuation tokens [31]. An extended-Levenshtein method reports orthographic errors separately from word errors [32]                     |
+| Hallucination rate                | Fraction of silence or noise clips yielding any text                     | Count non-empty outputs on non-speech clips, following [23]                                                                                                                                                                                                                                           |
+| First-word and last-word accuracy | Directly measures pre-roll and endpointing                               | Compare first and last reference word with the hypothesis                                                                                                                                                                                                                                             |
+| Latency                           | Already captured by `NativeLatencySnapshot`                              | RTFx = audio seconds / processing seconds [29]                                                                                                                                                                                                                                                        |
 
 Report both normalised WER (for comparability) and WER_pc (for user-perceived quality). Always report the absolute number of utterances and errors; on a few hundred utterances a change of a few tenths of a WER point is noise.
 
 **Test sets:**
 
-| Set | Licence | Sample rate | Size / URL | Notes |
-|---|---|---|---|---|
-| LibriSpeech test-clean | CC BY 4.0 [33] | 16 kHz | 346 MB, https://openslr.trmal.net/resources/12/test-clean.tar.gz [33] | Standard; read speech; already 16 kHz so it **cannot** test the resampler |
-| LibriSpeech test-other | CC BY 4.0 [33] | 16 kHz | 328 MB, https://openslr.trmal.net/resources/12/test-other.tar.gz [33] | Harder recordings |
-| LibriSpeech dev-clean | CC BY 4.0 [33] | 16 kHz | 337 MB, https://openslr.trmal.net/resources/12/dev-clean.tar.gz [33] | Use for tuning so the test sets stay clean |
-| LibriSpeech-PC | CC BY 4.0 [31] | 16 kHz | Paper states code, data and models are public; locate via arXiv 2310.02943 [31] | Same audio with punctuation and capitalisation restored; the right reference for WER_pc |
-| TED-LIUM 3 | CC BY-NC-ND 3.0 [29][34] | not verified | See [34] | Non-commercial, no derivatives: fine for internal benchmarking, do not redistribute clips |
-| Earnings-22 | CC BY-SA 4.0 [29] | not verified | Via the Open ASR Leaderboard datasets on Hugging Face [29] | Long-form earnings calls with jargon; less like dictation |
-| Common Voice (English) | CC0 [34] | not verified (commonly 48 kHz MP3, not sourced) | Mozilla / Hugging Face | Real consumer microphones; a good proxy for dictation acoustics |
-| VCTK | CC BY 4.0 [34] | 48 kHz (not sourced, verify) | Edinburgh DataShare | Clean native high-rate speech: the best candidate for the resampler A/B |
-| whisper.cpp `samples/jfk.wav` | US government speech, generally treated as public domain (no explicit licence statement found) | 16 kHz | In the whisper.cpp repo [18]; already in `.localflow-runtime\bench-corpus` | Smoke test only; one utterance says nothing about WER |
+| Set                           | Licence                                                                                        | Sample rate                                     | Size / URL                                                                      | Notes                                                                                     |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| LibriSpeech test-clean        | CC BY 4.0 [33]                                                                                 | 16 kHz                                          | 346 MB, https://openslr.trmal.net/resources/12/test-clean.tar.gz [33]           | Standard; read speech; already 16 kHz so it **cannot** test the resampler                 |
+| LibriSpeech test-other        | CC BY 4.0 [33]                                                                                 | 16 kHz                                          | 328 MB, https://openslr.trmal.net/resources/12/test-other.tar.gz [33]           | Harder recordings                                                                         |
+| LibriSpeech dev-clean         | CC BY 4.0 [33]                                                                                 | 16 kHz                                          | 337 MB, https://openslr.trmal.net/resources/12/dev-clean.tar.gz [33]            | Use for tuning so the test sets stay clean                                                |
+| LibriSpeech-PC                | CC BY 4.0 [31]                                                                                 | 16 kHz                                          | Paper states code, data and models are public; locate via arXiv 2310.02943 [31] | Same audio with punctuation and capitalisation restored; the right reference for WER_pc   |
+| TED-LIUM 3                    | CC BY-NC-ND 3.0 [29][34]                                                                       | not verified                                    | See [34]                                                                        | Non-commercial, no derivatives: fine for internal benchmarking, do not redistribute clips |
+| Earnings-22                   | CC BY-SA 4.0 [29]                                                                              | not verified                                    | Via the Open ASR Leaderboard datasets on Hugging Face [29]                      | Long-form earnings calls with jargon; less like dictation                                 |
+| Common Voice (English)        | CC0 [34]                                                                                       | not verified (commonly 48 kHz MP3, not sourced) | Mozilla / Hugging Face                                                          | Real consumer microphones; a good proxy for dictation acoustics                           |
+| VCTK                          | CC BY 4.0 [34]                                                                                 | 48 kHz (not sourced, verify)                    | Edinburgh DataShare                                                             | Clean native high-rate speech: the best candidate for the resampler A/B                   |
+| whisper.cpp `samples/jfk.wav` | US government speech, generally treated as public domain (no explicit licence statement found) | 16 kHz                                          | In the whisper.cpp repo [18]; already in `.localflow-runtime\bench-corpus`      | Smoke test only; one utterance says nothing about WER                                     |
 
 **Reproducible local protocol:**
 
@@ -245,34 +247,34 @@ Caveat: a local read-back feature plays audio on the same machine, so network co
 
 ### B7. TTS quality levers
 
-| Lever | Practice | Evidence |
-|---|---|---|
-| Text normalisation | The biggest intelligibility lever in practice: expand numbers, dates, units, abbreviations and URLs before G2P. Keep a map from normalised text back to source character offsets so playback can highlight text [46] | Anecdotal |
-| Pronunciation | Layer: user lexicon, then dictionary G2P, then rule fallback. Kokoro uses `misaki`, which falls back to espeak-ng for out-of-dictionary words and supports inline overrides of the form `[Misaki](/phonemes/)` [45]. LocalFlow already has a custom dictionary for ASR; the same entries could carry pronunciations | Measured (documented behaviour) |
-| SSML | Useful as an input convention (`break`, `say-as`, `phoneme`, `sub`), but small local neural models generally do not parse it; translate tags into pauses and phoneme overrides yourself | Anecdotal (not sourced) |
-| Prosody | In local models prosody is driven mainly by punctuation, sentence length and the voice or style embedding. Chunk at sentence and paragraph boundaries; vendor guidance suggests 200 to 400 characters per chunk to preserve intonation [46] | Anecdotal (vendor) |
-| Emotion and style tags | Available in larger models; small models such as Kokoro offer fixed voices instead. For reading back dictated text a neutral voice is the right default | Anecdotal (not sourced) |
-| Speaker consistency and long form | Open autoregressive models deteriorate on long prompts; research attributes this to attention misalignment, and inference-time methods target prosodic drift, speaker inconsistency and sentence-boundary artefacts [46]. Mitigations: fixed voice embedding and seed for every chunk, sentence-level chunks, generate ahead of playback | Measured in the cited research; mitigations anecdotal |
-| Joins | Trim leading and trailing silence per chunk, insert a deliberate pause (about 150 to 250 ms after sentences, 400 to 600 ms after paragraphs), and apply a 5 to 20 ms fade or equal-power crossfade so joins do not click | **None found** as a published recommendation; values are standard audio practice (not sourced) |
-| Loudness | EBU R128 specifies -23 LUFS and -1 dBTP for broadcast; speech for mobile and podcast listening is normally targeted at about -16 LUFS with true peak at or below -1 dBTP (Apple's podcast guidance; ITU-R BS.2434 short-form figure) [44]. Normalise per document rather than per chunk, otherwise chunk-to-chunk level jumps appear | Measured (standards) |
-| Sample rate | Use the model's native rate (Kokoro examples write 24 kHz [45]) and resample once to the device rate with the same polyphase resampler from A1. Do not resample twice | Documented |
-| Codec | Local playback: uncompressed PCM straight to the output device. Export or network streaming: Opus is the usual choice; MP3 adds encoder delay and padding that complicate gapless chunk joins | Anecdotal (not sourced) |
-| Artefacts | Common ones: clicks at joins, metallic buzz, swallowed final words, repeated or skipped words in autoregressive models. A cheap automatic guard is to transcribe the output with the local ASR and regenerate any chunk whose WER against the input text exceeds a threshold (LocalFlow already ships the recogniser) | Anecdotal; the ASR check mirrors standard WER-via-ASR evaluation [42] |
-| Model choice for an offline Windows app | Kokoro-82M: Apache-licensed weights, 82 M parameters [45]; competitive in arenas despite its size (see B8) | Measured (model card and leaderboard snapshot) |
+| Lever                                   | Practice                                                                                                                                                                                                                                                                                                                                 | Evidence                                                                                       |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Text normalisation                      | The biggest intelligibility lever in practice: expand numbers, dates, units, abbreviations and URLs before G2P. Keep a map from normalised text back to source character offsets so playback can highlight text [46]                                                                                                                     | Anecdotal                                                                                      |
+| Pronunciation                           | Layer: user lexicon, then dictionary G2P, then rule fallback. Kokoro uses `misaki`, which falls back to espeak-ng for out-of-dictionary words and supports inline overrides of the form `[Misaki](/phonemes/)` [45]. LocalFlow already has a custom dictionary for ASR; the same entries could carry pronunciations                      | Measured (documented behaviour)                                                                |
+| SSML                                    | Useful as an input convention (`break`, `say-as`, `phoneme`, `sub`), but small local neural models generally do not parse it; translate tags into pauses and phoneme overrides yourself                                                                                                                                                  | Anecdotal (not sourced)                                                                        |
+| Prosody                                 | In local models prosody is driven mainly by punctuation, sentence length and the voice or style embedding. Chunk at sentence and paragraph boundaries; vendor guidance suggests 200 to 400 characters per chunk to preserve intonation [46]                                                                                              | Anecdotal (vendor)                                                                             |
+| Emotion and style tags                  | Available in larger models; small models such as Kokoro offer fixed voices instead. For reading back dictated text a neutral voice is the right default                                                                                                                                                                                  | Anecdotal (not sourced)                                                                        |
+| Speaker consistency and long form       | Open autoregressive models deteriorate on long prompts; research attributes this to attention misalignment, and inference-time methods target prosodic drift, speaker inconsistency and sentence-boundary artefacts [46]. Mitigations: fixed voice embedding and seed for every chunk, sentence-level chunks, generate ahead of playback | Measured in the cited research; mitigations anecdotal                                          |
+| Joins                                   | Trim leading and trailing silence per chunk, insert a deliberate pause (about 150 to 250 ms after sentences, 400 to 600 ms after paragraphs), and apply a 5 to 20 ms fade or equal-power crossfade so joins do not click                                                                                                                 | **None found** as a published recommendation; values are standard audio practice (not sourced) |
+| Loudness                                | EBU R128 specifies -23 LUFS and -1 dBTP for broadcast; speech for mobile and podcast listening is normally targeted at about -16 LUFS with true peak at or below -1 dBTP (Apple's podcast guidance; ITU-R BS.2434 short-form figure) [44]. Normalise per document rather than per chunk, otherwise chunk-to-chunk level jumps appear     | Measured (standards)                                                                           |
+| Sample rate                             | Use the model's native rate (Kokoro examples write 24 kHz [45]) and resample once to the device rate with the same polyphase resampler from A1. Do not resample twice                                                                                                                                                                    | Documented                                                                                     |
+| Codec                                   | Local playback: uncompressed PCM straight to the output device. Export or network streaming: Opus is the usual choice; MP3 adds encoder delay and padding that complicate gapless chunk joins                                                                                                                                            | Anecdotal (not sourced)                                                                        |
+| Artefacts                               | Common ones: clicks at joins, metallic buzz, swallowed final words, repeated or skipped words in autoregressive models. A cheap automatic guard is to transcribe the output with the local ASR and regenerate any chunk whose WER against the input text exceeds a threshold (LocalFlow already ships the recogniser)                    | Anecdotal; the ASR check mirrors standard WER-via-ASR evaluation [42]                          |
+| Model choice for an offline Windows app | Kokoro-82M: Apache-licensed weights, 82 M parameters [45]; competitive in arenas despite its size (see B8)                                                                                                                                                                                                                               | Measured (model card and leaderboard snapshot)                                                 |
 
 ### B8. TTS evaluation
 
-| Method | What it measures | Notes |
-|---|---|---|
-| MOS (crowd, absolute 1 to 5) | Overall naturalness | Expensive, noisy, not comparable across tests; surrounding context changes ratings [46] |
-| MUSHRA | Fine differences among systems against a hidden reference and anchor | Needs a reference and careful listeners; best for codec or vocoder comparisons (not sourced) |
-| Preference / arena (pairwise) | Which of two outputs listeners prefer | Most sample-efficient for small teams; this is how the public leaderboards work [39] |
-| UTMOS / UTMOSv2 | Predicted naturalness MOS, no reference needed | UTMOSv2 was the University of Tokyo system for VoiceMOS Challenge 2024 Track 1 (high-quality synthetic speech); MIT-licensed, pip-installable [41] |
-| NISQA | Predicted MOS plus noisiness, coloration and discontinuity sub-scores | Used alongside UTMOS as a non-intrusive predictor in recent TTS papers [42]. Discontinuity is useful for catching bad joins |
-| DNSMOS | Predicted signal quality and cleanliness | Used as a clarity proxy in TTS papers [42]; it does not measure naturalness |
-| WER via ASR | Intelligibility and robustness (skips, repeats) | Seed-TTS-eval protocol: Whisper-large-v3 for English [42] |
-| Speaker similarity | Voice consistency or cloning fidelity | Seed-TTS-eval: cosine similarity of WavLM-large speaker-verification embeddings between output and reference [42]. For single-voice read-back, compare each chunk with the first chunk to detect drift |
-| TTSDS2 | Distributional benchmark for human-quality TTS | [43] |
+| Method                        | What it measures                                                      | Notes                                                                                                                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| MOS (crowd, absolute 1 to 5)  | Overall naturalness                                                   | Expensive, noisy, not comparable across tests; surrounding context changes ratings [46]                                                                                                                |
+| MUSHRA                        | Fine differences among systems against a hidden reference and anchor  | Needs a reference and careful listeners; best for codec or vocoder comparisons (not sourced)                                                                                                           |
+| Preference / arena (pairwise) | Which of two outputs listeners prefer                                 | Most sample-efficient for small teams; this is how the public leaderboards work [39]                                                                                                                   |
+| UTMOS / UTMOSv2               | Predicted naturalness MOS, no reference needed                        | UTMOSv2 was the University of Tokyo system for VoiceMOS Challenge 2024 Track 1 (high-quality synthetic speech); MIT-licensed, pip-installable [41]                                                     |
+| NISQA                         | Predicted MOS plus noisiness, coloration and discontinuity sub-scores | Used alongside UTMOS as a non-intrusive predictor in recent TTS papers [42]. Discontinuity is useful for catching bad joins                                                                            |
+| DNSMOS                        | Predicted signal quality and cleanliness                              | Used as a clarity proxy in TTS papers [42]; it does not measure naturalness                                                                                                                            |
+| WER via ASR                   | Intelligibility and robustness (skips, repeats)                       | Seed-TTS-eval protocol: Whisper-large-v3 for English [42]                                                                                                                                              |
+| Speaker similarity            | Voice consistency or cloning fidelity                                 | Seed-TTS-eval: cosine similarity of WavLM-large speaker-verification embeddings between output and reference [42]. For single-voice read-back, compare each chunk with the first chunk to detect drift |
+| TTSDS2                        | Distributional benchmark for human-quality TTS                        | [43]                                                                                                                                                                                                   |
 
 **Public leaderboards (snapshot 2026-11-22, from a secondary aggregator; the official TTS Arena V2 leaderboard rendered empty when fetched, so verify live) [39]:**
 
@@ -304,16 +306,16 @@ Order of operations after capture:
 8. 16-bit PCM mono WAV, unchanged (A4).
 9. No denoiser, no AGC (A2).
 
-| Change | Priority | Evidence |
-|---|---|---|
-| Anti-aliased resampler | High | Signal defect certain; WER effect none found, measure it |
-| Per-utterance channel selection | High | Defect certain by inspection; WER effect none found |
-| Trim silence, pad short clips, hallucination post-filter | High | Measured [23][25] |
-| No denoiser | High (a non-change) | Measured, three studies [8][9][10] |
-| Pre-roll | Medium, opt-in | Anecdotal plus one small measurement [26] |
-| High-pass and static gain | Medium | None found; low risk |
-| Silero VAD through bundled whisper.cpp | Medium | Measured as a hallucination mitigation [23]; parameters anecdotal |
-| Speech-category WASAPI stream, TEN VAD | Low, experiment | None found / unverified vendor claims |
+| Change                                                   | Priority            | Evidence                                                          |
+| -------------------------------------------------------- | ------------------- | ----------------------------------------------------------------- |
+| Anti-aliased resampler                                   | High                | Signal defect certain; WER effect none found, measure it          |
+| Per-utterance channel selection                          | High                | Defect certain by inspection; WER effect none found               |
+| Trim silence, pad short clips, hallucination post-filter | High                | Measured [23][25]                                                 |
+| No denoiser                                              | High (a non-change) | Measured, three studies [8][9][10]                                |
+| Pre-roll                                                 | Medium, opt-in      | Anecdotal plus one small measurement [26]                         |
+| High-pass and static gain                                | Medium              | None found; low risk                                              |
+| Silero VAD through bundled whisper.cpp                   | Medium              | Measured as a hallucination mitigation [23]; parameters anecdotal |
+| Speech-category WASAPI stream, TEN VAD                   | Low, experiment     | None found / unverified vendor claims                             |
 
 ---
 
@@ -354,14 +356,14 @@ Order of operations after capture:
 33. OpenSLR 12, LibriSpeech: https://www.openslr.org/12
 34. Dataset licence catalogue (TED-LIUM 3, Common Voice, VCTK): https://voxkitchen.readthedocs.io/en/latest/datasets/
 35. to 38. (numbers not used)
-39. TTS Arena V2 about page: https://tts-agi-tts-arena-v2.hf.space/about ; snapshot aggregator used for scores: https://17nas.com/tts-leaderboard.php?lang=en-US ; original arena write-up: https://huggingface.co/blog/arena-tts
-40. Artificial Analysis Speech Arena: https://artificialanalysis.ai/text-to-speech/leaderboard
-41. UTMOSv2 (T05 system, VoiceMOS Challenge 2024): https://arxiv.org/abs/2409.09305 ; code: https://github.com/sarulab-speech/UTMOSv2
-42. Seed-TTS-eval protocol: https://github.com/BytedanceSpeech/seed-tts-eval
-43. TTSDS2: https://arxiv.org/html/2506.19441v1
-44. EBU R 128: https://tech.ebu.ch/docs/r/r128v4_0.pdf ; ITU-R BS.2434: https://www.itu.int/dms_pub/itu-r/opb/rep/R-REP-BS.2434-2018-PDF-E.pdf ; Auphonic loudness targets: https://auphonic.com/blog/2013/01/07/loudness-targets-mobile-audio-podcasts-radio-tv/
-45. Kokoro-82M model card: https://huggingface.co/hexgrad/Kokoro-82M ; misaki G2P: https://github.com/hexgrad/misaki
-46. Long-form TTS: NVIDIA Magpie-TTS long-form docs https://docs.nvidia.com/nemo/speech/latest/tts/magpietts-longform.html ; Deepgram chunking guidance https://developers.deepgram.com/docs/tts-text-chunking ; Inworld long text input https://docs.inworld.ai/tts/capabilities/long-text-input ; long-form consistency write-up https://smallest.ai/blog/long-form-tts-how-to-generate-consistent-speech-at-scale ; long-form degradation research https://arxiv.org/html/2603.06444v1
+36. TTS Arena V2 about page: https://tts-agi-tts-arena-v2.hf.space/about ; snapshot aggregator used for scores: https://17nas.com/tts-leaderboard.php?lang=en-US ; original arena write-up: https://huggingface.co/blog/arena-tts
+37. Artificial Analysis Speech Arena: https://artificialanalysis.ai/text-to-speech/leaderboard
+38. UTMOSv2 (T05 system, VoiceMOS Challenge 2024): https://arxiv.org/abs/2409.09305 ; code: https://github.com/sarulab-speech/UTMOSv2
+39. Seed-TTS-eval protocol: https://github.com/BytedanceSpeech/seed-tts-eval
+40. TTSDS2: https://arxiv.org/html/2506.19441v1
+41. EBU R 128: https://tech.ebu.ch/docs/r/r128v4_0.pdf ; ITU-R BS.2434: https://www.itu.int/dms_pub/itu-r/opb/rep/R-REP-BS.2434-2018-PDF-E.pdf ; Auphonic loudness targets: https://auphonic.com/blog/2013/01/07/loudness-targets-mobile-audio-podcasts-radio-tv/
+42. Kokoro-82M model card: https://huggingface.co/hexgrad/Kokoro-82M ; misaki G2P: https://github.com/hexgrad/misaki
+43. Long-form TTS: NVIDIA Magpie-TTS long-form docs https://docs.nvidia.com/nemo/speech/latest/tts/magpietts-longform.html ; Deepgram chunking guidance https://developers.deepgram.com/docs/tts-text-chunking ; Inworld long text input https://docs.inworld.ai/tts/capabilities/long-text-input ; long-form consistency write-up https://smallest.ai/blog/long-form-tts-how-to-generate-consistent-speech-at-scale ; long-form degradation research https://arxiv.org/html/2603.06444v1
 
 ## Known gaps
 
