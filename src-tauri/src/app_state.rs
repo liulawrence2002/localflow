@@ -2,7 +2,8 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use serde_json::Value;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     asr::{AsrProvider, MockAsrProvider},
@@ -18,6 +19,8 @@ pub struct LocalFlowRuntime {
     workflow: Mutex<WorkflowState>,
     settings: Mutex<SettingsSnapshot>,
     history: Mutex<Vec<HistoryItem>>,
+    /// Set at start-up when some or all settings had to fall back to their defaults.
+    storage_notice: Mutex<Option<String>>,
 }
 
 impl Default for LocalFlowRuntime {
@@ -26,6 +29,7 @@ impl Default for LocalFlowRuntime {
             workflow: Mutex::new(WorkflowState::default()),
             settings: Mutex::new(default_settings()),
             history: Mutex::new(Vec::new()),
+            storage_notice: Mutex::new(None),
         }
     }
 }
@@ -46,6 +50,22 @@ impl LocalFlowRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = settings;
+    }
+
+    /// Record why the stored settings could not be used as they were, for the settings window
+    /// and diagnostics.
+    pub fn set_storage_notice(&self, notice: Option<String>) {
+        *self
+            .storage_notice
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = notice;
+    }
+
+    pub fn storage_notice(&self) -> Option<String> {
+        self.storage_notice
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Change the settings under the lock: `change` edits a copy, `persist` stores it, and
@@ -85,6 +105,10 @@ pub struct AppStatus {
     pub settings: SettingsSnapshot,
     pub history: Vec<HistoryItem>,
     pub diagnostics: Vec<DiagnosticMetric>,
+    /// Set when LocalFlow started on default settings for some or all of them (a damaged
+    /// database, a stored value it could not read, or a database it cannot write). A sentence
+    /// for the user; `null` otherwise.
+    pub storage_notice: Option<String>,
 }
 
 /// Persisted user settings.
@@ -215,13 +239,25 @@ pub struct DiagnosticMetric {
     pub status: String,
 }
 
+/// Runs on a worker thread: building the status reads diagnostics, and a command that is not
+/// async runs on the main thread, where it would hold up the hotkeys and the overlay.
 #[tauri::command]
-pub fn get_status(
-    app: AppHandle,
-    runtime: State<'_, LocalFlowRuntime>,
-    native: State<'_, NativeDictationRuntime>,
-) -> Result<AppStatus, String> {
-    build_status(&runtime, Some(&native), Some(&app))
+pub async fn get_status(app: AppHandle) -> Result<AppStatus, String> {
+    run_blocking(move || {
+        let runtime = app.state::<LocalFlowRuntime>();
+        let native = app.state::<NativeDictationRuntime>();
+        build_status(&runtime, Some(&native), Some(&app))
+    })
+    .await
+}
+
+/// Run `work` on the blocking thread pool and wait for it.
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| "LocalFlow stopped the request unexpectedly.".to_string())?
 }
 
 fn build_status(
@@ -230,6 +266,7 @@ fn build_status(
     app: Option<&AppHandle>,
 ) -> Result<AppStatus, String> {
     let mut diagnostics = default_diagnostics();
+    diagnostics.push(storage_diagnostic(runtime.storage_notice().as_deref()));
     if let Some(native) = native {
         diagnostics.extend(native.latency_diagnostics());
     }
@@ -237,37 +274,86 @@ fn build_status(
         diagnostics.extend(crate::desktop_health::diagnostics(app));
         diagnostics.extend(crate::conversation::diagnostics(app));
     }
+    redact_diagnostics(&mut diagnostics);
 
     Ok(AppStatus {
         workflow: runtime.workflow.lock().map_err(lock_error)?.clone(),
         settings: runtime.settings.lock().map_err(lock_error)?.clone(),
         history: runtime.history.lock().map_err(lock_error)?.clone(),
         diagnostics,
+        storage_notice: runtime.storage_notice(),
     })
 }
 
+/// Diagnostics are shown and exported, so no row may carry the Windows user name.
+fn redact_diagnostics(rows: &mut [DiagnosticMetric]) {
+    for row in rows {
+        if let std::borrow::Cow::Owned(redacted) =
+            crate::storage::redact::redact_user_paths(&row.value)
+        {
+            row.value = redacted;
+        }
+    }
+}
+
+fn storage_diagnostic(notice: Option<&str>) -> DiagnosticMetric {
+    DiagnosticMetric {
+        label: "Settings storage".to_string(),
+        value: notice.unwrap_or("Saved settings loaded").to_string(),
+        status: if notice.is_some() { "warning" } else { "ok" }.to_string(),
+    }
+}
+
+/// Persists on a worker thread (see [`get_status`]). Saves are applied under the settings
+/// lock, one at a time.
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
+    app: AppHandle,
+    settings: SettingsSnapshot,
+) -> Result<AppStatus, String> {
+    run_blocking(move || {
+        let runtime = app.state::<LocalFlowRuntime>();
+        let native = app.state::<NativeDictationRuntime>();
+        runtime.update_settings(
+            |current| {
+                *current = merge_saved_settings(current, settings);
+                Ok(())
+            },
+            |next| {
+                crate::storage::save_settings(&app, next)
+                    .map_err(|error| format!("Could not persist settings: {error}"))
+            },
+        )?;
+        build_status(&runtime, Some(&native), Some(&app))
+    })
+    .await
+}
+
+/// Debug builds only: start a mock dictation.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub fn begin_mock_session(runtime: State<'_, LocalFlowRuntime>) -> Result<WorkflowState, String> {
+    begin_mock(&runtime)
+}
+
+/// Debug builds only: finish a mock dictation with `raw_transcript`.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub fn finish_mock_session(
     app: AppHandle,
     runtime: State<'_, LocalFlowRuntime>,
     native: State<'_, NativeDictationRuntime>,
-    settings: SettingsSnapshot,
+    raw_transcript: String,
 ) -> Result<AppStatus, String> {
-    runtime.update_settings(
-        |current| {
-            *current = merge_saved_settings(current, settings);
-            Ok(())
-        },
-        |next| {
-            crate::storage::save_settings(&app, next)
-                .map_err(|error| format!("Could not persist settings: {error}"))
-        },
-    )?;
+    finish_mock(&runtime, &raw_transcript)?;
     build_status(&runtime, Some(&native), Some(&app))
 }
 
-#[tauri::command]
-pub fn begin_mock_session(runtime: State<'_, LocalFlowRuntime>) -> Result<WorkflowState, String> {
+// The mock dictation behind the debug-only commands above. A release build has no command
+// that reaches it and the linker drops it; it stays compiled so the mock providers and
+// workflow events it drives are not reported as unused in their own modules.
+#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
+fn begin_mock(runtime: &LocalFlowRuntime) -> Result<WorkflowState, String> {
     let mut workflow = runtime.workflow.lock().map_err(lock_error)?;
     let session_id = format!("native-{}", Utc::now().timestamp_millis());
 
@@ -288,14 +374,9 @@ pub fn begin_mock_session(runtime: State<'_, LocalFlowRuntime>) -> Result<Workfl
     Ok(workflow.clone())
 }
 
-#[tauri::command]
-pub fn finish_mock_session(
-    app: AppHandle,
-    runtime: State<'_, LocalFlowRuntime>,
-    native: State<'_, NativeDictationRuntime>,
-    raw_transcript: String,
-) -> Result<AppStatus, String> {
-    let asr = MockAsrProvider::new(raw_transcript);
+#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
+fn finish_mock(runtime: &LocalFlowRuntime, raw_transcript: &str) -> Result<(), String> {
+    let asr = MockAsrProvider::new(raw_transcript.to_string());
     let refinement = MockRefinementProvider;
     let inserter = MockTextInserter::default();
 
@@ -372,9 +453,7 @@ pub fn finish_mock_session(
             .map_err(lock_error)?
             .insert(0, last_completed.into());
     }
-
-    drop(workflow);
-    build_status(&runtime, Some(&native), Some(&app))
+    Ok(())
 }
 
 #[tauri::command]
@@ -401,6 +480,167 @@ impl From<crate::workflow::SessionHistoryItem> for HistoryItem {
             final_text: value.final_text,
             cleanup_level: "balanced".to_string(),
         }
+    }
+}
+
+/// Read stored settings JSON.
+///
+/// A value that does not fit its field — a number out of the field's range, a word from a
+/// newer or older build, a value of the wrong kind — is corrected or left at its default
+/// instead of failing the whole load, which would have reset every setting. Numbers are
+/// clamped to the field's range (and rounded when a whole number is needed); anything else
+/// that does not fit is dropped, so the field keeps its default. A list keeps every entry that
+/// can be read. The second value counts the values corrected or dropped. Only text that is not
+/// JSON at all is an error.
+pub fn parse_settings(json: &str) -> Result<(SettingsSnapshot, usize), serde_json::Error> {
+    let stored: Value = serde_json::from_str(json)?;
+    if let Ok(settings) = SettingsSnapshot::deserialize(&stored) {
+        return Ok((settings, 0));
+    }
+
+    let mut repairs = 0;
+    let mut root = Value::Object(serde_json::Map::new());
+    match &stored {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                let path = [Step::Key(key.clone())];
+                if !rebuild(&mut root, &path, value, &mut repairs) {
+                    remove_at(&mut root, &path);
+                    repairs += 1;
+                }
+            }
+        }
+        _ => repairs += 1,
+    }
+    // `root` only ever holds what was accepted, so this cannot fail; the fallback is the
+    // defaults all the same.
+    let settings = SettingsSnapshot::deserialize(&root).unwrap_or_default();
+    Ok((settings, repairs))
+}
+
+#[derive(Debug, Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+fn settings_accept(root: &Value) -> bool {
+    SettingsSnapshot::deserialize(root).is_ok()
+}
+
+fn slot_mut<'a>(root: &'a mut Value, path: &[Step]) -> Option<&'a mut Value> {
+    path.iter().try_fold(root, |current, step| match step {
+        Step::Key(key) => current.as_object_mut()?.get_mut(key),
+        Step::Index(index) => current.as_array_mut()?.get_mut(*index),
+    })
+}
+
+fn set_at(root: &mut Value, path: &[Step], value: Value) {
+    let Some((last, parent)) = path.split_last() else {
+        *root = value;
+        return;
+    };
+    match (slot_mut(root, parent), last) {
+        (Some(Value::Object(fields)), Step::Key(key)) => {
+            fields.insert(key.clone(), value);
+        }
+        (Some(Value::Array(items)), Step::Index(index)) => {
+            if let Some(item) = items.get_mut(*index) {
+                *item = value;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn remove_at(root: &mut Value, path: &[Step]) {
+    let Some((last, parent)) = path.split_last() else {
+        return;
+    };
+    match (slot_mut(root, parent), last) {
+        (Some(Value::Object(fields)), Step::Key(key)) => {
+            fields.remove(key);
+        }
+        (Some(Value::Array(items)), Step::Index(index)) if *index < items.len() => {
+            items.remove(*index);
+        }
+        _ => {}
+    }
+}
+
+/// Numbers to try, widest range first, for a stored number its field refused: the value
+/// rounded, then clamped to the unsigned ranges the settings use.
+fn number_candidates(number: &serde_json::Number) -> Vec<Value> {
+    let Some(value) = number.as_f64().filter(|value| value.is_finite()) else {
+        return Vec::new();
+    };
+    let rounded = value.round();
+    let mut candidates = Vec::new();
+    if rounded >= i64::MIN as f64 && rounded <= i64::MAX as f64 {
+        candidates.push(Value::from(rounded as i64));
+    }
+    for max in [u32::MAX as f64, u16::MAX as f64, u8::MAX as f64] {
+        candidates.push(Value::from(rounded.clamp(0.0, max) as u64));
+    }
+    candidates
+}
+
+/// Put `stored` at `path` in `root`, keeping only what still reads as settings. Returns
+/// whether anything was kept there; the caller removes the slot otherwise.
+fn rebuild(root: &mut Value, path: &[Step], stored: &Value, repairs: &mut usize) -> bool {
+    set_at(root, path, stored.clone());
+    if settings_accept(root) {
+        return true;
+    }
+    match stored {
+        Value::Object(fields) => {
+            set_at(root, path, Value::Object(serde_json::Map::new()));
+            if !settings_accept(root) {
+                return false;
+            }
+            for (key, value) in fields {
+                let mut child = path.to_vec();
+                child.push(Step::Key(key.clone()));
+                if !rebuild(root, &child, value, repairs) {
+                    remove_at(root, &child);
+                    *repairs += 1;
+                }
+            }
+            true
+        }
+        Value::Array(items) => {
+            set_at(root, path, Value::Array(Vec::new()));
+            if !settings_accept(root) {
+                return false;
+            }
+            for item in items {
+                let index = match slot_mut(root, path) {
+                    Some(Value::Array(kept)) => {
+                        kept.push(Value::Null);
+                        kept.len() - 1
+                    }
+                    _ => return true,
+                };
+                let mut child = path.to_vec();
+                child.push(Step::Index(index));
+                if !rebuild(root, &child, item, repairs) {
+                    remove_at(root, &child);
+                    *repairs += 1;
+                }
+            }
+            true
+        }
+        Value::Number(number) => {
+            for candidate in number_candidates(number) {
+                set_at(root, path, candidate);
+                if settings_accept(root) {
+                    *repairs += 1;
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
     }
 }
 
@@ -642,5 +882,133 @@ mod tests {
         let loaded: SettingsSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(serde_json::to_string(&loaded).unwrap(), json);
+    }
+
+    #[test]
+    fn well_formed_settings_need_no_repair() {
+        let json = serde_json::to_string(&default_settings()).unwrap();
+        let (settings, repaired) = parse_settings(&json).unwrap();
+        assert_eq!(repaired, 0);
+        assert_eq!(serde_json::to_string(&settings).unwrap(), json);
+    }
+
+    #[test]
+    fn an_unknown_activation_mode_falls_back_without_losing_the_rest() {
+        let stored = r#"{
+            "hotkeys": {"defaultHotkey": "Ctrl+Alt+D", "activationMode": "hold_and_wiggle"},
+            "models": {"language": "de"},
+            "snippets": [{"id": "s1", "trigger": "sig", "expansion": "Bye", "enabled": true}]
+        }"#;
+        assert!(serde_json::from_str::<SettingsSnapshot>(stored).is_err());
+
+        let (settings, repaired) = parse_settings(stored).unwrap();
+
+        assert_eq!(repaired, 1);
+        assert_eq!(settings.hotkeys.default_hotkey, "Ctrl+Alt+D");
+        assert!(matches!(
+            settings.hotkeys.activation_mode,
+            ActivationMode::PushToTalk
+        ));
+        assert_eq!(settings.models.language, "de");
+        assert_eq!(settings.snippets[0].expansion, "Bye");
+    }
+
+    #[test]
+    fn out_of_range_numbers_are_clamped_to_their_field() {
+        let stored = r#"{
+            "models": {"asrThreads": 900, "ollamaModel": "kept:1b"},
+            "microphone": {"endOfSpeechMs": 100000, "maxRecordingSeconds": -3},
+            "styles": [{"id": "st", "name": "Mine", "conciseness": 6.6, "formality": 300}]
+        }"#;
+
+        let (settings, repaired) = parse_settings(stored).unwrap();
+
+        assert_eq!(repaired, 5);
+        assert_eq!(settings.models.asr_threads, u8::MAX);
+        assert_eq!(settings.models.ollama_model, "kept:1b");
+        assert_eq!(settings.microphone.end_of_speech_ms, u16::MAX);
+        assert_eq!(settings.microphone.max_recording_seconds, 0);
+        assert_eq!(settings.styles[0].name, "Mine");
+        assert_eq!(settings.styles[0].conciseness, 7);
+        assert_eq!(settings.styles[0].formality, u8::MAX);
+    }
+
+    #[test]
+    fn a_bad_list_entry_keeps_the_entry_and_the_other_entries() {
+        let stored = r#"{"dictionary": [
+            {"id": "d1", "phrase": "Tauri", "caseSensitive": "very"},
+            {"id": "d2", "phrase": "cpal", "caseSensitive": true},
+            "not an entry"
+        ]}"#;
+
+        let (settings, repaired) = parse_settings(stored).unwrap();
+
+        assert_eq!(repaired, 2);
+        let phrases: Vec<&str> = settings
+            .dictionary
+            .iter()
+            .map(|entry| entry.phrase.as_str())
+            .collect();
+        assert_eq!(phrases, ["Tauri", "cpal"]);
+        assert!(!settings.dictionary[0].case_sensitive);
+        assert!(settings.dictionary[1].case_sensitive);
+    }
+
+    #[test]
+    fn a_section_of_the_wrong_kind_takes_its_defaults() {
+        let (settings, repaired) =
+            parse_settings(r#"{"models": 5, "privacy": {"historyRetention": "off"}}"#).unwrap();
+        assert_eq!(repaired, 1);
+        assert_eq!(settings.models.ollama_model, "llama3.2:3b");
+        assert_eq!(settings.privacy.history_retention, "off");
+
+        let (settings, repaired) = parse_settings("[1, 2]").unwrap();
+        assert_eq!(repaired, 1);
+        assert_eq!(settings.models.language, "auto");
+    }
+
+    #[test]
+    fn text_that_is_not_json_is_still_an_error() {
+        assert!(parse_settings("{not json").is_err());
+    }
+
+    #[test]
+    fn the_storage_notice_is_shown_as_a_warning_row() {
+        let ok = storage_diagnostic(None);
+        assert_eq!(ok.status, "ok");
+        let warning = storage_diagnostic(Some("The settings database was damaged."));
+        assert_eq!(warning.status, "warning");
+        assert_eq!(warning.value, "The settings database was damaged.");
+
+        let runtime = LocalFlowRuntime::default();
+        assert_eq!(runtime.storage_notice(), None);
+        runtime.set_storage_notice(Some("reset".into()));
+        let status = build_status(&runtime, None, None).unwrap();
+        assert_eq!(status.storage_notice.as_deref(), Some("reset"));
+        assert!(status
+            .diagnostics
+            .iter()
+            .any(|row| row.label == "Settings storage" && row.value == "reset"));
+    }
+
+    #[test]
+    fn diagnostics_never_carry_the_user_folder() {
+        let mut rows = vec![DiagnosticMetric {
+            label: "ASR engine".into(),
+            value: r"model C:\Users\someone\models\x.gguf".into(),
+            status: "ok".into(),
+        }];
+        redact_diagnostics(&mut rows);
+        assert_eq!(rows[0].value, r"model <user folder>\models\x.gguf");
+    }
+
+    #[test]
+    fn the_mock_dictation_records_one_history_item() {
+        let runtime = LocalFlowRuntime::default();
+        begin_mock(&runtime).unwrap();
+        finish_mock(&runtime, "hello there").unwrap();
+        let history = runtime.history.lock().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].final_text, "Hello there.");
     }
 }

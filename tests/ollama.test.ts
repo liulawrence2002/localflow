@@ -146,6 +146,57 @@ describe("Ollama local provider", () => {
     expect(payload).toContain("Send it to Sarah.");
   });
 
+  it("never follows a redirect away from the local server", async () => {
+    const inits: Array<RequestInit | undefined> = [];
+    await discoverOllamaModels({
+      fetchImpl: async (_input, init) => {
+        inits.push(init);
+        return jsonResponse({ models: [] });
+      },
+    });
+
+    expect(inits[0]?.redirect).toBe("error");
+  });
+
+  it("refuses an Ollama URL on another local port before fetch is called", async () => {
+    await expect(
+      discoverOllamaModels({
+        baseUrl: "http://127.0.0.1:8080/api",
+        fetchImpl: async () => {
+          throw new Error("fetch should not be called");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "remote_network_blocked" });
+  });
+
+  it("does not show Ollama's error body, which can quote the prompt", async () => {
+    const provider = new OllamaRefinementProvider({
+      model: "llama3.2:3b",
+      fetchImpl: async () =>
+        jsonResponse(
+          { error: "cannot process prompt: call me at five five five" },
+          { status: 500, statusText: "Internal Server Error" },
+        ),
+    });
+
+    const failure = await provider.complete("{}").catch((error: Error) => error);
+
+    expect(failure).toMatchObject({ code: "http_error", status: 500 });
+    expect(String((failure as Error).message)).not.toContain("five five five");
+    expect(String((failure as Error).message)).toContain("HTTP 500");
+  });
+
+  it("reports a malformed model list as an invalid response", async () => {
+    const status = await checkOllamaStatus({
+      fetchImpl: async () => jsonResponse({ models: "not a list" }),
+    });
+
+    expect(status.ok).toBe(false);
+    if (!status.ok) {
+      expect(status.code).toBe("invalid_response");
+    }
+  });
+
   it("integrates with the local cleanup JSON contract", async () => {
     const provider = new OllamaRefinementProvider({
       model: "llama3.1:8b-instruct",

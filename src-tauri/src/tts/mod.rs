@@ -24,6 +24,7 @@ use std::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::cancel::CancelFlag;
 use fish_s2::{FishS2Backend, FishS2Config, FishS2Provider};
 use provider::{prepare_text_for_speech, TextToSpeechProvider, TtsError};
 
@@ -53,6 +54,11 @@ pub struct TtsRuntime {
     engine: Mutex<Option<EngineSlot>>,
     /// Bumped by every speak and stop request; a worker only acts while its value is current.
     generation: AtomicU64,
+    /// Bumped by every speak request only. The idle unload compares it, so a stop, which
+    /// changes the generation, does not count as use and keep the engine loaded for ever.
+    requests: AtomicU64,
+    /// Cancels the synthesis of the current request, which stops the engine working on it.
+    current: Mutex<Option<CancelFlag>>,
     /// Set to interrupt playback in progress.
     stop: Arc<AtomicBool>,
     speaking: AtomicBool,
@@ -63,9 +69,73 @@ impl Default for TtsRuntime {
         Self {
             engine: Mutex::new(None),
             generation: AtomicU64::new(0),
+            requests: AtomicU64::new(0),
+            current: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
             speaking: AtomicBool::new(false),
         }
+    }
+}
+
+/// One accepted read-aloud request.
+#[derive(Debug, Clone)]
+struct Request {
+    generation: u64,
+    /// The request count after this one, for the idle unload.
+    ticket: u64,
+    cancel: CancelFlag,
+}
+
+impl TtsRuntime {
+    fn lock_current(&self) -> std::sync::MutexGuard<'_, Option<CancelFlag>> {
+        self.current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Accept a new request. It supersedes the one in progress, whose synthesis is cancelled
+    /// and whose playback is interrupted.
+    fn begin_request(&self) -> Request {
+        let ticket = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let cancel = CancelFlag::default();
+        if let Some(previous) = self.lock_current().replace(cancel.clone()) {
+            previous.cancel();
+        }
+        // Interrupt playback from an earlier request; the worker clears the flag again.
+        self.stop.store(true, Ordering::SeqCst);
+        Request {
+            generation,
+            ticket,
+            cancel,
+        }
+    }
+
+    /// Stop whatever is being read: cancel its synthesis and interrupt its playback.
+    fn stop_requests(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(current) = self.lock_current().take() {
+            current.cancel();
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        self.speaking.store(false, Ordering::SeqCst);
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::SeqCst) == generation
+    }
+
+    /// Whether nothing was asked for since the request with `ticket` and nothing is playing.
+    fn idle_since(&self, ticket: u64) -> bool {
+        self.requests.load(Ordering::SeqCst) == ticket && !self.speaking.load(Ordering::SeqCst)
+    }
+
+    /// Take the engine out of its slot without waiting on anything but the slot itself.
+    fn take_engine(&self) -> Option<EngineSlot> {
+        self.engine
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 
@@ -165,7 +235,8 @@ fn locate_install(app: &AppHandle) -> Result<FishInstall, String> {
     Err(last_reason)
 }
 
-/// Resolve (building or reusing) the voice engine.
+/// Resolve (building or reusing) the voice engine. An engine for an older install is shut
+/// down after the slot is released, so nothing waits on the slot while it stops.
 fn resolve_engine(app: &AppHandle) -> Result<Arc<dyn TextToSpeechProvider>, TtsError> {
     let install = locate_install(app).map_err(TtsError::Unavailable)?;
     let key = EngineKey {
@@ -175,40 +246,45 @@ fn resolve_engine(app: &AppHandle) -> Result<Arc<dyn TextToSpeechProvider>, TtsE
     };
 
     let runtime = app.state::<TtsRuntime>();
-    let mut slot = runtime
-        .engine
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (provider, previous) = {
+        let mut slot = runtime
+            .engine
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    if let Some(existing) = slot.as_ref() {
-        if existing.key == key {
-            return Ok(existing.provider.clone());
+        if let Some(existing) = slot.as_ref() {
+            if existing.key == key {
+                return Ok(existing.provider.clone());
+            }
         }
-    }
-    if let Some(previous) = slot.take() {
+        let previous = slot.take();
+
+        let provider: Arc<dyn TextToSpeechProvider> =
+            Arc::new(FishS2Provider::new(FishS2Config {
+                server_path: install.server_path,
+                model_path: install.model_path,
+                tokenizer_path: install.tokenizer_path,
+                backend: install.backend,
+                threads: crate::asr::sidecar::default_asr_thread_count(),
+                // Loading several gigabytes of weights can take a while on a cold disk.
+                startup_timeout: Duration::from_secs(180),
+            })?);
+        tracing::info!(engine = %provider.describe(), "voice engine selected");
+        *slot = Some(EngineSlot {
+            key,
+            provider: provider.clone(),
+        });
+        (provider, previous)
+    };
+    if let Some(previous) = previous {
         previous.provider.shutdown();
     }
-
-    let provider: Arc<dyn TextToSpeechProvider> = Arc::new(FishS2Provider::new(FishS2Config {
-        server_path: install.server_path,
-        model_path: install.model_path,
-        tokenizer_path: install.tokenizer_path,
-        backend: install.backend,
-        threads: crate::asr::sidecar::default_asr_thread_count(),
-        // Loading several gigabytes of weights can take a while on a cold disk.
-        startup_timeout: Duration::from_secs(180),
-    })?);
-    tracing::info!(engine = %provider.describe(), "voice engine selected");
-    *slot = Some(EngineSlot {
-        key,
-        provider: provider.clone(),
-    });
     Ok(provider)
 }
 
 /// Start reading `text` aloud. Returns once the request is accepted; synthesis and playback
 /// continue on a worker thread and report through [`TTS_EVENT`]. A new request supersedes
-/// one in progress.
+/// one in progress, and the engine stops working on the old one.
 pub fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
     // A conversation's microphone would take the reading for the user and answer it.
     if crate::conversation::is_active(app) {
@@ -217,29 +293,34 @@ pub fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
     let text = prepare_text_for_speech(text).ok_or_else(|| TtsError::NothingToSay.to_string())?;
     // Fail fast, before spawning anything, when no engine is installed.
     locate_install(app)?;
+    // Reading a window and reading a transcript would talk over each other.
+    crate::page_reader::stop(app);
 
-    let runtime = app.state::<TtsRuntime>();
-    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    // Interrupt playback from an earlier request; the worker below clears the flag again.
-    runtime.stop.store(true, Ordering::SeqCst);
-
+    let request = app.state::<TtsRuntime>().begin_request();
     let app = app.clone();
-    thread::spawn(move || run_request(&app, generation, &text));
+    thread::spawn(move || {
+        run_request(&app, &request, &text);
+        schedule_idle_unload(app, request.ticket);
+    });
     Ok(())
 }
 
-fn is_current(app: &AppHandle, generation: u64) -> bool {
-    app.state::<TtsRuntime>().generation.load(Ordering::SeqCst) == generation
-}
-
-fn run_request(app: &AppHandle, generation: u64, text: &str) {
+fn run_request(app: &AppHandle, request: &Request, text: &str) {
+    let runtime = app.state::<TtsRuntime>();
     emit(app, "synthesizing", "Preparing speech");
 
-    let outcome = resolve_engine(app).and_then(|engine| engine.synthesize(text));
+    let outcome = resolve_engine(app).and_then(|engine| {
+        // Superseded while the engine was being found: do not start on it at all.
+        if !runtime.is_current(request.generation) {
+            return Err(TtsError::Cancelled);
+        }
+        engine.synthesize(text, &request.cancel)
+    });
     let audio = match outcome {
         Ok(audio) => audio,
+        Err(TtsError::Cancelled) => return,
         Err(error) => {
-            if is_current(app, generation) {
+            if runtime.is_current(request.generation) {
                 tracing::warn!(error = %error, "read-aloud failed");
                 emit(app, "error", error.to_string());
             }
@@ -248,17 +329,16 @@ fn run_request(app: &AppHandle, generation: u64, text: &str) {
     };
 
     // A stop or a newer request arrived while synthesising: discard the audio.
-    if !is_current(app, generation) {
+    if !runtime.is_current(request.generation) {
         return;
     }
 
-    let runtime = app.state::<TtsRuntime>();
     let stop = runtime.stop.clone();
     stop.store(false, Ordering::SeqCst);
     // A stop that landed between the check above and clearing the flag would otherwise be
     // lost, and the whole clip would play. `stop()` changes the generation before it sets the
     // flag, so checking again here catches it; a stop after this point leaves the flag set.
-    if !is_current(app, generation) {
+    if !runtime.is_current(request.generation) {
         return;
     }
     runtime.speaking.store(true, Ordering::SeqCst);
@@ -271,7 +351,7 @@ fn run_request(app: &AppHandle, generation: u64, text: &str) {
 
     let played = playback::play_blocking(&audio, &stop);
 
-    if is_current(app, generation) {
+    if runtime.is_current(request.generation) {
         runtime.speaking.store(false, Ordering::SeqCst);
         match played {
             Ok(_) => emit(app, "idle", "Finished"),
@@ -280,40 +360,32 @@ fn run_request(app: &AppHandle, generation: u64, text: &str) {
                 emit(app, "error", error);
             }
         }
-        schedule_idle_unload(app.clone(), generation);
     }
 }
 
-/// Unload the engine if nothing else has been requested for [`IDLE_UNLOAD_AFTER`].
-fn schedule_idle_unload(app: AppHandle, generation: u64) {
+/// Unload the engine if nothing else has been asked for [`IDLE_UNLOAD_AFTER`] after the
+/// request with `ticket` ended, however it ended.
+fn schedule_idle_unload(app: AppHandle, ticket: u64) {
     thread::spawn(move || {
         thread::sleep(IDLE_UNLOAD_AFTER);
-        if is_current(&app, generation) {
+        if app.state::<TtsRuntime>().idle_since(ticket) {
             tracing::info!("unloading the idle voice engine");
             shutdown(&app);
         }
     });
 }
 
-/// Stop reading aloud. Synthesis already in progress finishes in the sidecar, but its audio
-/// is discarded.
+/// Stop reading aloud: the engine stops working on the request in progress and playback
+/// is interrupted.
 pub fn stop(app: &AppHandle) {
-    let runtime = app.state::<TtsRuntime>();
-    runtime.generation.fetch_add(1, Ordering::SeqCst);
-    runtime.stop.store(true, Ordering::SeqCst);
-    runtime.speaking.store(false, Ordering::SeqCst);
+    app.state::<TtsRuntime>().stop_requests();
     emit(app, "idle", "Stopped");
 }
 
-/// Stop the voice engine sidecar and free its memory. Called on idle and when the app exits.
+/// Stop the voice engine sidecar and free its memory. Called on idle and when the app
+/// exits; it does not wait for a model that is still loading (the start is called off).
 pub fn shutdown(app: &AppHandle) {
-    let slot = app
-        .state::<TtsRuntime>()
-        .engine
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    if let Some(slot) = slot {
+    if let Some(slot) = app.state::<TtsRuntime>().take_engine() {
         slot.provider.shutdown();
     }
 }
@@ -367,6 +439,51 @@ mod tests {
         std::fs::create_dir_all(dir.join("fish")).unwrap();
         std::fs::create_dir_all(dir.join("models").join("fish")).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_stop_does_not_keep_the_engine_from_unloading() {
+        let runtime = TtsRuntime::default();
+        let request = runtime.begin_request();
+
+        // The user stops it; before the fix the stop changed the counter the idle check
+        // compared, so the engine was never unloaded.
+        runtime.stop_requests();
+
+        assert!(!runtime.is_current(request.generation));
+        assert!(runtime.idle_since(request.ticket));
+    }
+
+    #[test]
+    fn a_newer_request_keeps_the_engine_and_supersedes_the_old_one() {
+        let runtime = TtsRuntime::default();
+        let first = runtime.begin_request();
+        let second = runtime.begin_request();
+
+        assert!(!runtime.idle_since(first.ticket));
+        assert!(runtime.idle_since(second.ticket));
+        assert!(!runtime.is_current(first.generation));
+        assert!(runtime.is_current(second.generation));
+        // The engine is told to stop working on the first, not just to drop its audio.
+        assert!(first.cancel.is_cancelled());
+        assert!(!second.cancel.is_cancelled());
+    }
+
+    #[test]
+    fn stopping_cancels_the_synthesis_in_progress() {
+        let runtime = TtsRuntime::default();
+        let request = runtime.begin_request();
+        runtime.speaking.store(true, Ordering::SeqCst);
+        assert!(
+            !runtime.idle_since(request.ticket),
+            "never unload while playing"
+        );
+
+        runtime.stop_requests();
+
+        assert!(request.cancel.is_cancelled());
+        assert!(runtime.stop.load(Ordering::SeqCst));
+        assert!(!runtime.speaking.load(Ordering::SeqCst));
     }
 
     #[test]

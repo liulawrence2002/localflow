@@ -71,13 +71,15 @@ pub fn words(text: &str) -> Vec<Word> {
 pub struct PhraseReplacer {
     /// First word -> (number of further words, further words -> replacement), sorted so the
     /// longest phrases are tried first.
-    index: HashMap<String, Vec<(usize, HashMap<Vec<String>, Vec<String>>)>>,
+    index: HashMap<String, Vec<(usize, Tails)>>,
 }
+
+/// Further words -> replacement, for one first word and one phrase length.
+type Tails = HashMap<Vec<String>, Vec<String>>;
 
 impl PhraseReplacer {
     pub fn new(pairs: &[(&str, &str)]) -> Self {
-        let mut grouped: HashMap<String, HashMap<usize, HashMap<Vec<String>, Vec<String>>>> =
-            HashMap::new();
+        let mut grouped: HashMap<String, HashMap<usize, Tails>> = HashMap::new();
         for (spoken, written) in pairs {
             let spoken: Vec<String> = spoken.split_whitespace().map(str::to_string).collect();
             let Some((first, rest)) = spoken.split_first() else {
@@ -95,7 +97,7 @@ impl PhraseReplacer {
             .into_iter()
             .map(|(first, by_length)| {
                 let mut by_length: Vec<_> = by_length.into_iter().collect();
-                by_length.sort_by(|a, b| b.0.cmp(&a.0));
+                by_length.sort_by_key(|entry| std::cmp::Reverse(entry.0));
                 (first, by_length)
             })
             .collect();

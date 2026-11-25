@@ -19,10 +19,15 @@ import {
   synthesizeBands,
 } from "../packages/localflow-sdk/src/react/topology/spectrumMath";
 
+/** An element that must exist; a missing one fails the comparison it is used in. */
+function at(values: ArrayLike<number>, index: number): number {
+  return values[index] ?? Number.NaN;
+}
+
 function argmax(values: Float32Array): number {
   let best = 0;
   for (let index = 1; index < values.length; index += 1) {
-    if (values[index] > values[best]) {
+    if (at(values, index) > at(values, best)) {
       best = index;
     }
   }
@@ -32,7 +37,7 @@ function argmax(values: Float32Array): number {
 function sum(values: Float32Array, from: number, to: number): number {
   let total = 0;
   for (let index = from; index < to; index += 1) {
-    total += values[index];
+    total += at(values, index);
   }
   return total;
 }
@@ -106,8 +111,8 @@ describe("synthesizeBands", () => {
     synthesizeBands(low, 1, 0.05, 0, 0);
     synthesizeBands(high, 1, 0.95, 0, 0);
     // 80 Hz sits near band 1 and about 300 Hz near band 9.
-    expect(low[1]).toBeGreaterThan(high[1]);
-    expect(high[9]).toBeGreaterThan(low[9]);
+    expect(at(low, 1)).toBeGreaterThan(at(high, 1));
+    expect(at(high, 9)).toBeGreaterThan(at(low, 9));
 
     const dark = new Float32Array(BAND_COUNT);
     const bright = new Float32Array(BAND_COUNT);
@@ -160,7 +165,7 @@ describe("smoothBands", () => {
     smoothBands(twice, target, 8);
     smoothBands(twice, target, 8);
     for (let index = 0; index < BAND_COUNT; index += 1) {
-      expect(twice[index]).toBeCloseTo(once[index], 5);
+      expect(at(twice, index)).toBeCloseTo(at(once, index), 5);
     }
   });
 
@@ -170,8 +175,8 @@ describe("smoothBands", () => {
     const falling = new Float32Array(BAND_COUNT).fill(1);
     smoothBands(falling, new Float32Array(BAND_COUNT), 30);
 
-    expect(rising[0]).toBeGreaterThan(1 - falling[0]);
-    expect(falling[BAND_COUNT - 1]).toBeLessThan(falling[0]);
+    expect(at(rising, 0)).toBeGreaterThan(1 - at(falling, 0));
+    expect(at(falling, BAND_COUNT - 1)).toBeLessThan(at(falling, 0));
   });
 });
 
@@ -187,7 +192,7 @@ describe("bandsToColumns", () => {
     expect(columns[0]).toBeCloseTo(0, 6);
     expect(columns[COLUMN_COUNT - 1]).toBeCloseTo(1, 6);
     for (let column = 1; column < COLUMN_COUNT; column += 1) {
-      expect(columns[column]).toBeGreaterThanOrEqual(columns[column - 1] - 1e-6);
+      expect(at(columns, column)).toBeGreaterThanOrEqual(at(columns, column - 1) - 1e-6);
     }
   });
 
@@ -290,7 +295,7 @@ describe("rampColor", () => {
     let previous = -1;
     for (let step = 0; step <= 10; step += 1) {
       rampColor(step / 10, accent, 0.5, out);
-      const brightness = out[0] + out[1] + out[2];
+      const brightness = at(out, 0) + at(out, 1) + at(out, 2);
       expect(brightness).toBeGreaterThanOrEqual(previous);
       previous = brightness;
     }

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds the local Fish S2 Pro voice engine (s2.cpp) into .localflow-runtime\fish.
+  Builds the local Fish S2 Pro voice engine (s2.cpp) into a LocalFlow runtime folder (fish).
 
 .DESCRIPTION
   LocalFlow's read-aloud feature runs Fish Audio S2 Pro through s2.cpp, a community ggml
@@ -22,6 +22,20 @@
   s2.cpp is alpha software. The S2 Pro weights are under the Fish Audio Research License:
   research and personal non-commercial use only.
 
+  The build runs in a fresh folder of your own (-BuildDir), which is emptied first and
+  removed afterwards unless -KeepBuildTree is given. Only s2.exe and the ggml DLLs the
+  chosen backend needs are copied to <Destination>\fish.
+
+.PARAMETER Destination
+  The runtime folder. Default: the checkout's .localflow-runtime when this script is in a Git
+  checkout, otherwise %LOCALAPPDATA%\LocalFlow, which an installed LocalFlow reads. Download
+  the model (Get-FishModel.ps1) into the same folder.
+
+.PARAMETER BuildDir
+  Where to compile. Default: lf-s2-<backend> in your user profile. It must not exist, or must
+  be owned by you. The Vulkan backend needs short paths: if its build fails on path length,
+  pass a shorter folder that you own.
+
 .EXAMPLE
   .\scripts\Build-FishS2.ps1                  # CPU build
   .\scripts\Build-FishS2.ps1 -Backend cuda    # NVIDIA GPU build
@@ -29,6 +43,8 @@
 param(
   [ValidateSet("cpu", "vulkan", "cuda")]
   [string]$Backend = "cpu",
+  [string]$Destination,
+  [string]$BuildDir,
   # Commit of rodrigomatta/s2.cpp this integration was written against.
   [string]$Commit = "2c33261938da1a41d713768b1b391b4d368d7d2c",
   [switch]$KeepBuildTree
@@ -36,13 +52,33 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$runtime = Join-Path $repoRoot ".localflow-runtime"
+if (-not $Destination) {
+  # A checkout keeps its runtime next to the source; an installed copy reads the per-user
+  # folder.
+  $checkout = Split-Path -Parent $PSScriptRoot
+  if (Test-Path -LiteralPath (Join-Path $checkout ".git")) {
+    $Destination = Join-Path $checkout ".localflow-runtime"
+  }
+  else {
+    $Destination = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "LocalFlow"
+  }
+}
+$runtime = $Destination
 $source = Join-Path $runtime "build\s2.cpp"
 # The Vulkan backend builds a nested shader-generator project whose paths exceed the Windows
-# 260-character limit when the build tree sits under the repository, so build in a short
-# directory at the drive root. It is removed afterwards unless -KeepBuildTree is given.
-$buildDir = Join-Path "$env:SystemDrive\" "lf-s2-$Backend"
+# 260-character limit when the build tree sits under the repository, so the default build
+# folder is short and directly in the user profile. It is never at the drive root, where
+# any local account can create folders: a folder planted there could feed the build.
+if (-not $BuildDir) { $BuildDir = Join-Path $env:USERPROFILE "lf-s2-$Backend" }
+$buildDir = [IO.Path]::GetFullPath($BuildDir)
+
+function Assert-OwnedByMe([string]$Path) {
+  $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $owner = (Get-Acl -LiteralPath $Path).Owner
+  if ($owner -ne $me) {
+    throw "$Path already exists and is owned by $owner, not $me. Delete it or pass another -BuildDir."
+  }
+}
 $installDir = Join-Path $runtime "fish"
 
 function Find-CMake {
@@ -88,6 +124,13 @@ function Find-VsFile([string]$pattern) {
 $cmake = Find-CMake
 Write-Host "Using CMake: $cmake"
 
+# Start from an empty build folder, so nothing left in it can end up in the engine.
+if (Test-Path -LiteralPath $buildDir) {
+  Assert-OwnedByMe $buildDir
+  Remove-Item -LiteralPath $buildDir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $buildDir | Out-Null
+
 if (-not (Test-Path -LiteralPath (Join-Path $source ".git"))) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $source) | Out-Null
   git clone --recurse-submodules https://github.com/rodrigomatta/s2.cpp.git $source
@@ -127,7 +170,7 @@ cmake -S "$source" -B "$buildDir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DS2_CUDA=
 if errorlevel 1 exit /b 1
 cmake --build "$buildDir" --parallel 2>&1
 "@
-    $batchPath = Join-Path $env:TEMP "localflow-build-s2-cuda.cmd"
+    $batchPath = Join-Path ([IO.Path]::GetTempPath()) ("localflow-build-s2-cuda-" + [Guid]::NewGuid().ToString("N") + ".cmd")
     Set-Content -LiteralPath $batchPath -Value $batch -Encoding ascii
     & cmd.exe /c "`"$batchPath`""
     $buildExit = $LASTEXITCODE
@@ -149,17 +192,34 @@ finally {
   Pop-Location
 }
 
-$exe = Get-ChildItem -LiteralPath $buildDir -Recurse -Filter s2.exe | Select-Object -First 1
-if (-not $exe) { throw "The build finished but s2.exe was not found under $buildDir." }
+# The Visual Studio generator puts the program in Release\, Ninja in the build folder itself.
+$exe = @("Release\s2.exe", "s2.exe") |
+  ForEach-Object { Join-Path $buildDir $_ } |
+  Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+  Select-Object -First 1
+if (-not $exe) { throw "The build finished but s2.exe is not in $buildDir\Release or $buildDir." }
+
+# The ggml libraries a shared-library build produces for this backend, each exactly once.
+$backendDll = @{ cpu = $null; vulkan = "ggml-vulkan.dll"; cuda = "ggml-cuda.dll" }[$Backend]
+$expectedDlls = @("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", $backendDll) | Where-Object { $_ }
+$dlls = @()
+foreach ($name in $expectedDlls) {
+  $found = @(Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter $name)
+  if ($found.Count -gt 1) { throw "The build produced more than one $name; not installing." }
+  if ($found.Count -eq 1) { $dlls += $found[0].FullName }
+}
+if ($backendDll -and -not ($dlls | Where-Object { (Split-Path -Leaf $_) -eq $backendDll })) {
+  throw "The build finished but $backendDll was not produced."
+}
 
 # Replace any previous engine so a stale binary or DLL from another backend cannot linger.
 if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-Copy-Item -LiteralPath $exe.FullName -Destination $installDir
-# Shared-library builds place ggml DLLs elsewhere in the tree; the engine needs them beside it.
-Get-ChildItem -LiteralPath $buildDir -Recurse -Filter *.dll |
-  ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $installDir -Force }
+Copy-Item -LiteralPath $exe -Destination $installDir
+# Shared-library builds place the ggml DLLs elsewhere in the tree; the engine needs them
+# beside it.
+foreach ($dll in $dlls) { Copy-Item -LiteralPath $dll -Destination $installDir -Force }
 if ($Backend -eq "cuda") {
   # The engine loads the CUDA runtime and cuBLAS at start; ship them beside it so it runs
   # without a system-wide CUDA install.

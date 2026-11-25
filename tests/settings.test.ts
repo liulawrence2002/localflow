@@ -5,7 +5,9 @@ import {
   addReplacementRule,
   addSnippet,
   addStyleProfile,
+  clampForNative,
   createCustomStyleDraft,
+  endOfSpeechRange,
   normalizeSettings,
   removeDictionaryEntry,
   removeReplacementRule,
@@ -109,6 +111,71 @@ describe("settings mutations", () => {
     expect(removeStyleProfile(updated, "style-issues").styles).toHaveLength(
       defaultSettings.styles.length,
     );
+  });
+
+  it("never deletes a row because an edit emptied a required field", () => {
+    const blankPhrase = updateDictionaryEntry(defaultSettings, "dict-pytorch", { phrase: "   " });
+    expect(blankPhrase.dictionary).toHaveLength(defaultSettings.dictionary.length);
+    expect(blankPhrase.dictionary.find((entry) => entry.id === "dict-pytorch")?.phrase).toBe(
+      "PyTorch",
+    );
+
+    const blankRule = updateReplacementRule(defaultSettings, "replace-pytorch", { correct: "" });
+    expect(blankRule.replacements.find((rule) => rule.id === "replace-pytorch")).toMatchObject({
+      incorrect: "pie torch",
+      correct: "PyTorch",
+    });
+
+    const blankSnippet = updateSnippet(defaultSettings, "snippet-signature", { trigger: "" });
+    expect(
+      blankSnippet.snippets.find((snippet) => snippet.id === "snippet-signature")?.trigger,
+    ).toBe("insert my signature");
+  });
+
+  it("keeps the only style when its name is cleared, so styles is never empty", () => {
+    const single = { ...defaultSettings, styles: defaultSettings.styles.slice(0, 1) };
+    const id = single.styles[0]?.id ?? "";
+
+    const updated = updateStyleProfile(single, id, { name: "" });
+
+    expect(updated.styles).toHaveLength(1);
+    expect(updated.styles[0]?.name).toBe(single.styles[0]?.name);
+  });
+
+  it("keeps the inner space of a committed phrase and trims only its ends", () => {
+    const updated = updateReplacementRule(defaultSettings, "replace-pytorch", {
+      incorrect: "  pie  torch ",
+    });
+
+    expect(updated.replacements[0]?.incorrect).toBe("pie  torch");
+  });
+
+  it("clamps numbers into the ranges the native fields hold", () => {
+    const clamped = clampForNative({
+      ...defaultSettings,
+      models: { ...defaultSettings.models, asrThreads: -3 },
+      microphone: {
+        ...defaultSettings.microphone,
+        endOfSpeechMs: 99_999,
+        maxRecordingSeconds: 1.6,
+      },
+    });
+
+    expect(clamped.models.asrThreads).toBe(1);
+    expect(clamped.microphone.endOfSpeechMs).toBe(endOfSpeechRange.max);
+    expect(clamped.microphone.maxRecordingSeconds).toBe(2);
+    expect(clampForNative(defaultSettings).microphone.endOfSpeechMs).toBe(900);
+  });
+
+  it("loads a partial payload without throwing", () => {
+    const partial = { models: { ollamaModel: "qwen3:4b" } } as unknown as typeof defaultSettings;
+
+    const normalized = normalizeSettings(partial);
+
+    expect(normalized.models.ollamaModel).toBe("qwen3:4b");
+    expect(normalized.dictionary).toEqual([]);
+    expect(normalized.styles.length).toBeGreaterThan(0);
+    expect(normalized.microphone.endOfSpeechMs).toBe(900);
   });
 
   it("normalizes saved settings that predate new style fields", () => {

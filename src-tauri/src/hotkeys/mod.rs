@@ -62,8 +62,9 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
         Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
         Code::Space,
     );
-    let handler_default_shortcut = default_shortcut.clone();
-    let handler_fallback_shortcut = fallback_shortcut.clone();
+    // `Shortcut` is `Copy`: the handler keeps its own copies for matching.
+    let handler_default_shortcut = default_shortcut;
+    let handler_fallback_shortcut = fallback_shortcut;
     let handler_escape_shortcut = escape_cancel_shortcut();
     let handler_conversation_shortcuts = conversation_shortcuts();
     let handler_reading_shortcuts = reading_shortcuts();
@@ -75,7 +76,10 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                 // native_dictation), so here it always means "cancel the current session".
                 if shortcut == &handler_escape_shortcut {
                     if matches!(event.state(), ShortcutState::Pressed) {
-                        if let Err(error) = native_dictation::handle_hotkey(app.clone(), "cancel") {
+                        if let Err(error) = native_dictation::handle_hotkey(
+                            app.clone(),
+                            native_dictation::HotkeyInput::Cancel,
+                        ) {
                             tracing::warn!(error = %error, "escape-to-cancel handling failed");
                         }
                     }
@@ -114,9 +118,13 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                 };
 
                 if let Some(shortcut_label) = shortcut_label {
-                    let state = match event.state() {
-                        ShortcutState::Pressed => "pressed",
-                        ShortcutState::Released => "released",
+                    let (state, input) = match event.state() {
+                        ShortcutState::Pressed => {
+                            ("pressed", native_dictation::HotkeyInput::Pressed)
+                        }
+                        ShortcutState::Released => {
+                            ("released", native_dictation::HotkeyInput::Released)
+                        }
                     };
                     desktop_health::record_hotkey_event(app, shortcut_label, state);
                     let _ = app.emit(
@@ -131,7 +139,7 @@ pub fn register_default_hotkey(app: &AppHandle) -> tauri::Result<()> {
                         tracing::info!("dictation hotkey ignored during a conversation");
                         return;
                     }
-                    if let Err(error) = native_dictation::handle_hotkey(app.clone(), state) {
+                    if let Err(error) = native_dictation::handle_hotkey(app.clone(), input) {
                         tracing::warn!(error = %error, "native dictation hotkey handling failed");
                     }
                 }

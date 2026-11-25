@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Mutex, Once,
+        mpsc, Mutex, Once, TryLockError,
     },
     thread,
     time::{Duration, Instant},
@@ -278,6 +278,9 @@ pub struct TranscribeCppProvider {
     loaded: Mutex<Option<Loaded>>,
     /// Set after the GPU failed once, so every later load in this process uses the CPU.
     gpu_failed: AtomicBool,
+    /// Set by a shutdown that found the model in use (a load, warm-up or transcription can
+    /// hold it for seconds); whoever holds it frees it when done, so the shutdown never waits.
+    unload_when_done: AtomicBool,
 }
 
 static SILENCE_NATIVE_LOGGING: Once = Once::new();
@@ -294,6 +297,7 @@ impl TranscribeCppProvider {
             options,
             loaded: Mutex::new(None),
             gpu_failed: AtomicBool::new(false),
+            unload_when_done: AtomicBool::new(false),
         }
     }
 
@@ -315,6 +319,13 @@ impl TranscribeCppProvider {
         self.loaded
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// End of an operation on the model: free it if a shutdown asked for that meanwhile.
+    fn finish(&self, guard: &mut Option<Loaded>) {
+        if self.unload_when_done.swap(false, Ordering::SeqCst) {
+            *guard = None;
+        }
     }
 
     fn ensure_loaded<'a>(&self, guard: &'a mut Option<Loaded>) -> Result<&'a mut Loaded, AsrError> {
@@ -638,10 +649,13 @@ impl SpeechToTextProvider for TranscribeCppProvider {
             super::model_label(&self.config.model_path),
             self.options.device.label()
         );
-        if let Some(loaded) = self.lock().as_ref() {
-            description.push_str(&format!(", running on {}", loaded.backend));
-            if let Some(gpu) = &loaded.gpu {
-                description.push_str(&format!(" ({gpu})"));
+        // Not worth waiting for a transcription in progress to say where it runs.
+        if let Ok(loaded) = self.loaded.try_lock() {
+            if let Some(loaded) = loaded.as_ref() {
+                description.push_str(&format!(", running on {}", loaded.backend));
+                if let Some(gpu) = &loaded.gpu {
+                    description.push_str(&format!(" ({gpu})"));
+                }
             }
         }
         description
@@ -651,7 +665,9 @@ impl SpeechToTextProvider for TranscribeCppProvider {
     /// would hold the model lock while the user's own first phrase waits.
     fn prepare(&self) -> Result<(), AsrError> {
         let mut guard = self.lock();
-        self.ensure_loaded(&mut guard).map(|_| ())
+        let result = self.ensure_loaded(&mut guard).map(|_| ());
+        self.finish(&mut guard);
+        result
     }
 
     /// Load the model if needed and, when [`TranscribeCppOptions::warm_up`] is set (the
@@ -662,21 +678,37 @@ impl SpeechToTextProvider for TranscribeCppProvider {
     /// that fails or times out is logged and ignored, as long as the model is loaded.
     fn warm_up(&self) -> Result<(), AsrError> {
         let mut guard = self.lock();
-        if self.options.warm_up {
+        let result = if self.options.warm_up {
             self.warm_up_locked(&mut guard)
         } else {
             self.ensure_loaded(&mut guard).map(|_| ())
-        }
+        };
+        self.finish(&mut guard);
+        result
     }
 
     fn transcribe(&self, request: &TranscriptionRequest<'_>) -> Result<Transcription, AsrError> {
         let mut guard = self.lock();
-        self.run_with_cpu_retry(&mut guard, request)
+        let result = self.run_with_cpu_retry(&mut guard, request);
+        self.finish(&mut guard);
+        result
     }
 
+    /// Free the model. Never waits: if a load, warm-up or transcription holds it, that
+    /// operation frees it when it ends. A later request loads it again.
     fn shutdown(&self) {
-        // Dropping the session and model frees the weights.
-        *self.lock() = None;
+        match self.loaded.try_lock() {
+            // Dropping the session and model frees the weights.
+            Ok(mut guard) => *guard = None,
+            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = None,
+            Err(TryLockError::WouldBlock) => {
+                self.unload_when_done.store(true, Ordering::SeqCst);
+                // The holder may have finished between the attempt and the flag.
+                if let Ok(mut guard) = self.loaded.try_lock() {
+                    self.finish(&mut guard);
+                }
+            }
+        }
     }
 }
 
@@ -694,6 +726,40 @@ mod tests {
             "models/ggml-tiny.en-q5_1.bin"
         )));
         assert!(!is_transcribe_cpp_model(Path::new("models/gguf")));
+    }
+
+    #[test]
+    fn shutting_down_while_the_model_is_in_use_does_not_wait_for_it() {
+        let provider = std::sync::Arc::new(TranscribeCppProvider::new(TranscribeCppConfig {
+            model_path: PathBuf::from("Z:/someone/models/parakeet.gguf"),
+        }));
+        // A transcription in progress holds the model.
+        let (holding_tx, holding_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = {
+            let provider = provider.clone();
+            thread::spawn(move || {
+                let mut guard = provider.lock();
+                holding_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                provider.finish(&mut guard);
+            })
+        };
+        holding_rx.recv().unwrap();
+
+        let started = Instant::now();
+        provider.shutdown();
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(provider.unload_when_done.load(Ordering::SeqCst));
+
+        // The holder frees it when it is done, and the request is cleared.
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(!provider.unload_when_done.load(Ordering::SeqCst));
+        assert!(provider.lock().is_none());
+        // An idle model is freed at once.
+        provider.shutdown();
+        assert!(!provider.unload_when_done.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 # LocalFlow: inference and performance optimisation research
 
+> **Research snapshot dated 2026-11-22.** Kept as written; model choices, measurements and plans may have changed since, and it may not match the current code. For what was decided and built, see [VOICE_ASSISTANT_PLAN.md](../../VOICE_ASSISTANT_PLAN.md) and [development/PLAN.md](../../development/PLAN.md).
+
 > Research appendix produced on 2026-11-22 by an independent research agent for the voice pipeline review. It is kept as written, apart from removing machine-specific paths. Line references to `native_dictation.rs` describe the code before the changes in `../VOICE_PIPELINE_REVIEW.md`. Figures are labelled by the author as vendor, third-party, reproduced, or unverified; treat unlabelled numbers as unverified.
 
 Date: 2026-11-22. Scope: local speech pipeline (whisper.cpp + Ollama) on Windows, Tauri 2 / Rust. Cloud inference is out of scope except for the economics table in section 7.
@@ -33,14 +35,14 @@ Latest tagged release is **v1.9.5 (2026-10-06)**, a maintenance release that upd
 
 Windows assets in b5454 (the v1.9.5 build) [3]:
 
-| Asset | Size | What it is |
-|---|---|---|
-| `whisper-bin-x64.zip` | 8.9 MB | CPU only. Ships multiple `ggml-cpu-*.dll` variants and picks one at run time (the local copy loads `ggml-cpu-alderlake.dll`) |
-| `whisper-blas-bin-x64.zip` | 21.7 MB | CPU plus OpenBLAS |
-| `whisper-bin-win-cuda-12.4.0-x64.zip` | 685 MB | CUDA 12.4 with cuBLAS |
-| `whisper-bin-win-cuda-11.8.0-x64.zip` | 285 MB | CUDA 11.8 with cuBLAS |
-| `whisper-bin-Win32.zip`, `whisper-blas-bin-Win32.zip` | 5.5 / 12.6 MB | 32-bit |
-| `whisper-bin-win-cpu-arm64.zip`, `whisper-bin-win-cuda-13.4-arm64.zip`, `whisper-bin-win-opencl-adreno-arm64.zip` | 4.4 / 291 / 4.9 MB | Windows on ARM |
+| Asset                                                                                                             | Size               | What it is                                                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `whisper-bin-x64.zip`                                                                                             | 8.9 MB             | CPU only. Ships multiple `ggml-cpu-*.dll` variants and picks one at run time (the local copy loads `ggml-cpu-alderlake.dll`) |
+| `whisper-blas-bin-x64.zip`                                                                                        | 21.7 MB            | CPU plus OpenBLAS                                                                                                            |
+| `whisper-bin-win-cuda-12.4.0-x64.zip`                                                                             | 685 MB             | CUDA 12.4 with cuBLAS                                                                                                        |
+| `whisper-bin-win-cuda-11.8.0-x64.zip`                                                                             | 285 MB             | CUDA 11.8 with cuBLAS                                                                                                        |
+| `whisper-bin-Win32.zip`, `whisper-blas-bin-Win32.zip`                                                             | 5.5 / 12.6 MB      | 32-bit                                                                                                                       |
+| `whisper-bin-win-cpu-arm64.zip`, `whisper-bin-win-cuda-13.4-arm64.zip`, `whisper-bin-win-opencl-adreno-arm64.zip` | 4.4 / 291 / 4.9 MB | Windows on ARM                                                                                                               |
 
 Notes:
 
@@ -68,14 +70,14 @@ whisper-server.exe
 
 Server defaults differ from the CLI, which matters when comparing outputs [1][2][5]:
 
-| Parameter | `whisper-cli` default | `whisper-server` default |
-|---|---|---|
-| beam size `-bs` | 5 | -1 (greedy) |
-| best of `-bo` | 5 | 2 |
-| threads `-t` | 4 | min(4, hardware threads) |
-| flash attention | on | on in source (`flash_attn = true`); the README help text still says false |
-| previous-text context | carried | `no_context = true` |
-| host / port | n/a | `127.0.0.1` / `8080` |
+| Parameter             | `whisper-cli` default | `whisper-server` default                                                  |
+| --------------------- | --------------------- | ------------------------------------------------------------------------- |
+| beam size `-bs`       | 5                     | -1 (greedy)                                                               |
+| best of `-bo`         | 5                     | 2                                                                         |
+| threads `-t`          | 4                     | min(4, hardware threads)                                                  |
+| flash attention       | on                    | on in source (`flash_attn = true`); the README help text still says false |
+| previous-text context | carried               | `no_context = true`                                                       |
+| host / port           | n/a                   | `127.0.0.1` / `8080`                                                      |
 
 Endpoints [1][2]:
 
@@ -113,11 +115,11 @@ Things to know before shipping it:
 
 ### 1.3 Server versus in-process bindings versus cold CLI
 
-| Option | Latency | Build and ship cost | Regression risk |
-|---|---|---|---|
-| Cold `whisper-cli` (today) | Pays model load + process spawn + temp WAV + JSON file every utterance | None | None |
-| `whisper-server` sidecar | Model stays loaded; audio and result travel over loopback HTTP, no temp files | Low. The exe already ships in the runtime. Needs spawn, health poll, restart-on-crash, port selection, shutdown on app exit | Low to medium. Different decode defaults (table above) will change output unless you set them explicitly |
-| `whisper-rs` in-process | Same warm benefit, no HTTP hop, direct `&[f32]` input, full access to `FullParams` (audio_ctx, callbacks, abort) | Medium to high. `whisper-rs` 0.16.0 (2026-03-12) builds whisper.cpp from source via `whisper-rs-sys` 0.15, needing CMake and a C++ toolchain and, unless `WHISPER_DONT_GENERATE_BINDINGS` is set, libclang. Features: `cuda`, `vulkan`, `openblas`, `metal`, `hipblas`. No OpenVINO feature. Repo is on Codeberg; 0.14.0 and 0.15.0 were yanked [8] | Medium. A native crash takes the whole Tauri process down; a sidecar crash does not. The crate tracks an older whisper.cpp than 1.9.5 (exact pinned version not stated on docs.rs) |
+| Option                     | Latency                                                                                                          | Build and ship cost                                                                                                                                                                                                                                                                                                                                 | Regression risk                                                                                                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cold `whisper-cli` (today) | Pays model load + process spawn + temp WAV + JSON file every utterance                                           | None                                                                                                                                                                                                                                                                                                                                                | None                                                                                                                                                                               |
+| `whisper-server` sidecar   | Model stays loaded; audio and result travel over loopback HTTP, no temp files                                    | Low. The exe already ships in the runtime. Needs spawn, health poll, restart-on-crash, port selection, shutdown on app exit                                                                                                                                                                                                                         | Low to medium. Different decode defaults (table above) will change output unless you set them explicitly                                                                           |
+| `whisper-rs` in-process    | Same warm benefit, no HTTP hop, direct `&[f32]` input, full access to `FullParams` (audio_ctx, callbacks, abort) | Medium to high. `whisper-rs` 0.16.0 (2026-03-12) builds whisper.cpp from source via `whisper-rs-sys` 0.15, needing CMake and a C++ toolchain and, unless `WHISPER_DONT_GENERATE_BINDINGS` is set, libclang. Features: `cuda`, `vulkan`, `openblas`, `metal`, `hipblas`. No OpenVINO feature. Repo is on Codeberg; 0.14.0 and 0.15.0 were yanked [8] | Medium. A native crash takes the whole Tauri process down; a sidecar crash does not. The crate tracks an older whisper.cpp than 1.9.5 (exact pinned version not stated on docs.rs) |
 
 Recommendation: **server sidecar first.** It captures nearly all of the latency win, keeps a crash boundary between native inference and the UI process, and fits the existing "platform code behind narrow modules, typed provider traits" convention: add a `WhisperServerProvider` beside the CLI provider and keep the CLI as the fallback path. Revisit `whisper-rs` only if you need streaming partials or per-token callbacks.
 
@@ -127,17 +129,17 @@ I found **no published measurement** of whisper-cli cold start versus server for
 
 Local measurement, 11 s clip, `tiny.en-q5_1`, medians of 5 [L]:
 
-| Configuration | Wall (ms) | whisper "load" (ms) | Encode (ms) | whisper "total" (ms) |
-|---|---|---|---|---|
-| CLI `-t 4`, beam 5 (CLI default) | 1900 | 127 | 952 | 1793 |
-| CLI `-t 6`, beam 5 | 1856 | 130 | 931 | 1702 |
-| CLI `-t 6 -bs 1 -bo 1` | 1975 | 151 | 1248 | 1837 |
-| CLI `-t 8 -bs 1 -bo 1` | 1815 | 186 | 990 | 1705 |
-| CLI `-t 14 -bs 1 -bo 1` | 3500 | 190 | 1186 | 3304 |
-| CLI `-t 22 -bs 1 -bo 1` | 6472 | 182 | 1457 | 6227 |
-| CLI `-t 6 -bs 1 -bo 1 -ac 768` | 1401 | 159 | 508 | 1279 |
-| **Server**, `-t 6`, greedy, 6 requests | **880-1160** | 0 (already loaded) | n/a | n/a |
-| **Server**, same, `audio_ctx=768`, 3 requests | **434-446** | 0 | n/a | n/a |
+| Configuration                                 | Wall (ms)    | whisper "load" (ms) | Encode (ms) | whisper "total" (ms) |
+| --------------------------------------------- | ------------ | ------------------- | ----------- | -------------------- |
+| CLI `-t 4`, beam 5 (CLI default)              | 1900         | 127                 | 952         | 1793                 |
+| CLI `-t 6`, beam 5                            | 1856         | 130                 | 931         | 1702                 |
+| CLI `-t 6 -bs 1 -bo 1`                        | 1975         | 151                 | 1248        | 1837                 |
+| CLI `-t 8 -bs 1 -bo 1`                        | 1815         | 186                 | 990         | 1705                 |
+| CLI `-t 14 -bs 1 -bo 1`                       | 3500         | 190                 | 1186        | 3304                 |
+| CLI `-t 22 -bs 1 -bo 1`                       | 6472         | 182                 | 1457        | 6227                 |
+| CLI `-t 6 -bs 1 -bo 1 -ac 768`                | 1401         | 159                 | 508         | 1279                 |
+| **Server**, `-t 6`, greedy, 6 requests        | **880-1160** | 0 (already loaded)  | n/a         | n/a                  |
+| **Server**, same, `audio_ctx=768`, 3 requests | **434-446**  | 0                   | n/a         | n/a                  |
 
 Reading this honestly:
 
@@ -201,12 +203,12 @@ For push-to-talk dictation VAD does **not** shorten the encoder pass (still one 
 
 File sizes [16]:
 
-| Model | f16 (default `.bin`) | q8_0 | q5_1 / q5_0 |
-|---|---|---|---|
-| tiny.en | 74.1 MiB | 41.5 MiB | 30.7 MiB |
-| base.en | 141.1 MiB | 78.0 MiB | 57.0 MiB |
-| small.en | 465.0 MiB | 252.2 MiB | 181.3 MiB |
-| large-v3-turbo | 1549.3 MiB | 833.7 MiB | 547.4 MiB (q5_0) |
+| Model          | f16 (default `.bin`) | q8_0      | q5_1 / q5_0      |
+| -------------- | -------------------- | --------- | ---------------- |
+| tiny.en        | 74.1 MiB             | 41.5 MiB  | 30.7 MiB         |
+| base.en        | 141.1 MiB            | 78.0 MiB  | 57.0 MiB         |
+| small.en       | 465.0 MiB            | 252.2 MiB | 181.3 MiB        |
+| large-v3-turbo | 1549.3 MiB           | 833.7 MiB | 547.4 MiB (q5_0) |
 
 Published accuracy and speed evidence is thin:
 
@@ -224,14 +226,14 @@ Practical reading [E]:
 
 Published (small model, i7-12700K, 8 threads, beam 5, 13 min audio; whisper.cpp v1.7.2, faster-whisper v1.1.0) [15]:
 
-| Implementation | Precision | Time | RAM |
-|---|---|---|---|
-| openai/whisper | fp32 | 6m58s | 2335 MB |
-| whisper.cpp | fp32 | 2m05s | 1049 MB |
-| whisper.cpp (OpenVINO) | fp32 | 1m45s | 1642 MB |
-| faster-whisper | fp32 | 2m37s | 2257 MB |
-| faster-whisper | int8 | 1m42s | 1477 MB |
-| faster-whisper, batch 8 | int8 | 51s | 3608 MB |
+| Implementation          | Precision | Time  | RAM     |
+| ----------------------- | --------- | ----- | ------- |
+| openai/whisper          | fp32      | 6m58s | 2335 MB |
+| whisper.cpp             | fp32      | 2m05s | 1049 MB |
+| whisper.cpp (OpenVINO)  | fp32      | 1m45s | 1642 MB |
+| faster-whisper          | fp32      | 2m37s | 2257 MB |
+| faster-whisper          | int8      | 1m42s | 1477 MB |
+| faster-whisper, batch 8 | int8      | 51s   | 3608 MB |
 
 INT8 made faster-whisper 35% faster than its own fp32 and 18% faster than whisper.cpp fp32, at 40% more memory. Batching does not help single short utterances. The table has no quantised whisper.cpp row. GPU: large-v2 fp16 1m03s versus int8 59s with VRAM 4525 MB to 2926 MB [15].
 
@@ -255,17 +257,17 @@ faster-whisper itself is Python (latest wheel 1.2.1). The engine, CTranslate2 4.
 
 Sizes are current Windows x64 package sizes; they bound the native payload from above [19].
 
-| Backend | Current version | Payload | Hardware | Realistic for a Tauri app? |
-|---|---|---|---|---|
-| whisper.cpp CPU | 1.9.5 | 8.9 MB zip | Any x64 | Yes. Already shipped |
-| whisper.cpp CUDA | 1.9.5 | 285-685 MB zip | NVIDIA | As an optional download only |
-| whisper.cpp Vulkan | build from source | about 10-20 MB [E] | NVIDIA, AMD, Intel Arc | Yes, if you own the build. One binary for all GPUs; needs driver-quality testing |
-| ONNX Runtime CPU | 1.32.0 (2026-11-13) | 16.7 MB wheel | Any x64 | Yes. Rust `ort` crate wraps ORT 1.31. sherpa-onnx 2.0.3 bundles ORT plus ASR pipelines in a 26-31 MB Windows archive and has an official `sherpa-onnx` Rust crate |
-| ONNX Runtime DirectML | 1.24.4 (2026-03-17) | 25.1 MB wheel | Any DX12 GPU incl. Arc | Possible but fading: DirectML is in sustained engineering and its package has not followed ORT past 1.24; Microsoft directs new work to Windows ML [27] |
-| ONNX Runtime CUDA EP | 1.32.0 | 157.8 MB wheel, plus CUDA 12 and cuDNN 9 runtime libraries (several hundred MB more [E]) | NVIDIA | Optional download only |
-| OpenVINO | 2026.4.1 (2026-10-01) | 85 MB wheel; GenAI add-on 3.9 MB | Intel CPU, iGPU, NPU | Possible via the C API or the `openvino` crate (0.11.1). Intel-only benefit; needs models converted to IR; first-run compile delay [4] |
-| TensorRT | 11.5.0.63 | Very large (multi-hundred MB to GB class [E]) | NVIDIA | No. Engines are built per GPU and driver on the user's machine, taking minutes |
-| CTranslate2 | 4.9.1 | 23.1 MB wheel (CPU) | CPU; CUDA 12 + cuDNN 9 | Possible via `ct2rs` 0.11.2. No decisive gain over warm whisper.cpp at tiny/base |
+| Backend               | Current version       | Payload                                                                                  | Hardware               | Realistic for a Tauri app?                                                                                                                                        |
+| --------------------- | --------------------- | ---------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| whisper.cpp CPU       | 1.9.5                 | 8.9 MB zip                                                                               | Any x64                | Yes. Already shipped                                                                                                                                              |
+| whisper.cpp CUDA      | 1.9.5                 | 285-685 MB zip                                                                           | NVIDIA                 | As an optional download only                                                                                                                                      |
+| whisper.cpp Vulkan    | build from source     | about 10-20 MB [E]                                                                       | NVIDIA, AMD, Intel Arc | Yes, if you own the build. One binary for all GPUs; needs driver-quality testing                                                                                  |
+| ONNX Runtime CPU      | 1.32.0 (2026-11-13)   | 16.7 MB wheel                                                                            | Any x64                | Yes. Rust `ort` crate wraps ORT 1.31. sherpa-onnx 2.0.3 bundles ORT plus ASR pipelines in a 26-31 MB Windows archive and has an official `sherpa-onnx` Rust crate |
+| ONNX Runtime DirectML | 1.24.4 (2026-03-17)   | 25.1 MB wheel                                                                            | Any DX12 GPU incl. Arc | Possible but fading: DirectML is in sustained engineering and its package has not followed ORT past 1.24; Microsoft directs new work to Windows ML [27]           |
+| ONNX Runtime CUDA EP  | 1.32.0                | 157.8 MB wheel, plus CUDA 12 and cuDNN 9 runtime libraries (several hundred MB more [E]) | NVIDIA                 | Optional download only                                                                                                                                            |
+| OpenVINO              | 2026.4.1 (2026-10-01) | 85 MB wheel; GenAI add-on 3.9 MB                                                         | Intel CPU, iGPU, NPU   | Possible via the C API or the `openvino` crate (0.11.1). Intel-only benefit; needs models converted to IR; first-run compile delay [4]                            |
+| TensorRT              | 11.5.0.63             | Very large (multi-hundred MB to GB class [E])                                            | NVIDIA                 | No. Engines are built per GPU and driver on the user's machine, taking minutes                                                                                    |
+| CTranslate2           | 4.9.1                 | 23.1 MB wheel (CPU)                                                                      | CPU; CUDA 12 + cuDNN 9 | Possible via `ct2rs` 0.11.2. No decisive gain over warm whisper.cpp at tiny/base                                                                                  |
 
 **NPU (Core Ultra 7 165H, Meteor Lake).** OpenVINO's GenAI ASR pipeline documents CPU and GPU ("Use CPU or GPU as devices without any other code change"); the current page does not mention NPU [28]. Earlier release notes did list Whisper on NPU. The NPU plugin requires static shapes and has historically rejected dynamic-shape models [29]. I found no published Whisper-on-NPU latency for Meteor Lake. The first-generation NPU in the 165H is small; treat NPU as a power-saving experiment, not a latency play [E].
 
@@ -350,22 +352,22 @@ Functionally equivalent for this job; both accept `format`, `think`, `keep_alive
 
 ### 4.8 Small cleanup models in the Ollama library (checked 2026-11-22)
 
-| Tag | Size | Context | Notes |
-|---|---|---|---|
-| `llama3.2:3b` (current) | 2.0 GB | 128K | Text only, no thinking. Two years old but a clean baseline |
-| `llama3.2:1b` | 1.3 GB | 128K | Faster; more likely to alter wording |
-| `gemma3:1b` | 806 MB | 32K | Text only, no thinking. Good CPU-only candidate |
-| `gemma3:4b` | 3.4 GB | 128K | Text + image |
-| `gemma3:270m` | 292 MB | 32K | Too small for faithful rewriting [E] |
-| `qwen3:1.7b` | 1.4 GB | 40K | Thinking model: send `think:false` |
-| `qwen3:4b` | 2.5 GB | 256K | Thinking model |
-| `qwen3.5:0.8b` / `2b` / `4b` | 1.2-1.3 / 2.7-3.1 / 3.3-4.0 GB | 256K | Multimodal, thinking |
-| `gemma4:e2b` / `e4b` | 4.6-7.5 / 6.6-9.5 GB | 128K | Multimodal (vision, audio), thinking. Heavy for a cleanup job on 8 GB VRAM |
-| `gemma3n:e2b` / `e4b` | 7.8 / 9.8 GB | 32K | Listed sizes are far larger than the effective parameter count suggests |
-| `phi4-mini:3.8b` | 2.5 GB | 128K | Text only |
-| `granite4:micro` (3b) / `350m` | 2.1 GB / 708 MB | 128K / 32K | Tuned for instruction following and tools |
-| `lfm2.5-thinking:1.2b` | 731 MB | 125K | Thinking model |
-| `lfm2.5:8b` / `lfm2:24b` | 5.2 GB / 14 GB | 125K / 32K | The Ollama library has no small non-thinking LFM2 tag |
+| Tag                            | Size                           | Context    | Notes                                                                      |
+| ------------------------------ | ------------------------------ | ---------- | -------------------------------------------------------------------------- |
+| `llama3.2:3b` (current)        | 2.0 GB                         | 128K       | Text only, no thinking. Two years old but a clean baseline                 |
+| `llama3.2:1b`                  | 1.3 GB                         | 128K       | Faster; more likely to alter wording                                       |
+| `gemma3:1b`                    | 806 MB                         | 32K        | Text only, no thinking. Good CPU-only candidate                            |
+| `gemma3:4b`                    | 3.4 GB                         | 128K       | Text + image                                                               |
+| `gemma3:270m`                  | 292 MB                         | 32K        | Too small for faithful rewriting [E]                                       |
+| `qwen3:1.7b`                   | 1.4 GB                         | 40K        | Thinking model: send `think:false`                                         |
+| `qwen3:4b`                     | 2.5 GB                         | 256K       | Thinking model                                                             |
+| `qwen3.5:0.8b` / `2b` / `4b`   | 1.2-1.3 / 2.7-3.1 / 3.3-4.0 GB | 256K       | Multimodal, thinking                                                       |
+| `gemma4:e2b` / `e4b`           | 4.6-7.5 / 6.6-9.5 GB           | 128K       | Multimodal (vision, audio), thinking. Heavy for a cleanup job on 8 GB VRAM |
+| `gemma3n:e2b` / `e4b`          | 7.8 / 9.8 GB                   | 32K        | Listed sizes are far larger than the effective parameter count suggests    |
+| `phi4-mini:3.8b`               | 2.5 GB                         | 128K       | Text only                                                                  |
+| `granite4:micro` (3b) / `350m` | 2.1 GB / 708 MB                | 128K / 32K | Tuned for instruction following and tools                                  |
+| `lfm2.5-thinking:1.2b`         | 731 MB                         | 125K       | Thinking model                                                             |
+| `lfm2.5:8b` / `lfm2:24b`       | 5.2 GB / 14 GB                 | 125K / 32K | The Ollama library has no small non-thinking LFM2 tag                      |
 
 Source: ollama.com library tag pages [26].
 
@@ -383,15 +385,15 @@ Ollama now has cloud models and web search. They can be disabled with `"disable_
 
 ## 5. Warm starts and model-load strategy
 
-| Strategy | Per-utterance cost | Idle memory | Notes |
-|---|---|---|---|
-| Cold CLI, cold page cache (first use after boot) | Disk read of the model + load + spawn | 0 | Worst case. tiny.en-q5_1 is 31 MB so even this is short; small.en-q5_1 (181 MB) and turbo (547 MB) are not |
-| Cold CLI, warm page cache (today, steady state) | 127-190 ms load + about 100-250 ms spawn/teardown [L] | 0 private; the file stays in the OS standby list | The OS already does the "prewarm" for you after the first run |
-| Page-cache prewarm only (read the model file at app start or record start) | Removes only the disk-read part of the first call | 0 private | Cheap, zero risk. Useful as a fallback when the server is not running |
-| Persistent `whisper-server` | 0 load, 0 spawn | About 273 MB for unquantised tiny, 388 MB base, 852 MB small [4]; less for quantised files (roughly file size + buffers [E]) | Best latency. Needs supervision |
-| Lazy server + idle shutdown | 0 after the first utterance of a session; one load on the first | Zero when idle | Recommended. Start on record-key press, not on transcription, so the load overlaps the user's speech |
-| In-process `whisper-rs` context | 0 | Same as server, inside the app process | No crash isolation |
-| Ollama `keep_alive: "30m"` | 0 load while warm | Model size plus KV cache (about 2-3 GB RAM or VRAM for a 3B Q4 model [E]) | Already in place. Consider tying it to app activity instead of a flat 30 minutes |
+| Strategy                                                                   | Per-utterance cost                                              | Idle memory                                                                                                                  | Notes                                                                                                      |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Cold CLI, cold page cache (first use after boot)                           | Disk read of the model + load + spawn                           | 0                                                                                                                            | Worst case. tiny.en-q5_1 is 31 MB so even this is short; small.en-q5_1 (181 MB) and turbo (547 MB) are not |
+| Cold CLI, warm page cache (today, steady state)                            | 127-190 ms load + about 100-250 ms spawn/teardown [L]           | 0 private; the file stays in the OS standby list                                                                             | The OS already does the "prewarm" for you after the first run                                              |
+| Page-cache prewarm only (read the model file at app start or record start) | Removes only the disk-read part of the first call               | 0 private                                                                                                                    | Cheap, zero risk. Useful as a fallback when the server is not running                                      |
+| Persistent `whisper-server`                                                | 0 load, 0 spawn                                                 | About 273 MB for unquantised tiny, 388 MB base, 852 MB small [4]; less for quantised files (roughly file size + buffers [E]) | Best latency. Needs supervision                                                                            |
+| Lazy server + idle shutdown                                                | 0 after the first utterance of a session; one load on the first | Zero when idle                                                                                                               | Recommended. Start on record-key press, not on transcription, so the load overlaps the user's speech       |
+| In-process `whisper-rs` context                                            | 0                                                               | Same as server, inside the app process                                                                                       | No crash isolation                                                                                         |
+| Ollama `keep_alive: "30m"`                                                 | 0 load while warm                                               | Model size plus KV cache (about 2-3 GB RAM or VRAM for a 3B Q4 model [E])                                                    | Already in place. Consider tying it to app activity instead of a flat 30 minutes                           |
 
 Points to act on:
 
@@ -439,15 +441,15 @@ Not a latency optimisation, an accuracy one. Opening a cpal input stream takes t
 
 Assumes a heavy dictation user: 60 minutes of speech per day, 22 days a month = 22 hours of audio per month.
 
-| Option | Unit price | Cost at 22 h/month | Latency profile | Privacy |
-|---|---|---|---|---|
-| Local whisper.cpp + Ollama | 0 per minute | 0 marginal. Electricity on the order of cents per month [E] | No network; bounded by local hardware | Audio never leaves the device |
-| OpenAI `gpt-4o-mini-transcribe` | $1.25 in / $5.00 out per 1M tokens, about $0.003/min [42] | about $3.96 | Network round trip plus inference | Audio sent to a third party |
-| OpenAI `gpt-transcribe` | $0.0045/min [42] | about $5.94 | as above | as above |
-| OpenAI Whisper / `gpt-4o-transcribe` | $0.006/min [42] | about $7.92 | as above | as above |
-| Deepgram Nova-3 (monolingual) | $0.0043/min pre-recorded, $0.0048/min streaming [43] | about $5.68 / $6.34 | Streaming partials | as above |
-| Groq `whisper-large-v3-turbo` | about $0.04/hour per secondary sources; I could not load Groq's own pricing table [44] | about $0.88 | Very fast inference | as above |
-| Hosted cleanup LLM, e.g. OpenAI `gpt-5-nano` | $0.05 in / $0.40 out per 1M tokens [42] | Well under $1 for dictation volumes [E] | adds a second round trip | Transcript sent to a third party |
+| Option                                       | Unit price                                                                             | Cost at 22 h/month                                          | Latency profile                       | Privacy                          |
+| -------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------- | -------------------------------- |
+| Local whisper.cpp + Ollama                   | 0 per minute                                                                           | 0 marginal. Electricity on the order of cents per month [E] | No network; bounded by local hardware | Audio never leaves the device    |
+| OpenAI `gpt-4o-mini-transcribe`              | $1.25 in / $5.00 out per 1M tokens, about $0.003/min [42]                              | about $3.96                                                 | Network round trip plus inference     | Audio sent to a third party      |
+| OpenAI `gpt-transcribe`                      | $0.0045/min [42]                                                                       | about $5.94                                                 | as above                              | as above                         |
+| OpenAI Whisper / `gpt-4o-transcribe`         | $0.006/min [42]                                                                        | about $7.92                                                 | as above                              | as above                         |
+| Deepgram Nova-3 (monolingual)                | $0.0043/min pre-recorded, $0.0048/min streaming [43]                                   | about $5.68 / $6.34                                         | Streaming partials                    | as above                         |
+| Groq `whisper-large-v3-turbo`                | about $0.04/hour per secondary sources; I could not load Groq's own pricing table [44] | about $0.88                                                 | Very fast inference                   | as above                         |
+| Hosted cleanup LLM, e.g. OpenAI `gpt-5-nano` | $0.05 in / $0.40 out per 1M tokens [42]                                                | Well under $1 for dictation volumes [E]                     | adds a second round trip              | Transcript sent to a third party |
 
 Takeaway: hosted speech-to-text is cheap per user (single-digit dollars a month), so the case for local is privacy, offline operation and zero marginal cost at scale, not price. The cost of local is engineering effort and hardware variance.
 
@@ -457,20 +459,20 @@ Takeaway: hosted speech-to-text is cheap per user (single-digit dollars a month)
 
 Target: time from end of speech to pasted text for a 3-10 s utterance, plus background cleanup time. Gains marked [E] are estimates; [L] are from the noisy local runs; [P] are published.
 
-| Rank | Optimisation | Expected gain | Complexity | Regression risk | Evidence |
-|---|---|---|---|---|---|
-| 1 | **Thread count = P-cores** (`-t 6` on the 165H; `clamp(P-cores, 2, 8)` generally) | Avoids a 2x-3.6x slowdown if the app currently passes a high count; 0 if it already passes 4-8 | Trivial | Very low | [L] t14 3.3 s, t22 6.2 s vs about 1.7 s; [P] Intel, Mozilla [12][13] |
-| 2 | **Persistent `whisper-server`**, lazily spawned at record start, idle shutdown, in-memory WAV over loopback multipart | 250-400 ms per utterance, plus no temp files | Medium (process supervision, health poll, fallback to CLI) | Low-medium (decode defaults differ; set `beam_size`, `best_of`, `temperature_inc` explicitly) | [L]; server API [P] [1][2] |
-| 3 | **Greedy decoding** (`-bs 1 -bo 1`; server default is already greedy) | 5-25% of ASR time, more on longer utterances [E] | Trivial | Low (slight WER increase on tiny) | CLI default is beam 5 [P] [5]; not cleanly visible in [L] |
-| 4 | **Ollama request hygiene**: fixed `num_ctx: 2048`, `num_predict` cap, `think:false`, stable prefix, warm-up with identical options and system prompt, JSON schema in `format`, `temperature: 0` | Cleanup: removes reloads and system-prompt re-evaluation; about 1-4 s on CPU, tens of ms on GPU; bounds the tail [E] | Low | Low | [P] API fields and cache behaviour [20][31][35][36] |
-| 5 | **Dynamic `audio_ctx`** per request: `min(1500, ceil(sec*50)+128)`, floor 512, with a repetition guard and WER gate | 2x-3x on encode for short clips | Medium (needs duration, guard, tests) | **High** on stock models | [P] 3x at equal WER [9]; [P] catastrophic WER when too tight [10]; [L] encode 1248 to 508 ms, punctuation changed |
-| 6 | **Bound fallback**: `temperature_inc=0.0` (or `-nf` on CLI) plus Silero VAD skip for empty audio | Removes multi-pass latency spikes (up to 5 extra decodes) and silence hallucinations; no change to the median | Low | Medium (no recovery from a bad greedy decode) | [P] [2][5] |
-| 7 | **q8_0 instead of q5_1** for tiny/base | 0-15% encode, small accuracy gain; +11-21 MB disk | Trivial (file swap) | Very low | [P] weak: INT8 fastest, INT5 slowest in a 10-file study [17]; otherwise [E] |
-| 8 | **Proper resampler** (rubato FFT/sinc) and post-roll | No latency gain; possible WER gain | Low | Low | [P] poly/linear has no anti-alias filter [40]; WER effect unproven |
-| 9 | **Bigger or different model made affordable by 1-5**: `base.en`/`small.en`, Parakeet GGUF q4 via the bundled runtime, or Moonshine v2 | Accuracy rather than latency; Moonshine v2 also removes the fixed 30 s encoder cost | Medium-high | Medium | [P] Parakeet 6.05-6.32% avg WER [22]; Moonshine v2 latency table [23] |
-| 10 | **GPU ASR** (optional CUDA download or self-built Vulkan) | Large for small/turbo models, negligible for tiny | High (285-685 MB, detection, VRAM contention, fallback) | Medium-high | [P] asset sizes [3], GPU benchmark [15] |
-| 11 | **In-process `whisper-rs`** | A few ms over the server (no HTTP) | High (native build chain) | Medium (no crash isolation) | [P] crate facts [8] |
-| 12 | OpenVINO / NPU / DirectML / TensorRT / CTranslate2 | Unclear or small at this model size | High | High | See section 3 |
+| Rank | Optimisation                                                                                                                                                                                    | Expected gain                                                                                                        | Complexity                                                 | Regression risk                                                                               | Evidence                                                                                                          |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1    | **Thread count = P-cores** (`-t 6` on the 165H; `clamp(P-cores, 2, 8)` generally)                                                                                                               | Avoids a 2x-3.6x slowdown if the app currently passes a high count; 0 if it already passes 4-8                       | Trivial                                                    | Very low                                                                                      | [L] t14 3.3 s, t22 6.2 s vs about 1.7 s; [P] Intel, Mozilla [12][13]                                              |
+| 2    | **Persistent `whisper-server`**, lazily spawned at record start, idle shutdown, in-memory WAV over loopback multipart                                                                           | 250-400 ms per utterance, plus no temp files                                                                         | Medium (process supervision, health poll, fallback to CLI) | Low-medium (decode defaults differ; set `beam_size`, `best_of`, `temperature_inc` explicitly) | [L]; server API [P] [1][2]                                                                                        |
+| 3    | **Greedy decoding** (`-bs 1 -bo 1`; server default is already greedy)                                                                                                                           | 5-25% of ASR time, more on longer utterances [E]                                                                     | Trivial                                                    | Low (slight WER increase on tiny)                                                             | CLI default is beam 5 [P] [5]; not cleanly visible in [L]                                                         |
+| 4    | **Ollama request hygiene**: fixed `num_ctx: 2048`, `num_predict` cap, `think:false`, stable prefix, warm-up with identical options and system prompt, JSON schema in `format`, `temperature: 0` | Cleanup: removes reloads and system-prompt re-evaluation; about 1-4 s on CPU, tens of ms on GPU; bounds the tail [E] | Low                                                        | Low                                                                                           | [P] API fields and cache behaviour [20][31][35][36]                                                               |
+| 5    | **Dynamic `audio_ctx`** per request: `min(1500, ceil(sec*50)+128)`, floor 512, with a repetition guard and WER gate                                                                             | 2x-3x on encode for short clips                                                                                      | Medium (needs duration, guard, tests)                      | **High** on stock models                                                                      | [P] 3x at equal WER [9]; [P] catastrophic WER when too tight [10]; [L] encode 1248 to 508 ms, punctuation changed |
+| 6    | **Bound fallback**: `temperature_inc=0.0` (or `-nf` on CLI) plus Silero VAD skip for empty audio                                                                                                | Removes multi-pass latency spikes (up to 5 extra decodes) and silence hallucinations; no change to the median        | Low                                                        | Medium (no recovery from a bad greedy decode)                                                 | [P] [2][5]                                                                                                        |
+| 7    | **q8_0 instead of q5_1** for tiny/base                                                                                                                                                          | 0-15% encode, small accuracy gain; +11-21 MB disk                                                                    | Trivial (file swap)                                        | Very low                                                                                      | [P] weak: INT8 fastest, INT5 slowest in a 10-file study [17]; otherwise [E]                                       |
+| 8    | **Proper resampler** (rubato FFT/sinc) and post-roll                                                                                                                                            | No latency gain; possible WER gain                                                                                   | Low                                                        | Low                                                                                           | [P] poly/linear has no anti-alias filter [40]; WER effect unproven                                                |
+| 9    | **Bigger or different model made affordable by 1-5**: `base.en`/`small.en`, Parakeet GGUF q4 via the bundled runtime, or Moonshine v2                                                           | Accuracy rather than latency; Moonshine v2 also removes the fixed 30 s encoder cost                                  | Medium-high                                                | Medium                                                                                        | [P] Parakeet 6.05-6.32% avg WER [22]; Moonshine v2 latency table [23]                                             |
+| 10   | **GPU ASR** (optional CUDA download or self-built Vulkan)                                                                                                                                       | Large for small/turbo models, negligible for tiny                                                                    | High (285-685 MB, detection, VRAM contention, fallback)    | Medium-high                                                                                   | [P] asset sizes [3], GPU benchmark [15]                                                                           |
+| 11   | **In-process `whisper-rs`**                                                                                                                                                                     | A few ms over the server (no HTTP)                                                                                   | High (native build chain)                                  | Medium (no crash isolation)                                                                   | [P] crate facts [8]                                                                                               |
+| 12   | OpenVINO / NPU / DirectML / TensorRT / CTranslate2                                                                                                                                              | Unclear or small at this model size                                                                                  | High                                                       | High                                                                                          | See section 3                                                                                                     |
 
 Suggested order of work: 1, 3 and 7 are configuration changes that can be validated in one benchmark session on the existing corpus. Then 2 with 6. Then 4. Then 5 behind a setting, gated on WER. Everything else only after measuring where time goes once those are in.
 

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../.localflow-runtime/vcredist/msvcp140.dll": "msvcp140.dll",
+      "../.localflow-runtime/vcredist/vcruntime140.dll": "vcruntime140.dll",
+      "../.localflow-runtime/vcredist/vcruntime140_1.dll": "vcruntime140_1.dll",
+      "../.localflow-runtime/whisper/Release/msvcp140.dll": "localflow-runtime/whisper/Release/msvcp140.dll",
+      "../.localflow-runtime/whisper/Release/vcruntime140.dll": "localflow-runtime/whisper/Release/vcruntime140.dll",
+      "../.localflow-runtime/whisper/Release/vcruntime140_1.dll": "localflow-runtime/whisper/Release/vcruntime140_1.dll",
+      "../.localflow-runtime/whisper/Release/vcomp140.dll": "localflow-runtime/whisper/Release/vcomp140.dll"
+    }
+  }
+}

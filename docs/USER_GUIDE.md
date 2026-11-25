@@ -18,72 +18,123 @@ Each section says where that applies.
 
 ## Install and first run
 
-LocalFlow is built from source on the computer that runs it. The models it uses are read
-from the `.localflow-runtime` folder of that checkout, so keep the checkout where it is.
+There are two ways to get LocalFlow: the installer from GitHub Releases, or building it from
+source. The installer is the CPU build; speech recognition on a GPU needs a build from source
+([below](#optional-speech-recognition-on-the-gpu)).
 
-### What you need
+The installers have not yet been tried on a clean computer. If something is missing after
+installing, please [report it](https://github.com/liulawrence2002/localflow/issues).
+
+### Install from GitHub Releases
+
+1. Download one installer from the
+   [Releases page](https://github.com/liulawrence2002/localflow/releases):
+   - `LocalFlow_<version>_x64-setup.exe` installs LocalFlow for you only, into
+     `%LOCALAPPDATA%\LocalFlow`, without administrator rights;
+   - `LocalFlow_<version>_x64_en-US.msi` installs it for all users, into
+     `%ProgramFiles%\LocalFlow`.
+2. Optionally check the download against `SHA256SUMS` from the same release:
+
+   ```powershell
+   Get-FileHash .\LocalFlow_0.1.0_x64-setup.exe -Algorithm SHA256
+   ```
+
+3. Run the installer. It is not code-signed yet, so Windows SmartScreen may say "Windows
+   protected your PC"; choose **More info**, then **Run anyway**, once you have checked the
+   hash. The installer includes the app, the Whisper tiny.en fallback model, the whisper.cpp
+   programs and the Visual C++ runtime they need. If WebView2 is missing (Windows 11 includes
+   it), the installer downloads it from Microsoft.
+4. Download the models ([below](#models)) and install Ollama ([below](#ollama)).
+5. Start LocalFlow from the Start menu. It runs in the tray; open the settings window with
+   "Show LocalFlow" in the tray menu, or by starting LocalFlow again. While something it needs
+   is missing, the Home screen shows a Setup list with the script or command for each item.
+
+LocalFlow never checks for updates. To update, download the new installer from the Releases
+page and run it; your settings and models are kept.
+
+### Models
+
+Every download is a script you run. LocalFlow never downloads anything by itself. Each
+script downloads one pinned revision and checks every file against its SHA-256 before it
+replaces anything; running it again is safe.
+
+For an installed copy the scripts are in the install folder and put the models in
+`%LOCALAPPDATA%\LocalFlow`. Windows does not run PowerShell scripts by default, so pass
+`-ExecutionPolicy Bypass` for each command. With the `.msi`, use `$env:ProgramFiles` instead
+of `$env:LOCALAPPDATA` in the first line:
+
+```powershell
+$scripts = "$env:LOCALAPPDATA\LocalFlow\scripts"
+powershell -ExecutionPolicy Bypass -File "$scripts\Get-AsrModel.ps1"
+powershell -ExecutionPolicy Bypass -File "$scripts\Get-PhononModel.ps1"
+powershell -ExecutionPolicy Bypass -File "$scripts\Get-VadModel.ps1"
+powershell -ExecutionPolicy Bypass -File "$scripts\Get-SmartTurnModel.ps1"
+```
+
+In a source checkout, run `.\scripts\Get-AsrModel.ps1` and so on; the models then go to the
+checkout's `.localflow-runtime` folder, which Git ignores. Every script takes
+`-Destination <folder>` to put them somewhere else.
+
+| Script                            | Model                                           | Size        | Used for                                                                            |
+| --------------------------------- | ----------------------------------------------- | ----------- | ----------------------------------------------------------------------------------- |
+| `Get-AsrModel.ps1`                | Parakeet TDT 0.6B v3, speech recognition        | 549 MB      | Dictation and conversation. The default when installed.                             |
+| `Get-AsrModel.ps1 -Model tiny.en` | Whisper tiny.en, small speech model             | 32 MB       | The fallback. The installer includes it; a build from source needs it.              |
+| `Get-PhononModel.ps1`             | Phonon 31m, the voice                           | about 65 MB | Conversation and reading aloud. Required for both.                                  |
+| `Get-VadModel.ps1`                | Silero VAD v6.2, tells speech from noise        | 1.2 MB      | Conversation. Without it a loudness rule is used, which any loud sound can trigger. |
+| `Get-SmartTurnModel.ps1`          | Smart Turn v3.2, hears whether you had finished | 32 MB       | Conversation. Without it the words alone decide when you have finished.             |
+
+"Read last transcript aloud" uses a separate, optional voice, Fish Audio S2 Pro (3.6 GB,
+personal non-commercial use only). See [MODEL_SETUP.md](MODEL_SETUP.md#read-aloud-voice-fish-audio-s2-pro).
+Where models are looked for, and every pinned source, is in [MODEL_SETUP.md](MODEL_SETUP.md).
+
+### Ollama
+
+Install Ollama from [ollama.com](https://ollama.com), then pull the default model and check
+it:
+
+```powershell
+ollama pull llama3.2:3b
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\LocalFlow\scripts\Check-Ollama.ps1"
+```
+
+(From a checkout: `.\scripts\Check-Ollama.ps1`.) The same model answers in conversations and
+does the background clean-up after dictation. You can pick any installed model in Settings >
+Models. Models that run on Ollama's servers are refused and left out of that list: those with
+a cloud tag (`:cloud`, `-cloud`), and any other that Ollama describes as running remotely,
+whatever it is called. A model that does not fit in your GPU's memory answers too slowly for
+conversation.
+
+### Build from source
+
+You need:
 
 - Windows 11, with the WebView2 Runtime (Windows 11 includes it).
 - Node.js 22 or newer and npm 10 or newer.
-- Rust stable with Cargo.
+- Rust 1.96 or newer with Cargo, installed through rustup.
 - Microsoft C++ Build Tools with the VCTools workload. Its CMake must be on `PATH` for the
   first build, which compiles the speech engine from C++ source.
 - Ollama.
-- The whisper.cpp program files in `.localflow-runtime\whisper\Release` (the build bundles
-  them). No script fetches these; see [DEVELOPMENT.md](DEVELOPMENT.md#runtime-assets).
 
 ```powershell
 .\scripts\Install-Prereqs.ps1 -Install
 npm install
+.\scripts\Get-WhisperRuntime.ps1             # the whisper.cpp programs the build bundles
+.\scripts\Get-AsrModel.ps1 -Model tiny.en    # the fallback model the build bundles
 ```
 
 `Install-Prereqs.ps1` checks Node, npm, Git, Rust and the C++ Build Tools, and with
 `-Install` installs the missing ones through winget. It does not install Ollama, WebView2 or
 the Vulkan SDK, and it does not put CMake on `PATH`. [DEVELOPMENT.md](DEVELOPMENT.md) covers
-those steps.
-
-### Models
-
-Every download is a script you run. LocalFlow never downloads anything by itself. The files
-go to `.localflow-runtime\models`, which Git ignores. Phonon, Silero and Smart Turn come from
-a pinned revision and are checked against a SHA-256 hash; the speech models are checked by
-size.
-
-| Script                                      | Model                                           | Size        | Used for                                                                            |
-| ------------------------------------------- | ----------------------------------------------- | ----------- | ----------------------------------------------------------------------------------- |
-| `.\scripts\Get-AsrModel.ps1`                | Parakeet TDT 0.6B v3, speech recognition        | 549 MB      | Dictation and conversation. The default when installed.                             |
-| `.\scripts\Get-AsrModel.ps1 -Model tiny.en` | Whisper tiny.en, small speech model             | 32 MB       | The fallback. The installer bundles it, so the build needs it.                      |
-| `.\scripts\Get-PhononModel.ps1`             | Phonon 31m, the voice                           | about 65 MB | Conversation and reading aloud. Required for both.                                  |
-| `.\scripts\Get-VadModel.ps1`                | Silero VAD v6.2, tells speech from noise        | 1.2 MB      | Conversation. Without it a loudness rule is used, which any loud sound can trigger. |
-| `.\scripts\Get-SmartTurnModel.ps1`          | Smart Turn v3.2, hears whether you had finished | 32 MB       | Conversation. Without it the words alone decide when you have finished.             |
-
-"Read last transcript aloud" uses a separate, optional voice, Fish Audio S2 Pro (3.6 GB,
-personal non-commercial use only). See [MODEL_SETUP.md](MODEL_SETUP.md#read-aloud-voice-fish-audio-s2-pro).
-
-### Ollama
-
-Install Ollama, then pull the default model and check it:
-
-```powershell
-ollama pull llama3.2:3b
-.\scripts\Check-Ollama.ps1
-```
-
-The same model answers in conversations and does the background clean-up after dictation.
-You can pick any installed model in Settings > Models. Models with a cloud tag (`:cloud`,
-`-cloud`) are refused, because they run on Ollama's servers. A model that does not fit in
-your GPU's memory answers too slowly for conversation.
-
-### Build and start
+those steps. Then get the other models as above, and build and start:
 
 ```powershell
 npm start
 ```
 
 This runs `.\scripts\Start-LocalFlow.ps1`. The first time, it builds the release app with
-`npm run tauri:build`, which takes a while. It starts Ollama if nothing is listening on port
-11434, then starts LocalFlow hidden in the tray. Open the settings window with "Show
-LocalFlow" in the tray menu.
+`npm run tauri:build -- --no-bundle`, which takes a while. It starts Ollama if nothing is
+listening on port 11434, then starts LocalFlow hidden in the tray. Open the settings window
+with "Show LocalFlow" in the tray menu.
 
 - `.\scripts\Start-LocalFlow.ps1 -Restart` restarts a copy that is already running, for
   example after a new build.
@@ -91,22 +142,25 @@ LocalFlow" in the tray menu.
 - A desktop shortcut can point at `scripts\Start-LocalFlow.vbs`, which runs the same launcher
   without a terminal window.
 
+A build from source also reads models from the checkout's `.localflow-runtime`, so keep the
+checkout where it is.
+
 ### Optional: speech recognition on the GPU
 
 The default build runs speech recognition on the CPU. If you have a discrete GPU, a GPU build
-runs it there through Vulkan. In the same session on the development laptop (RTX 4070 Laptop),
-the median time from the end of your speech to the start of the reply was 568 ms on the GPU
-against 993 ms on the CPU
+from source runs it there through Vulkan. In the same session on the development laptop (RTX
+4070 Laptop), the median time from the end of your speech to the start of the reply was
+568 ms on the GPU against 993 ms on the CPU
 ([benchmark](benchmarks/CONVERSATION_BENCHMARK.md#after-the-upgrades-gpu-recognition-and-smart-turn)).
 
 ```powershell
-npm run tauri:build:gpu
+npm run tauri:build:gpu -- --no-bundle
 .\scripts\Start-LocalFlow.ps1 -Restart
 ```
 
 - Building it needs the Vulkan SDK ([DEVELOPMENT.md](DEVELOPMENT.md#gpu-builds-vulkan-sdk)).
 - The GPU build will not start on a computer without a Vulkan loader (`vulkan-1.dll`). That
-  is why it is not the default.
+  is why it is not the default, and why the release installers are CPU builds.
 - It uses the discrete GPU, preferring one whose name contains "NVIDIA", and never an
   integrated GPU. With no discrete GPU, or if loading or a run fails, it uses the CPU.
 - It shares GPU memory with Ollama, using about 0.8 GB more. There is no check for free
@@ -118,36 +172,61 @@ npm run tauri:build:gpu
 
 | Hotkey           | What it does                                                                                                        | If another program holds it                            |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `Ctrl+Alt+Space` | Dictation: tap to start, then pause when you have finished. Press again to stop early, or hold and release.         | `Ctrl+Alt+Shift+Space` works too; both are registered. |
+| `Ctrl+Alt+Space` | Dictation: tap it and speak, and it stops when you pause; or hold it while you speak and let go. See below.         | `Ctrl+Alt+Shift+Space` works too; both are registered. |
 | `Escape`         | Cancels a dictation while it is recording. Only registered then.                                                    |                                                        |
 | `Ctrl+Alt+T`     | Starts a conversation. While the assistant is thinking or speaking, interrupts it. Otherwise ends the conversation. | `Ctrl+Alt+Shift+T`                                     |
 | `Ctrl+Alt+R`     | Reads the focused window aloud. Press again to stop.                                                                | `Ctrl+Alt+Shift+R`                                     |
 
-- The hotkeys cannot be changed yet. Settings > Hotkeys shows them but does not change them.
-- The Home screen shows which conversation and reading hotkeys were registered.
+- The hotkeys cannot be changed yet. Settings > Hotkeys lists them and says whether each one
+  is registered.
 - One thing uses the microphone at a time. The dictation hotkey is ignored during a
   conversation, the conversation hotkey during a dictation, and the reading hotkey during a
   conversation (say "read this page" instead).
 
 The tray menu has Show LocalFlow, Start or stop conversation, Copy last transcript, Read last
-transcript aloud, Stop reading, and Quit.
+transcript aloud, Stop reading, and Quit. Closing the settings window only hides it; Quit
+ends LocalFlow. Only one copy runs: starting LocalFlow again from the Start menu opens the
+settings window of the one already running.
 
 ## Dictation
 
 1. Click into a text field.
-2. Tap `Ctrl+Alt+Space`. A small waveform appears above the taskbar.
-3. Speak, then pause. About 550 ms of silence ends the dictation. You can also press the
-   hotkey again, or hold it while you speak and release it (a press of 700 ms or more counts
-   as a hold).
+2. Press `Ctrl+Alt+Space`. A small waveform appears above the taskbar.
+3. Either way works:
+   - **Tap** the hotkey (let go within 700 ms) and speak. The dictation stops by itself when
+     you pause for the End-of-speech wait: 900 ms unless you change it in Settings >
+     Dictation. To stop sooner, tap again, at least 700 ms after the first tap.
+   - **Hold** the hotkey while you speak and let go when you have finished. A held hotkey is
+     never stopped by a pause, however long.
 4. The text is pasted where you started.
 
 What to expect:
 
-- If you say nothing for 2.5 s the waveform closes quietly. A dictation stops at 120 s.
+- After a tap, if you say nothing for 2.5 s the waveform closes quietly. Every dictation, held
+  or not, stops at 2 minutes.
+- A press within 700 ms of a dictation stopping by itself is ignored. It was almost certainly
+  meant to stop the dictation that had just stopped, and a new recording would replace it.
 - `Escape` cancels while you are speaking. Nothing is pasted.
-- The text is pasted only into the window that had the focus when you started. If the focus
-  moved, nothing is pasted and the overlay shows a red tint. "Copy last transcript", in the
-  tray or on the Home screen under Recovery, gets the text back.
+- If no speech model is installed, LocalFlow says so when you press the hotkey, before it
+  records anything.
+- The text is pasted only into the window that had the focus when you started, and only if
+  the same control inside it still has the keyboard focus. If the focus moved, nothing is
+  pasted, the overlay shows a red tint and the Home screen shows what happened. "Copy last
+  transcript", in the tray or on the Home screen, gets the text back. Windows can tell one
+  control from another only when each is a window of its own, as in classic Windows dialogs;
+  inside a web page, and in programs that draw their own controls, a move from one field to
+  another is not seen.
+- The paste waits up to 1 s for you to let go of `Ctrl`, `Alt`, `Shift` and the Windows key,
+  because `Ctrl+V` sent while `Alt` is down arrives as `Ctrl+Alt+V`. If a key is still down
+  after that, nothing is pasted and LocalFlow says "Keys were still held".
+- Windows does not let LocalFlow type into a program running as administrator, unless
+  LocalFlow runs as administrator too. LocalFlow then says "Can't paste into an administrator
+  window" instead of pasting; use Copy last transcript.
+- If you start a new dictation while the previous one is still being transcribed, the
+  previous one is not pasted, because the focus may have moved for the new one. Its text is
+  kept for Copy last transcript until the new dictation produces text of its own. If the new
+  one ends without any (cancelled, or nothing said), LocalFlow says "Previous dictation was
+  not pasted. Use Copy last transcript."
 - Before pasting, LocalFlow applies spoken punctuation ("comma", "new line", "bullet
   point"), explicit corrections ("meet Tuesday, actually Wednesday"), filler and stutter
   removal, and sentence capitals. URLs, email addresses and decimals are left alone.
@@ -156,8 +235,12 @@ What to expect:
   was pasted; when it finishes, "Copy last transcript" returns the cleaned version.
   Low-resource mode skips it.
 - Pasting goes through the clipboard and `Ctrl+V`. Your earlier clipboard text is put back
-  afterwards; images and other rich formats are not. The dictated text is kept out of
-  clipboard history (`Win+V`) and cloud clipboard sync.
+  once the program you pasted into has read the dictated text: at least 0.4 s after the
+  paste, and later when LocalFlow runs in a Remote Desktop session. Images and other rich
+  formats are not put back. Neither is anything a password manager or another program marked
+  as private: the clipboard is cleared instead. If you copy something else in the meantime,
+  it is left alone. Neither the dictated text nor the restored text is added to clipboard
+  history (`Win+V`) or cloud clipboard sync.
 
 ## Conversation
 
@@ -318,7 +401,9 @@ Limits:
    Edit them if you like, separating several with commas, and choose Add.
 3. Check "Agents found". It lists Claude Code (where it was found, its version, and whether
    it can open a tab and answer questions), Cursor, Codex, Cursor Agent and Windows Terminal.
-   "Check again" looks again after you install something.
+   "Check again" looks again after you install something. A conversation looks for the
+   agents as it starts only when you have added a project, and reuses what it found for 30
+   minutes; "Check again" updates that at once.
 
 About project names:
 
@@ -401,7 +486,11 @@ name, the folder it is in ("the one in personal"), or "the first one" / "the sec
   folder's own hooks, tool servers or settings and without saving the session. To answer,
   Claude may read files in that folder, and what it reads goes to Anthropic with the question,
   as in any Claude Code session. LocalFlow adds a fixed instruction asking for a short spoken
-  answer. The answer is only spoken; it is never acted on.
+  answer. The answer is only spoken; it is never acted on. This run, and the
+  `claude --version` and `--help` runs that find Claude Code, are given
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_AUTOUPDATER=1`, which tell
+  Claude Code to skip its update checks, error reports and other traffic it does not need.
+  The tab you open is your own session and is started without them.
 - **Open in Cursor.** The folder is opened in Cursor. Nothing else is passed.
 - LocalFlow itself makes no network connection for any of this. Its logs record which agent
   and which project name were used, never the question or the answer.
@@ -427,24 +516,36 @@ the wording of its sign-in error, have not been seen yet.
 
 ## Settings
 
-The settings window has these screens. Some settings are shown but not yet used by the
-native app; they are marked below.
+The settings window follows the Windows light or dark theme. A setting the native app does
+not use is not shown.
 
-| Screen        | What it holds                                                                                                                                                                                                                                                                                                                                              |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Home          | The app's state; the conversation's state in words, its Start / End / Interrupt button, and which models it will use; whether reading aloud is available; Recovery (Copy last transcript, Reveal preview, Read aloud, Stop).                                                                                                                               |
-| Models        | Whisper model path: leave it empty for Parakeet when installed, otherwise tiny.en; a `.gguf` model runs in-process, a ggml `.bin` model in the whisper.cpp program. Ollama model: used for both conversation and dictation clean-up. Low-resource mode (below). Threads: not used yet; see `LOCALFLOW_ASR_THREADS` in [Troubleshooting](#troubleshooting). |
-| Microphone    | Device, voice activity detection, end-of-speech time and maximum length. Not used yet: LocalFlow uses the Windows default microphone and fixed timings.                                                                                                                                                                                                    |
-| Hotkeys       | Shows the dictation hotkeys. The activation mode buttons are not used yet; tap and hold both always work.                                                                                                                                                                                                                                                  |
-| Dictionary    | Words and names to help the recogniser in dictation.                                                                                                                                                                                                                                                                                                       |
-| Replacements  | Exact replacements applied to dictated text.                                                                                                                                                                                                                                                                                                               |
-| Snippets      | Phrases that expand into longer text when dictated.                                                                                                                                                                                                                                                                                                        |
-| Styles        | Style profiles. Saved, but not yet applied to the clean-up.                                                                                                                                                                                                                                                                                                |
-| Coding agents | Projects and their spoken names, the agents found, and example commands.                                                                                                                                                                                                                                                                                   |
-| Privacy       | Context and retention controls. Not used yet by the native app; the history setting is disabled.                                                                                                                                                                                                                                                           |
-| History       | Empty: dictations are not stored.                                                                                                                                                                                                                                                                                                                          |
-| Diagnostics   | The speech engine in use, timings for the last dictation and the last conversation turn, and a diagnostics export that leaves out dictated text and model paths.                                                                                                                                                                                           |
-| About         | Version and build details.                                                                                                                                                                                                                                                                                                                                 |
+| Screen        | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Home          | Setup, while something required is missing: each part, whether it is ready, and the script or command that installs it. A banner after a problem (below). The conversation's state in words, its Start / End / Interrupt button, which models it will use, and how the last conversation ended, unless you ended it with the hotkey or "goodbye". How to dictate, and a warning if the dictation hotkey is not registered. Whether reading aloud is available. Recovery: Copy last transcript, Show transcript, Read aloud with Fish S2, Stop reading. |
+| Models        | Speech model file: leave it empty for Parakeet when it is installed, otherwise Whisper tiny.en; a `.gguf` model runs inside LocalFlow, a ggml Whisper `.bin` model in the whisper.cpp program. Language model: the Ollama model used for conversation and for the dictation clean-up, with "List installed models". Low-resource mode (below).                                                                                                                                                                                                         |
+| Dictation     | How tap and hold work, and the End-of-speech wait: how long a pause ends a tapped dictation, 300 to 3000 ms, 900 ms by default. Holding the hotkey ignores it. LocalFlow records from the Windows default microphone; change that in Windows Settings > System > Sound.                                                                                                                                                                                                                                                                                |
+| Hotkeys       | `Ctrl+Alt+Space`, `Ctrl+Alt+Shift+Space`, `Ctrl+Alt+T`, `Ctrl+Alt+R` and `Escape`: what each does and whether it is registered. They cannot be changed yet.                                                                                                                                                                                                                                                                                                                                                                                            |
+| Dictionary    | Words and names the recogniser should expect in dictation, one word or phrase per row.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Replacements  | Heard, Write, On: when dictation hears the first phrase as whole words, in any capitalisation, it writes the second instead.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Snippets      | Trigger, Expansion, On: say the trigger while dictating and the expansion is written in its place.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Coding agents | Projects and their spoken names, the agents found, and example commands.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Privacy       | Three facts: "Dictations are not stored", "Audio is deleted right after transcription", and "Nothing leaves this computer, except a coding-agent question you confirm by voice". Where the full statement is, with Copy link. There is nothing to switch.                                                                                                                                                                                                                                                                                              |
+| Diagnostics   | The speech engine in use, timings for the last dictation and the last conversation turn, hotkey registration, "Settings storage" and "Last crash", each marked OK, Check, Not available or Problem. Refresh, and Prepare export (below).                                                                                                                                                                                                                                                                                                               |
+| About         | The version from the build, the licence and the copyright.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+- **Saving.** A change is saved a moment after you make it. The top of the window says
+  "Saving...", then "All changes saved", or "Not saved" with a Try again button when a save
+  failed. If the settings could not be loaded at all, the screens that change them stay
+  locked, so a save cannot replace your settings with defaults.
+- **Lists.** In Dictionary, Replacements and Snippets an edit is saved when you leave the
+  field. Emptying a field shows an error and keeps the row; the remove button deletes it.
+- **The Home banner.** After a dictation or reading problem, Home shows what happened and at
+  what time, with a Copy last transcript button when the text was not pasted, or a hint about
+  what to try. A dot on Home in the list of screens shows while it is up. Dismiss it with its
+  close button; the next successful dictation also clears it.
+- **Prepare export** refreshes Diagnostics, then writes them out as text with dictated text
+  and model paths left out, your user folder replaced by `<user folder>` and microphone names
+  by `<microphone>`. Read it before you share it; Copy puts it on the clipboard.
 
 **Low-resource mode** skips the Ollama clean-up after dictation and, when tiny.en is
 installed, uses the one-shot Whisper program instead of keeping Parakeet loaded. That also
@@ -458,8 +559,12 @@ lists the controls.
 - No account, analytics, telemetry or cloud sync. Speech recognition, the language model
   (Ollama on `127.0.0.1`) and the voices all run on this computer, and nothing falls back to
   a remote service.
-- Dictation: the text goes only to the window you started in. Nothing is stored in a
-  history.
+- Dictation: the text goes only to the window you started in. Dictations are not stored: the
+  last transcript is held in memory for Copy last transcript until the next dictation or
+  until LocalFlow closes. Audio is deleted right after transcription.
+- The clipboard: the dictated text and the earlier text LocalFlow puts back are kept out of
+  clipboard history and cloud clipboard sync, and anything a password manager marked as
+  private is cleared rather than put back.
 - Conversation: audio is held in memory only for the turn being spoken. What you and the
   assistant say is kept in memory for the conversation and cleared when it ends; it is never
   written to disk, a log or an event.
@@ -470,12 +575,109 @@ lists the controls.
   question goes to Anthropic through Claude Code under your subscription, and whatever you
   type or dictate into a Claude Code tab goes there too. LocalFlow itself still makes no
   network connection.
-- Logs contain phases, counts and timings, never what was said, read or answered.
+- Logs contain phases, counts and timings, never what was said, read or answered. They are
+  kept on this computer only ([Logs](#logs)).
+- LocalFlow never checks for updates and never downloads anything itself; models come only
+  from the scripts you run, and new versions from GitHub Releases.
+
+Settings > Privacy gives the short version, and where the full statement is.
 
 ## Troubleshooting
 
-See also [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for dictation, the Whisper fallback and the
-Fish read-aloud voice.
+### Installing
+
+- **SmartScreen says "Windows protected your PC".** The installers are not code-signed yet.
+  Check the file against `SHA256SUMS` on the release page, then choose **More info** and
+  **Run anyway**.
+- **"Running scripts is disabled on this system".** Windows blocks PowerShell scripts by
+  default. Run each script with `powershell -ExecutionPolicy Bypass -File <script>`, as in
+  [Models](#models); that allows the one command only.
+- **Something is reported missing.** The Home screen's Setup list, and messages about a
+  missing model, name the file and the script that installs it. Run that script from the
+  installed `scripts` folder (or the checkout's), then try again; LocalFlow notices new
+  models without a restart, and the Setup list is checked again when you come back to the
+  window.
+
+### The settings window disappeared
+
+Closing it only hides it; LocalFlow keeps running in the tray. Choose "Show LocalFlow" in the
+tray menu, or start LocalFlow again from the Start menu. To end LocalFlow, choose Quit.
+
+### A hotkey does nothing
+
+Another program may hold it; LocalFlow then registers the `Shift` variant (see
+[Hotkeys](#hotkeys)), and Settings > Hotkeys shows which ones are registered. During a
+conversation the dictation and reading hotkeys are ignored on purpose. Right after a
+dictation stops by itself, the dictation hotkey is ignored for 700 ms. If neither variant
+works, check that `localflow.exe` is running (its icon is in the tray).
+
+### Nothing is pasted
+
+The Home screen's banner says why, with the time it happened. Copy last transcript, in the
+banner, in the tray or on the Home screen, gets the text back in every case below.
+
+- Click into the text field before pressing the hotkey. LocalFlow pastes through the
+  clipboard and `Ctrl+V`, so the focused program must accept a paste.
+- "Focus changed before insertion": the text is pasted only into the window, and the control
+  inside it, that had the focus when you started. Moving to another window, or to another
+  control that Windows tracks separately, skips the paste.
+- "Keys were still held": a modifier key was still down a second after the dictation was
+  ready. Let go of `Ctrl`, `Alt`, `Shift` and the Windows key once you have finished
+  speaking.
+- "Can't paste into an administrator window": the program runs as administrator and
+  LocalFlow does not, so Windows drops its keystrokes.
+- "Previous dictation was not pasted": you started a new dictation before the previous one
+  was transcribed.
+- **Remote desktops and clipboard managers.** Dictated text is placed on the clipboard with
+  the Windows flags that keep it out of clipboard history and cloud sync. Tools that mirror
+  the clipboard, including some remote desktop and virtual machine clipboard redirectors,
+  may honour those flags and skip the text. "Copy last transcript" sets the same flags, so it
+  does not get around such a tool; it does leave the text on this computer's clipboard for
+  you to paste by hand. When LocalFlow itself runs inside a Remote Desktop session, it waits
+  longer before it puts the earlier clipboard back.
+
+### Dictation ends too soon or too late
+
+- If you tapped the hotkey, a pause as long as the End-of-speech wait ends the dictation.
+  Raise it in Settings > Dictation (up to 3000 ms) if it stops while you think, or lower it
+  (down to 300 ms) if it waits too long. If you say nothing for 2.5 s after a tap, the
+  waveform closes quietly.
+- To pause as long as you like, hold the hotkey while you speak: only letting go, or the
+  2-minute limit, ends it.
+- A press shorter than 700 ms counts as a tap. A second tap stops a dictation only if it
+  comes at least 700 ms after the first.
+
+### Silence, or the waveform does not move
+
+LocalFlow uses the Windows default input device. With a multi-channel microphone it uses the
+loudest channel, and it ignores near-silent recordings. Check Windows Settings > System >
+Sound, the input level, and that desktop apps may use the microphone (Privacy & security >
+Microphone). A conversation ends, with a red tint on the overlay, if the microphone reports
+an error or delivers nothing for 3 s; the Home screen then says "Conversation ended: the
+microphone stopped working." A headset keeps the assistant from hearing itself.
+
+The waveform appears only while LocalFlow is listening or working. If it never appears,
+check that `localflow.exe` is running and that the hotkey is registered (Settings >
+Hotkeys).
+
+### Dictation is slow, or Diagnostics shows another engine
+
+The `ASR engine` row in Settings > Diagnostics names the engine and model actually used.
+
+- Parakeet is used when `parakeet-tdt-0.6b-v3-Q5_K_M.gguf` is installed (`Get-AsrModel.ps1`).
+  A model path set in Settings > Models wins over it; clear that field to return to the
+  default.
+- Low-resource mode uses the one-shot Whisper program on purpose, so that nothing stays in
+  memory; every dictation then pays for starting it.
+- `fallback engine used` means the main engine failed for that dictation and the Whisper
+  program took over.
+- With a Whisper model selected, LocalFlow keeps `whisper-server.exe` running on
+  `127.0.0.1`. Antivirus or application-control software may block it or its loopback
+  listener; allow it. After a failed start LocalFlow waits one minute before trying the
+  server again and uses the one-shot program meanwhile.
+- If the Whisper programs or tiny.en are reported missing in an installed copy, reinstall
+  LocalFlow. In a build from source, run `.\scripts\Get-WhisperRuntime.ps1` and
+  `.\scripts\Get-AsrModel.ps1 -Model tiny.en`.
 
 ### No GPU, or the GPU build will not start
 
@@ -483,7 +685,7 @@ The GPU build needs a Vulkan loader (`vulkan-1.dll`). On a computer without one 
 start at all; rebuild the default CPU version and restart:
 
 ```powershell
-npm run tauri:build
+npm run tauri:build -- --no-bundle
 .\scripts\Start-LocalFlow.ps1 -Restart
 ```
 
@@ -502,10 +704,11 @@ or a run fails. Integrated GPUs are never used.
 ### The assistant says it can't reach the language model
 
 "I can't reach the language model. Check that Ollama is running." means nothing answered on
-`127.0.0.1:11434`. Start Ollama (`ollama serve`, or `Start-LocalFlow.ps1`, which starts it)
-and run `.\scripts\Check-Ollama.ps1`. "The language model isn't installed yet." means the
-model chosen in Settings > Models is missing: `ollama pull llama3.2:3b`, or choose another.
-Dictation still pastes without Ollama; only the background clean-up is skipped.
+`127.0.0.1:11434`. Start Ollama (from the Start menu, `ollama serve`, or
+`Start-LocalFlow.ps1` in a checkout, which starts it) and run `Check-Ollama.ps1`. "The
+language model isn't installed yet." means the model chosen in Settings > Models is missing:
+`ollama pull llama3.2:3b`, or choose another. Dictation still pastes without Ollama; only the
+background clean-up is skipped. Low-resource mode skips the clean-up on purpose.
 
 ### Conversation will not start
 
@@ -513,23 +716,27 @@ If the voice is missing, the Home screen says "The conversation voice is not ins
 scripts\Get-PhononModel.ps1." and the Start button is disabled.
 
 The conversation hotkey does nothing while a dictation is recording; finish the dictation
-first. Other failures show a red tint on the overlay, but the reason is not shown on screen
-yet. The usual ones are no default microphone and a speech model that cannot load (check
-the Whisper model path in Settings > Models).
-
-### The microphone
-
-LocalFlow uses the Windows default input device. With a multi-channel microphone it uses the
-loudest channel. Check Windows Settings > System > Sound, and that desktop apps may use the
-microphone (Privacy & security > Microphone). A conversation ends, with a red tint on the
-overlay, if the microphone reports an error or delivers nothing for 3 s. A headset keeps the
-assistant from hearing itself.
+first. Other failures show a red tint on the overlay, and the Home screen's Conversation
+panel says "The last conversation ended with a problem at" the time, with the reason. The
+usual ones are no default microphone and a speech model that cannot load (check the speech
+model file in Settings > Models).
 
 ### It answers too early, or waits too long
 
 Install Smart Turn (`Get-SmartTurnModel.ps1`) and Silero (`Get-VadModel.ps1`). The Home
 screen lists which of them the next conversation will use. Without Silero, any loud sound
 can start a turn.
+
+### Read aloud is greyed out or reports something missing
+
+The Home screen shows what is missing. `Get-FishModel.ps1` downloads the model and
+`Build-FishS2.ps1` builds the engine (it needs the Visual Studio Build Tools); put both in the
+same folder. Speech always takes a while: the first request loads the model (about 35 s on
+the CUDA build) and synthesis is slower than real time. If it is far slower than that, the
+engine is the CPU build; rebuild it with `-Backend cuda` on an NVIDIA GPU. The Vulkan build
+measured slower than CPU and is not recommended. A failed engine start is not retried for one
+minute. Stopping a reading while it is still "Preparing speech" stops the engine as well, so
+the next reading loads the model again; so does five minutes without a reading.
 
 ### It mis-hears a project name
 
@@ -557,8 +764,38 @@ agents.
   Settings > Coding agents lists the missing options.
 - "Claude took too long, so I stopped it." The limit is 120 s.
 
-### A hotkey does nothing
+### LocalFlow says its settings were reset
 
-Another program may hold it; LocalFlow then registers the `Shift` variant (see
-[Hotkeys](#hotkeys)), and the Home screen shows which one. During a conversation the
-dictation and reading hotkeys are ignored on purpose.
+The settings are in `localflow.sqlite3` in `%APPDATA%\app.localflow.desktop`. If that file
+is damaged, LocalFlow moves it aside as `localflow.sqlite3.corrupt-<date and time>`, starts
+with a new one and default settings, and says so in a message box and in the "Settings
+storage" row of Settings > Diagnostics. Set your settings again; delete the damaged copy when
+you no longer need it. If only some saved values cannot be read (written by a newer or older
+version, say), only those are reset or, for numbers, moved into range; a copy of the saved
+settings is kept and LocalFlow says so in the same two places.
+
+If LocalFlow cannot start at all, a message box says why. The same reason is in the log.
+
+### Logs
+
+LocalFlow writes its log to `%LOCALAPPDATA%\app.localflow.desktop\logs\localflow.log`. When
+the file reaches 1 MB it becomes `localflow.log.1`, replacing the previous one, so there are
+never more than two. The log has phases, counts, timings and fixed messages, never what was
+said, read or answered, and your user folder is replaced by `<user folder>` in every line.
+It does not name your microphone. Read it before you attach it to a bug report all the same.
+
+If part of LocalFlow hit an internal error, Settings > Diagnostics shows "Last crash": which
+part (its thread) and the source file and line, without any other text.
+
+### Building from source
+
+- **Rust or the C++ Build Tools are missing.** Run `.\scripts\Install-Prereqs.ps1 -Install`,
+  then open a new terminal so the new tools are on `PATH`.
+- **The build fails looking for `.localflow-runtime` files.** The build bundles the
+  whisper.cpp programs and tiny.en: run `.\scripts\Get-WhisperRuntime.ps1` and
+  `.\scripts\Get-AsrModel.ps1 -Model tiny.en`.
+- **Port 1420 is busy.** Only the development loop (`npm run tauri:dev`) uses it; the tray
+  app started by `Start-LocalFlow.ps1` does not. Stop the program using the port, or change
+  it in `src-tauri/tauri.conf.json` and `vite.config.ts` together.
+
+More for developers is in [DEVELOPMENT.md](DEVELOPMENT.md#gotchas).

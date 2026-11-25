@@ -107,14 +107,49 @@ pub(crate) fn emit_native_event(
     );
 }
 
+impl OverlayRuntime {
+    /// Number a new phase change.
+    fn advance(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Number a new phase change only if `shown` is still the latest one.
+    fn advance_from(&self, shown: u64) -> Option<u64> {
+        self.epoch
+            .compare_exchange(shown, shown + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| shown + 1)
+    }
+}
+
 /// Emit a real phase change: show or hide the overlay, record it, and arm the auto-hide.
 pub(crate) fn emit_phase_event(app: &AppHandle, phase: &str, message: &str) {
-    let epoch = app
-        .state::<OverlayRuntime>()
-        .epoch
-        .fetch_add(1, Ordering::SeqCst)
-        + 1;
+    let epoch = app.state::<OverlayRuntime>().advance();
+    show_phase(app, epoch, phase, message);
+}
 
+/// [`emit_status`], returning the change's number for [`emit_status_if_current`].
+pub(crate) fn emit_status_tracked(app: &AppHandle, phase: &str, message: &str) -> u64 {
+    let epoch = app.state::<OverlayRuntime>().advance();
+    show_phase(app, epoch, phase, message);
+    epoch
+}
+
+/// Emit a phase change only if the overlay still shows the change numbered `shown`, so a
+/// feature finishing late cannot replace (or hide) what a newer one put up. Returns the new
+/// change's number when it was shown.
+pub(crate) fn emit_status_if_current(
+    app: &AppHandle,
+    shown: u64,
+    phase: &str,
+    message: &str,
+) -> Option<u64> {
+    let epoch = app.state::<OverlayRuntime>().advance_from(shown)?;
+    show_phase(app, epoch, phase, message);
+    Some(epoch)
+}
+
+fn show_phase(app: &AppHandle, epoch: u64, phase: &str, message: &str) {
     match phase {
         "ready" | "listening" | "processing" | "refining" | "inserted" | "error" => {
             show_overlay(app, true);
@@ -244,6 +279,20 @@ pub(crate) fn overlay_position_for_work_area(
 mod tests {
     use super::*;
     use crate::audio::{capture::rms_level, spectrum::SpectrumAnalyzer};
+
+    #[test]
+    fn a_late_status_is_shown_only_if_nothing_newer_was() {
+        let runtime = OverlayRuntime::default();
+        let reading = runtime.advance();
+        // Nothing else was shown: the reading may put up its next status.
+        let next = runtime.advance_from(reading).expect("still current");
+        assert_eq!(next, reading + 1);
+
+        // A dictation shows "listening"; the reading's late "stopped" must not replace it.
+        let dictation = runtime.advance();
+        assert_eq!(runtime.advance_from(next), None);
+        assert_eq!(runtime.epoch.load(Ordering::SeqCst), dictation);
+    }
 
     #[test]
     fn overlay_features_carry_the_spectrum_pitch_and_a_responsive_level() {

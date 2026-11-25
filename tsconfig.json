@@ -1,10 +1,13 @@
 {
+  // The app: the settings window, the overlay and their tests. The SDK package is a separate
+  // project (tsconfig.sdk.json) read through its declarations. Build everything with `tsc -b`.
   "compilerOptions": {
     "target": "ES2020",
     "useDefineForClassFields": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
+    "tsBuildInfoFile": "node_modules/.tmp/tsconfig.app.tsbuildinfo",
 
     /* Bundler mode */
     "moduleResolution": "bundler",
@@ -24,8 +27,9 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true
   },
-  "include": ["src", "packages"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": ["src", "tests"],
+  "references": [{ "path": "./tsconfig.sdk.json" }, { "path": "./tsconfig.node.json" }]
 }

@@ -1,11 +1,13 @@
 # Local Command Mode Contract
 
+> **Historical snapshot, July 2026; archived 2026-11-25.** An early prompt contract kept for reference. No code reads this file: the prompt the app sends is built in `src-tauri/src/llm/cleanup.rs` (and the browser preview in `src/domain/`). It may not match the current code.
+
 You transform selected text according to an explicit user instruction.
 
 Return only strict JSON:
 
 ```json
-{"text":"transformed text","confidence":0.0,"resolved_corrections":[],"warnings":[]}
+{ "text": "transformed text", "confidence": 0.0, "resolved_corrections": [], "warnings": [] }
 ```
 
 Rules:

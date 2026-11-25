@@ -203,7 +203,7 @@ function assertLocalDictationEndpoint(url: string): void {
 
   throw new OllamaProviderError(
     "remote_network_blocked",
-    "LocalFlow only allows local Ollama endpoints for ordinary dictation.",
+    "LocalFlow only talks to Ollama on this computer, at http://127.0.0.1:11434.",
   );
 }
 
@@ -217,7 +217,12 @@ async function requestOllamaJson(
 ): Promise<unknown> {
   let response: Response;
   try {
-    response = await runWithTimeout(fetchImpl(endpoint, init), timeoutMs, label);
+    // A redirect could only lead away from the local server, so it is an error, never followed.
+    response = await runWithTimeout(
+      fetchImpl(endpoint, { ...init, redirect: "error" }),
+      timeoutMs,
+      label,
+    );
   } catch (error) {
     if (error instanceof OllamaProviderError) {
       throw error;
@@ -230,7 +235,6 @@ async function requestOllamaJson(
   }
 
   if (!response.ok) {
-    const message = await readOllamaError(response);
     if (response.status === 404) {
       throw new OllamaProviderError(
         "model_not_found",
@@ -241,9 +245,10 @@ async function requestOllamaJson(
       );
     }
 
+    // The error body is not shown: Ollama can quote the prompt, which holds dictated text.
     throw new OllamaProviderError(
       "http_error",
-      message || `Ollama returned HTTP ${response.status}.`,
+      `${label} failed: Ollama returned HTTP ${response.status}.`,
       response.status,
     );
   }
@@ -256,19 +261,6 @@ async function requestOllamaJson(
       "Ollama returned a response that was not valid JSON.",
     );
   }
-}
-
-async function readOllamaError(response: Response): Promise<string> {
-  try {
-    const payload: unknown = await response.json();
-    if (isRecord(payload) && typeof payload.error === "string") {
-      return payload.error;
-    }
-  } catch {
-    // Fall through to the generic status message.
-  }
-
-  return response.statusText;
 }
 
 function parseTagsResponse(payload: unknown): OllamaModelSummary[] {
@@ -334,10 +326,8 @@ function toOllamaError(error: unknown): OllamaProviderError {
     return error;
   }
 
-  return new OllamaProviderError(
-    "unavailable",
-    error instanceof Error ? error.message : "Ollama is unavailable.",
-  );
+  // A raw error's message is not passed on: it may carry text from the request.
+  return new OllamaProviderError("unavailable", "Local Ollama is unavailable.");
 }
 
 function resolveGlobalFetch(): FetchLike {

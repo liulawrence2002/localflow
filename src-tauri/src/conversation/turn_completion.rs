@@ -1688,9 +1688,12 @@ fn tail_of(words: &[&str], shape: Shape, ending: Ending, answer_lead: bool) -> T
             // "Is the TV on?" asks about a state; the question mark is what tells it from
             // "is the book on" (the table).
             let state_question = shape == Shape::Inversion && is_be(words[0]) && asked;
-            if OBJECT_WORDS.contains(&previous) || IN_ON_HOSTS.contains(&previous) {
-                Closed
-            } else if state_question || (question && hosted(previous)) {
+            // Closed after an object or a host word, or for a state question.
+            if OBJECT_WORDS.contains(&previous)
+                || IN_ON_HOSTS.contains(&previous)
+                || state_question
+                || (question && hosted(previous))
+            {
                 Closed
             } else {
                 by_marking

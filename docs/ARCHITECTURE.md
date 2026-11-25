@@ -15,7 +15,7 @@ voice commands for coding agents. The user-facing description is in
 flowchart LR
   subgraph entry["Entry points"]
     hotkeys["hotkeys"]
-    lib["lib.rs: tray, commands"]
+    lib["lib.rs: tray, commands, lifecycle"]
   end
   subgraph features["Features"]
     dictation["native_dictation"]
@@ -37,6 +37,7 @@ flowchart LR
     page["context/page"]
     uia["platform/uia"]
     process["platform/process"]
+    win["platform: clipboard, keyboard, window"]
     storage["storage, app_state"]
     paths["runtime_paths"]
   end
@@ -52,6 +53,9 @@ flowchart LR
   dictation --> llm
   dictation --> insertion
   dictation --> overlay
+  dictation --> win
+  insertion --> win
+  lib --> storage
   conversation --> audio
   conversation --> asr
   conversation --> llm
@@ -76,63 +80,159 @@ flowchart LR
   taken. `Escape` is registered only while a dictation records. Dictation is ignored during
   a conversation, and the conversation and reading hotkeys check the other modes, so only
   one thing uses the microphone or the speaker.
-- `native_dictation`: the live push-to-talk coordinator: the recorder loop, tap and hold
-  handling, the level meter, and the transcribe, format and paste worker. `session.rs` holds
-  `SessionRegistry` (session identity and the supersede/cancel guard) and `latency.rs` the
-  per-dictation timings. The worker revalidates the session before every side effect, so a
-  superseded or cancelled session never pastes.
+- `native_dictation`: the live dictation coordinator (see
+  [Dictation pipeline](#dictation-pipeline)). `mod.rs` has the recorder loop, the level meter
+  and the transcribe, format and paste worker. `gesture.rs` decides what each hotkey and
+  level-meter event means (tap or hold). `session.rs` holds `SessionRegistry` (session
+  identity and the supersede/cancel guard), `recovery.rs` the last transcript for "Copy last
+  transcript" and the "not pasted" notice, `messages.rs` every line dictation shows, and
+  `latency.rs` the per-dictation timings. The worker revalidates the session before every
+  side effect, so a superseded or cancelled session never pastes.
 - `workflow`: an explicit dictation state machine. It is exercised only by the mock-session
-  commands, not the live hotkey path; see `REPO_AUDIT.md` §2.
+  commands, which exist only in debug builds, not by the live hotkey path; see the archived
+  [REPO_AUDIT.md](archive/REPO_AUDIT.md) §2.
 - `audio`: `capture.rs` (dictation's `cpal` input, one locked channel), `vad.rs` (dictation's
-  loudness end-of-speech detector), `resample.rs` (band-limited resampling to 16 kHz, plus a
-  stateful `StreamResampler`), `wav.rs`, `spectrum.rs` (the overlay's analyser), and the
-  conversation parts: `devices.rs` (`MicStream`, `SpeakerStream`), `ring.rs`, `echo.rs`,
+  loudness end-of-speech detector, with the wait from settings clamped to 300-3000 ms),
+  `resample.rs` (band-limited resampling to 16 kHz, plus a stateful `StreamResampler`),
+  `wav.rs`, `spectrum.rs` (the overlay's analyser), and the conversation parts: `devices.rs` (`MicStream`, `SpeakerStream`), `ring.rs`, `echo.rs`,
   `speech_detector.rs`, `turn_segmenter.rs` and `smart_turn.rs`.
 - `asr`: the speech-to-text boundary and its engines (see [Speech recognition](#speech-recognition)).
   `streaming.rs`, `stabilizer.rs` and `windows.rs` are an unused streaming foundation kept for
   later work; only their tests run.
-- `llm`: `ollama.rs` (the loopback-only client: no proxy, no redirects, cloud model tags
-  refused, one fixed `num_ctx` of 4096 so the model is never reloaded between callers),
-  `cleanup.rs` (dictation clean-up: prompt, strict JSON contract, one repair attempt) and
-  `chat.rs` (`ChatProvider` and the streaming, cancellable `OllamaChat` for conversation).
+- `llm`: `ollama.rs` (the loopback-only client: no proxy, no redirects, cloud models refused
+  (see [Ollama models that run elsewhere](#ollama-models-that-run-elsewhere)), one fixed
+  `num_ctx` of 4096 so the model is never reloaded between callers), `cleanup.rs` (dictation
+  clean-up: prompt, strict JSON contract, one repair attempt) and `chat.rs` (`ChatProvider`
+  and the streaming, cancellable `OllamaChat` for conversation).
 - `transcript`: the authoritative deterministic formatting for dictation: spoken
   punctuation, explicit self-corrections, filler and stutter removal, capitalisation, the
   user's replacements and snippets, and URL, email and decimal protection.
-- `insertion`: `target.rs` (the window focused when dictation started, and the fail-closed
-  check before pasting) and `clipboard_paste.rs` (transient clipboard write, `Ctrl+V`, and
-  the tidy-up afterwards).
+- `insertion`: `target.rs` (the window and the control focused when dictation started, and
+  the fail-closed check before pasting) and `clipboard_paste.rs` (the delayed-rendering
+  clipboard write, `Ctrl+V`, and putting the earlier clipboard back once the target has read
+  the text).
 - `conversation`: the conversation engine (see [Conversation engine](#conversation-engine)).
 - `tts`: voices (see [Voices](#voices)).
 - `context`: `context/page` is the page model for reading aloud; `context/mod.rs` is the
   older, unused context snapshot interface.
 - `page_reader.rs`: reading a window aloud (see [Reading a window aloud](#reading-a-window-aloud)).
 - `coding_agents`: voice commands for coding agents (see [Coding agents](#coding-agents)).
-- `platform`: `uia/` (UI Automation on a dedicated thread) and `process.rs` (child processes
-  in kill-on-close job objects). AGENTS.md asks for platform code to live here; Win32 calls in
-  `asr/sidecar.rs` and `overlay.rs` still sit outside it.
+- `platform`: `uia/` (UI Automation on a dedicated thread), `process.rs` (child processes in
+  kill-on-close job objects), `clipboard.rs` (delayed rendering and the privacy markers other
+  programs set), `keyboard.rs` (whether a modifier key is physically down), `window.rs`
+  (integrity levels and Remote Desktop detection) and `show_message_box`. AGENTS.md asks for
+  platform code to live here; Win32 calls in `asr/sidecar.rs` and `overlay.rs` still sit
+  outside it.
 - `overlay.rs`: the floating overlay window: phase and audio-feature events on
   `localflow://native-dictation`, show and hide with the auto-hide timer, and placement above
   the taskbar.
-- `runtime_paths.rs`: where binaries and models are looked for: the packaged resources, then
-  `.localflow-runtime/` next to the source checkout (that path is compiled in).
-- `storage`: SQLite schema and the settings row. `app_state.rs`: settings structs and the
-  `LocalFlowRuntime` state. `privacy`: redaction helpers. `cancel.rs`: the shared
-  `CancelFlag`. `desktop_health.rs`: the health file written on phase changes.
+- `runtime_paths.rs`: where binaries and models are looked for: `localflow-runtime` in the
+  packaged resources (next to `localflow.exe` on Windows), then the per-user folder
+  `%LOCALAPPDATA%\LocalFlow`, then, only with the `dev-runtime` feature that local builds turn
+  on, `.localflow-runtime/` in the source checkout. Release builds are built without that
+  feature, so they carry no build-machine path and start programs only from the first two.
+  Its "missing" messages name files and scripts, never folders.
+- `readiness.rs`: the `readiness_status` checklist (see [Readiness](#readiness)).
+- `storage`: the SQLite schema, the settings row and start-up recovery (`mod.rs`), the log
+  file (`log_file.rs`) and `redact_user_paths` (`redact.rs`). `app_state.rs`: settings
+  structs, the lenient `parse_settings`, and the `LocalFlowRuntime` state. `privacy`:
+  redaction helpers. `cancel.rs`: the shared `CancelFlag`. `desktop_health.rs`: the health
+  file (see [App lifecycle](#app-lifecycle)).
+- `lib.rs`: start-up, the tray, the command list, and the lifecycle (see
+  [App lifecycle](#app-lifecycle)).
 
 ## Dictation pipeline
 
 ```text
-hotkey -> capture (cpal, one locked channel) -> loudness end of speech (550 ms)
+hotkey press -> speech engine installed? (files only) -> foreground window and focused control
+    -> capture (cpal, one locked channel) -> gesture.rs: tap (hands-free) or hold
+    -> stop: tap: End-of-speech silence; hold: release; either: 120 s
     -> band-limited resample to 16 kHz -> speech-to-text through the provider chain
        (dictionary terms bias the recogniser)
     -> deterministic formatting (transcript), seeded from the user's replacements and snippets
-    -> session and target-window revalidation -> clipboard paste
+    -> transcript kept for recovery -> modifiers released (up to 1 s)
+    -> session, window, focused control and integrity checks -> delayed-rendering paste
+    -> earlier clipboard put back once the target has read the text
     -> background Ollama clean-up (its result only replaces the recoverable last transcript)
 ```
 
-The paste is excluded from clipboard history and cloud sync, and the earlier clipboard text
-is restored afterwards. A superseded, cancelled (`Escape`) or focus-changed session never
-pastes, and the last transcript is kept in memory for "Copy last transcript".
+Threads: one recorder loop (`localflow-dictation`) owns the microphone and handles every
+hotkey and level-meter event in order; a level meter per recording feeds the overlay (about
+36 frames a second) and the end-of-speech detector; a worker per finished recording
+transcribes, formats and pastes. The loop and the workers run under `catch_unwind`: a panic
+resets dictation and tells the user, and a dead loop is restarted by the next hotkey event.
+
+`start_recording` checks that a speech engine is installed before the microphone opens
+(`check_speech_engine`, files only), so a missing model is reported at the press. It also
+stops read-aloud and page reading, which the microphone would otherwise record.
+
+### Tap or hold
+
+`gesture.rs` is a pure function, `decide(input, active recording, time since the last
+automatic stop)`:
+
+- A press starts a recording with the key counted as held. A release within `QUICK_TAP_MS`
+  (700 ms) makes it hands-free; a later release finishes it (push-to-talk).
+- Hands-free, the level meter finishes it after `microphone.end_of_speech_ms` of silence
+  (900 ms by default, clamped to 300-3000 ms by `vad::end_of_speech_timeout`) once speech
+  was seen and at least 350 ms in, and discards it after 2.5 s without speech. A second press
+  finishes it if it comes at least 700 ms after the start; an earlier one is ignored.
+- While the key is held the meter sends no silence stops (and `decide` ignores any); only the
+  release or the 120 s maximum ends it.
+- A press within `AFTER_AUTO_STOP_IGNORE_MS` (700 ms) of an automatic stop is ignored: it was
+  almost certainly meant to stop the recording that had just stopped itself, and starting a
+  new one would supersede the dictation being transcribed.
+- `Escape` cancels.
+
+### Before the paste
+
+The worker, in order:
+
+1. Transcribes and formats. A cancelled session stops here. The text is stored in
+   `Recovery`, which orders transcripts by session id, so a late worker never replaces a
+   newer dictation's text.
+2. A superseded session (a newer recording started) stops too and is marked unpasted. The
+   recorder shows "Previous dictation was not pasted" once no recording or worker owns the
+   overlay, and only while that transcript is still the one "Copy last transcript" returns.
+3. `keyboard::wait_for_modifiers_released` waits up to 1 s: the global-shortcut plugin
+   reports the release when Space comes up, and a `Ctrl+V` sent with `Alt` still down would
+   arrive as `Ctrl+Alt+V`. Still held: `KEYS_STILL_HELD`, no paste.
+4. The session is checked again.
+5. `target_matches`: the foreground window, its process and the control holding the keyboard
+   focus (`GUITHREADINFO::hwndFocus`) must all equal what was captured at the press. A focus
+   that could be read at one end and not the other counts as changed. Otherwise
+   `FOCUS_CHANGED`, no paste. Only controls that are windows of their own are told apart:
+   every field of a web page, or of a program that draws its own controls, has the same
+   `hwndFocus`.
+6. `window::input_blocked_for_process`: Windows silently drops synthetic input to a window of
+   a higher integrity level (an administrator window when LocalFlow is not one), so
+   `ELEVATED_TARGET` is shown instead of a false "Inserted". A level that cannot be read is
+   not treated as blocked.
+
+### The clipboard
+
+- `read_previous_clipboard` keeps plain text for the restore. Content with a privacy marker
+  (`ExcludeClipboardContentFromMonitorProcessing`, `Clipboard Viewer Ignore`, or
+  `CanIncludeInClipboardHistory` / `CanUploadToCloudClipboard` set to anything but 1, or
+  present and unreadable) is never read and is cleared afterwards, never restored. Text
+  LocalFlow itself put back is recognised by the clipboard sequence number.
+- `DelayedText` (`platform/clipboard.rs`) announces the text with delayed rendering from a
+  hidden message-only window on its own thread, with the clipboard-history and cloud-sync
+  exclusions. The first `WM_RENDERFORMAT` tells LocalFlow that the text was fetched, and by
+  which process.
+- `restore_due` puts the earlier text back 300 ms after the target fetched it; 1 s after the
+  paste (or 300 ms after the fetch, if later) when another process fetched it first; 3 s
+  after the paste when nothing fetched it; and never sooner than 400 ms after the paste.
+  When `GetSystemMetrics(SM_REMOTESESSION)` says LocalFlow runs in a Remote Desktop session
+  these are 600 ms, 3 s, 8 s and 2 s.
+- If something else was copied in the meantime it is left alone. Restored text carries the
+  exclusions too, so a restore never adds a clipboard-history entry. If delayed rendering
+  cannot be set up, the text is placed directly and restored after the fixed delay. A new
+  paste first finishes a restore still waiting from the previous one.
+- Images and other formats are not restored; the clipboard is cleared instead.
+
+The last transcript is kept in memory only, for "Copy last transcript", which uses the same
+exclusions.
 
 ## Conversation engine
 
@@ -417,7 +517,7 @@ ignores the microphone while the assistant speaks, and interrupting is by hotkey
 | Model is a `ggml-*.bin` Whisper file                         | `whisper-server` (persistent), then `whisper-cli` with the same model                  |
 | Same, with low-resource mode or `whisper-server.exe` missing | `whisper-cli` only                                                                     |
 
-Model resolution: `LOCALFLOW_WHISPER_MODEL`, then Settings > Models > Whisper model path if
+Model resolution: `LOCALFLOW_WHISPER_MODEL`, then Settings > Models > Speech model file if
 the file exists, then the first installed of `parakeet-tdt-0.6b-v3-Q5_K_M.gguf` and
 `ggml-tiny.en-q5_1.bin`. Conversation uses the same resolution, so low-resource mode also
 moves a conversation onto the Whisper CLI.
@@ -440,8 +540,8 @@ moves a conversation onto the Whisper CLI.
   kernels for larger shapes only when they are first needed. A warm-up that fails or times
   out is logged and ignored as long as the model loaded.
 - `LOCALFLOW_ASR_DEVICE` (`cpu`, `gpu`) and `LOCALFLOW_ASR_THREADS` (a number, or `auto`)
-  override the defaults; an unparsable value is ignored. The Threads field in Settings >
-  Models is not read.
+  override the defaults; an unparsable value is ignored. The settings window has no field
+  for either.
 - The GPU build imports `vulkan-1.dll` and does not start without a Vulkan loader, so the
   feature is off by default. Silero voice detection stays on the CPU in both builds.
 
@@ -462,9 +562,13 @@ engine, implement `SpeechToTextProvider` and return it from `build_asr_provider`
   text preparation shared by both. `fish_s2.rs` implements it with Fish Audio S2 Pro through
   the `s2.cpp` server, supervised like the whisper server. `playback.rs` plays the clip.
   `mod.rs` is the read-aloud coordinator behind "Read last transcript aloud": a newer request
-  or a stop supersedes the current one, the engine is unloaded after five minutes without
-  use, and phase changes go out on `localflow://tts` without the text. Its files are
-  installed by `scripts/Build-FishS2.ps1` and `scripts/Get-FishModel.ps1` and never bundled.
+  or a stop supersedes the current one and cancels its synthesis, and while a synthesis runs
+  a watcher in `fish_s2.rs` stops the `s2.cpp` server when it is cancelled (the engine would
+  otherwise keep generating for nobody), so the next request starts it again. The engine is
+  unloaded after five minutes without a request; a stop does not count as one. Speaking a
+  transcript stops page reading. Phase changes go out on `localflow://tts` without the text.
+  Its files are installed by `scripts/Build-FishS2.ps1` and `scripts/Get-FishModel.ps1` and
+  never bundled.
 
 `audio/devices.rs` has the long-lived streams. `MicStream` and `SpeakerStream` callbacks
 neither allocate nor lock (`audio/ring.rs`). The speaker can `flush` (fade out over 6 ms and
@@ -503,8 +607,9 @@ hotkey or spoken command -> focused window -> capture policy (program, title)
 - `context/page/types.rs`: `VerbatimText` can only be made from page text, and its debug
   output shows a length, never the text.
 - `page_reader.rs`: ties these to the hotkey, the Phonon voice and the speaker, and
-  implements the conversation's `PageSource`. No language model is involved: page text goes
-  only to the voice, never to the model, the memory, a notice or a log.
+  implements the conversation's `PageSource`. The voice is loaded on the first reading, kept
+  for the next, and freed after five minutes without one. No language model is involved:
+  page text goes only to the voice, never to the model, the memory, a notice or a log.
 
 `cargo run --release --example page_probe -- "<window title>"` shows what would be read from
 a window as counts and kinds (add `--show-text` only for pages you wrote yourself).
@@ -591,10 +696,18 @@ flowchart TD
 - **Job objects.** `platform/process.rs` creates the child suspended, assigns it to a new
   kill-on-close job, and only then resumes it, so not even its first instruction runs outside
   the job. Cancelling ("stop that" or the hotkey), the 120 s limit, or LocalFlow exiting or
-  crashing ends the whole process tree. `CLAUDECODE` is removed from the agent's environment.
-- **Detection.** `CodingAgents::detect_all` runs as each conversation starts
-  (`AgentRuntime::prepare`) and when the settings screen asks. It only runs `claude --version`
-  and `--help`; the help text decides which options and permission modes exist.
+  crashing ends the whole process tree. `CLAUDECODE` is removed from the agent's environment,
+  and the background runs (`run_captured`: detection and questions) get
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_AUTOUPDATER=1`
+  (`run::BACKGROUND_ENV`). The visible Windows Terminal tab is the user's own session and
+  gets neither.
+- **Detection.** `CodingAgents::detect_all` only runs `claude --version` and `--help`; the
+  help text decides which options and permission modes exist. As a conversation starts,
+  `AgentRuntime::prepare` detects only if at least one project is set up, and reuses a result
+  younger than `DETECTION_MAX_AGE` (30 minutes). With no projects, `CodingAgents::context`
+  detects nothing either: every command needs a project, so the user is told to add one. The
+  Coding agents screen detects when it opens and on "Check again", which also refreshes the
+  conversation's result.
 - **The conversation hook.** `conversation/agents.rs` defines `AgentRuntime` (the host's
   projects, availability and `execute`), `AgentDialog` (the dialog plus whether its question
   was heard: `reply_finished`, `reply_cut`, `HeardTurn`), and `AgentJob` (a running question
@@ -616,16 +729,20 @@ Every command is declared in `src-tauri/build.rs` (`APP_COMMANDS`), registered i
 | Area          | Commands                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | App           | `get_status`, `save_settings`, `list_ollama_models`                                                                            |
-| Mock workflow | `begin_mock_session`, `finish_mock_session`, `cancel_session`                                                                  |
+| Mock workflow | `begin_mock_session` and `finish_mock_session` (debug builds only), `cancel_session`                                           |
 | Recovery      | `get_last_transcript`, `copy_last_transcript`                                                                                  |
 | Read-aloud    | `tts_status`, `speak_text`, `speak_last_transcript`, `stop_speaking`                                                           |
 | Conversation  | `conversation_status`, `toggle_conversation`                                                                                   |
 | Page reading  | `screen_reading_status`                                                                                                        |
 | Coding agents | `list_coding_projects`, `save_coding_project`, `remove_coding_project`, `suggest_project_spoken_names`, `detect_coding_agents` |
+| Readiness     | `readiness_status`                                                                                                             |
 
 - `capabilities/main.json`: the settings window may call all of them.
 - `capabilities/overlay.json`: the overlay window gets `core:event:default` only, so it can
   listen for events but cannot read transcripts or change settings.
+- The mock dictation commands are `#[cfg(debug_assertions)]` in `lib.rs` and listed in
+  `DEBUG_ONLY_COMMANDS` in `build.rs`, which reads `capabilities/debug/` only for a debug
+  build. A release build neither has the commands nor can grant them.
 - A new command must be added to `build.rs`, `capabilities/main.json` and `lib.rs`, or the
   web UI cannot call it; the failure shows only at run time.
 - The coding-agent commands edit projects and run detection; none starts an agent. Project
@@ -643,26 +760,150 @@ Events, none of which carries anything that was said or read:
 The web UI runs under a content security policy (`tauri.conf.json`): scripts and styles from
 the app only, connections only to the app's IPC. The Models screen asks the native layer
 which Ollama models are installed (`list_ollama_models`), so the packaged web UI needs no
-network access. Development builds use a looser policy for Vite's hot reload.
+network access. Development builds use a looser policy for Vite's hot reload. Only in a
+browser, outside the desktop app, does the web UI call Ollama itself (`src/domain/ollama.ts`),
+and `evaluateDictationNetworkUrl` then allows only plain HTTP to `localhost`, `127.0.0.1` or
+`[::1]` on port 11434 with no credentials in the URL; every request is sent with
+`redirect: "error"`.
+
+## Ollama models that run elsewhere
+
+Ollama can serve "cloud" models, which it forwards to Ollama's servers. A name is no proof: a
+cloud model can be copied or created under any name. Before any request that carries text
+(dictation clean-up, the conversation, the keep-warm request), `ensure_local_model` in
+`llm/ollama.rs`:
+
+1. refuses a name whose tag is `cloud` or ends in `-cloud`;
+2. asks Ollama about the model (`POST /api/show`, loopback, no proxy, no redirects) and
+   refuses it if the description has a non-empty `remote_host` or `remote_model`;
+3. refuses it too when the reply is not a model description, or Ollama answers with an
+   error, so nothing is sent to a model nobody vouched for. A 404 is "not installed", a
+   refused connection "Ollama is not running".
+
+A clear answer (local, or cloud) is cached for 60 s per model, so the turns of a
+conversation do not each ask; anything else is asked again. `list_ollama_models` and the
+readiness check read `/api/tags` and leave out every entry with a cloud tag or a
+`remote_host` or `remote_model`, whatever it is called.
+
+## Readiness
+
+`readiness_status` (`readiness.rs`) answers the Home screen's Setup list: the speech model,
+the conversation voice, the Ollama model and the Whisper fallback (whisper.cpp and tiny.en)
+are required; Silero, Smart Turn and Fish S2 are optional. The speech model item is decided
+exactly as dictation decides it (`resolve_speech_model` in `runtime_paths.rs`, then
+`plan_asr_engine`), so it is ready whenever dictation works and is labelled with the model
+found. Two optional items appear only when they apply: `speech-model-upgrade` when dictation
+runs on tiny.en (Parakeet would be better), and `speech-model-path` when the model path in
+Settings names no file (dictation falls back to an installed model, so it only warns).
+Each item has an id, a label, whether it is ready and required, and a fix that
+names a script or a command, never a path. Files are looked for in the runtime folders
+(`runtime_paths.rs`). Ollama is asked once for its models, on its own thread, with a 2.5 s
+limit; a model with a cloud tag set in Settings gets "choose a local model". The settings
+window asks when it opens and each time it comes back from the tray, and shows the list only
+while a required item is missing.
+
+## App lifecycle
+
+`lib.rs`:
+
+- **Single instance.** `tauri-plugin-single-instance` is the first plugin. A second start
+  hands its arguments to the running copy and exits; the running copy shows the settings
+  window, or only the "ready" pulse when the desktop launcher's `--localflow-desktop-launch`
+  flag is present. The lock is named after the app identifier, so a debug build and a
+  release build share it.
+- **Hide on close.** A close request for the `main` window is turned into `hide()`
+  (`hides_on_close`); the tray's "Show LocalFlow" shows it again. The web UI keeps running
+  and receiving events while hidden; its status polling (`usePolling`) pauses while the page
+  is hidden.
+- **Start-up.** `init_logging` and `install_panic_hook` run first. `setup_app` attaches the
+  log file, loads the settings (`storage::start`), sweeps temporary audio files a crashed run
+  left (`whisper_cli::sweep_stale_temp_files`, on its own thread), builds the tray and
+  registers the hotkeys. If the Tauri build or `setup_app` fails, `report_start_failure`
+  writes the reason to the log and shows it in a message box, because the release build has
+  no console.
+- **Log file.** `storage::log_file` writes `localflow.log` in Tauri's app log folder
+  (`%LOCALAPPDATA%\app.localflow.desktop\logs`). When the next line would take it past 1 MB
+  the file becomes `localflow.log.1`, replacing the previous one. Lines logged before the
+  folder is known are held in memory (up to 64 KB) and written once it is. Every line passes
+  through `redact_user_paths`. The filter is fixed (`localflow=info,tauri=warn`), so an
+  environment variable cannot turn on a dependency's verbose logging. A debug build also
+  prints to its console.
+- **Panic hook.** It records the thread's name and the `file:line:column` of the panic, in
+  the log and as `lastPanic` in desktop health (Diagnostics "Last crash"), never the panic's
+  message, which can quote the text being handled. It does not wait on a lock its own thread
+  may hold. A debug build also prints the usual report.
+- **Settings storage.** `storage::start_at` never fails. A database that is damaged, not a
+  database or unreadable fails `PRAGMA quick_check(1)` or opening, and is renamed with its
+  `-journal`, `-wal` and `-shm` files to `localflow.sqlite3.corrupt-<UTC stamp>`; a new one
+  is made with default settings. A database that is merely busy, or a data folder that cannot
+  be made, is left alone: LocalFlow starts on default settings and says that it cannot save
+  changes. `parse_settings` reads the row leniently (see
+  [Persistence](#persistence)). Whenever defaults had to be used, the reason is shown in a
+  message box on its own thread, kept as the storage notice, and shown as the Diagnostics
+  "Settings storage" row.
+- **Shutdown.** On `RunEvent::Exit`, `shut_down` ends the conversation, page reading, the
+  speech engines and the voice engine on a `localflow-shutdown` thread and waits at most 2 s
+  for it (`SHUTDOWN_WAIT`), so a model lock held by a transcription in progress cannot keep
+  the app open. Every sidecar is in a kill-on-close job, so the process exit ends the rest.
+  Desktop health and the log are flushed last.
+- **Desktop health.** `desktop-health.json` in the app data folder holds when the app
+  started, which hotkeys registered, the last hotkey, overlay and recording events, the last
+  recording error and the last panic. Changes are kept in memory and written by their own
+  thread about 250 ms after a change, so a burst becomes one write, to a temporary file
+  renamed over the old one; a panic is written at once. The recording start keeps the time,
+  sample rate and channel count, never the microphone's name (neither the log lines nor the
+  silent-recording error name it). Messages pass through `redact_user_paths`.
 
 ## Frontend layer
 
-- `src/App.tsx`: the settings window: Home, Models, Microphone, Hotkeys, Dictionary,
-  Replacements, Snippets, Styles, Coding agents, Privacy, History, Diagnostics, About. It
-  polls conversation and reading status about once a second.
-- `src/services/localflowClient.ts`: the Tauri command adapter, with a browser fallback for
-  frontend development.
+- `src/main.tsx` picks the view: `?view=overlay` for the overlay window, otherwise the
+  settings window. `?view=overlay-demo` and `?view=mobile-sdk-example` exist only in
+  development builds (`import.meta.env.DEV`); a release build does not contain them.
+- `src/app/`: the settings window's shell. `App.tsx` has the navigation, the top bar's save
+  indicator ("Saving...", "All changes saved", "Not saved" with Try again) and an
+  `ErrorBoundary` per screen, so a fault in one screen does not blank the window and nothing
+  about it is logged. `screens.ts` lists the screens: Home, Models, Dictation, Hotkeys,
+  Dictionary, Replacements, Snippets, Coding agents, Privacy, Diagnostics, About.
+  `useAppStatus` loads the status and settings, applies edits at once and saves 300 ms after
+  the last one; each save has a sequence number, so a slow reply to an older save cannot
+  undo newer edits, and a failed save is reported, never shown as saved. Until the settings
+  have loaded, screens that change them are not shown. `useLiveStatus` holds what changes by
+  itself: conversation and reading status (polled about once a second by `usePolling` while
+  the window is visible), read-aloud, the last transcript, the readiness checklist (on open
+  and whenever the window comes back), and the Home problem banner. `useNativeEvents`
+  listens to `localflow://native-dictation`, `localflow://conversation` and `localflow://tts`
+  and drops audio-feature events before any React state changes.
+- `src/screens/`: one component per screen (`HomeScreen.tsx` and so on; `ListScreens.tsx`
+  has Dictionary, Replacements and Snippets). `DevSimulationPanels.tsx`, the mock dictation,
+  is shown only in development builds.
+- `src/components/ui/`: buttons, fields, notices, panels and `ListEditor`. Text and number
+  fields keep what is typed and commit when the field is left (or on Enter); a number is
+  moved into its range and the field says so; an empty required field shows an error and
+  keeps the saved value, so editing never deletes a row.
+- `src/styles/`: `tokens.css` (colours for the Windows light and dark themes through
+  `prefers-color-scheme`) and `app.css`.
+- `src/services/localflowClient.ts`: the Tauri command adapter. Replies are checked for
+  shape and numbers are clamped to the native ranges before saving. In the desktop app a
+  failed command is an error, never browser mock data, and settings are never written to
+  browser storage; outside it (`npm run dev` in a browser) settings fall back to browser
+  storage and native-only status is empty.
 - `src/components/VoiceOverlay.tsx`: the overlay window. Phase events flow through React
   state; audio-feature events (about 36 a second) only update a ref polled by the renderer,
   so React never re-renders at microphone rate and a late feature event cannot change the
   phase.
 - `packages/localflow-sdk/src/react/topology/`: the overlay renderer, a mirrored ridgeline
-  spectrogram on a single-rAF Canvas 2D loop. `?view=overlay-demo` previews it in a browser.
+  spectrogram on a single-rAF Canvas 2D loop. `?view=overlay-demo` previews it in a
+  development build.
 - `src/domain`: shared, tested logic: `conversation.ts` and `codingAgents.ts` (what the
-  settings window shows for those features), the mock state machine, deterministic clean-up,
-  transcript stabilisation, insertion planning, the cleanup JSON contract, context and
-  privacy policy, diagnostics export, performance formatting, settings mutations, command
-  mode planning, undo, the local-only network policy, and Ollama discovery.
+  settings window shows for those features, including how the last conversation ended),
+  `readiness.ts` (the Setup list), `nativeEvents.ts` (event payloads, and the Home banner
+  with its suggested action), `nativePayloads.ts` (checking command replies), `hotkeys.ts`
+  (the hotkey table and its registration status), `format.ts` and `validation.ts`, the mock
+  state machine, deterministic clean-up, transcript stabilisation, insertion planning, the
+  cleanup JSON contract, context and privacy policy, the diagnostics export (which replaces
+  user folders with `<user folder>` and microphone names with `<microphone>`), performance
+  formatting, settings mutations, command mode planning, undo, the local-only network policy,
+  and Ollama discovery.
 
 ## Provider boundaries
 
@@ -681,8 +922,15 @@ network access. Development builds use a looser policy for Vite's hot reload.
 ## Persistence
 
 SQLite lives at `localflow.sqlite3` in the Tauri app data folder
-(`%APPDATA%\app.localflow.desktop`). It has tables for settings, dictation history and
-dictionary entries; only the settings row (`settings.v1`, JSON) is written today. Settings
-structs are `#[serde(default)]`, so settings written before a field existed still load. A
-row that cannot be parsed is copied to `settings.v1.unreadable` before defaults replace it.
-Conversation memory and reading positions are in memory only.
+(`%APPDATA%\app.localflow.desktop`), next to `desktop-health.json`. It has tables for
+settings, dictation history and dictionary entries; only the settings row (`settings.v1`,
+JSON) is written today. Settings structs are `#[serde(default)]`, so settings written before
+a field existed still load. `parse_settings` reads a row that does not fit leniently: a
+number out of its field's range is clamped (and rounded where a whole number is needed), a
+value of an unknown kind is dropped so its field keeps the default, and a list keeps every
+entry it can read. Only text that is not JSON at all fails. When anything was corrected, or
+the row failed, it is first copied to `settings.v1.unreadable`, and the user is told (see
+[App lifecycle](#app-lifecycle)). A damaged database is moved aside and replaced.
+
+The log is in `%LOCALAPPDATA%\app.localflow.desktop\logs`. Conversation memory, the last
+dictation transcript and reading positions are in memory only.

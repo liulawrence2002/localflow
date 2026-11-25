@@ -23,6 +23,24 @@ const POLL: Duration = Duration::from_millis(25);
 /// LocalFlow itself was started from one.
 pub const REMOVED_ENV: &[&str] = &["CLAUDECODE"];
 
+/// Environment variables set for the runs LocalFlow starts in the background (detection and
+/// spoken questions): no update checks, error reports or other traffic Claude Code does not
+/// need to answer. Not set for the visible tab the user opens, which is their own session.
+pub const BACKGROUND_ENV: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ("DISABLE_AUTOUPDATER", "1"),
+];
+
+/// Apply [`REMOVED_ENV`] and [`BACKGROUND_ENV`] to `command`.
+pub fn background_environment(command: &mut Command) {
+    for name in REMOVED_ENV {
+        command.env_remove(name);
+    }
+    for (name, value) in BACKGROUND_ENV {
+        command.env(name, value);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RunLimits {
     pub time_limit: Duration,
@@ -69,9 +87,7 @@ pub fn run_captured(
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    for name in REMOVED_ENV {
-        command.env_remove(name);
-    }
+    background_environment(&mut command);
 
     let started = Instant::now();
     let mut child = ContainedChild::spawn_hidden(&mut command)?;
@@ -152,4 +168,33 @@ fn join_reader(reader: Option<JoinHandle<Vec<u8>>>) -> String {
         .and_then(|reader| reader.join().ok())
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_runs_turn_off_nonessential_traffic_and_drop_the_nesting_marker() {
+        let mut command = Command::new("claude.exe");
+        command.env("CLAUDECODE", "1");
+
+        background_environment(&mut command);
+
+        let envs: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(envs.contains(&(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".to_string(),
+            Some("1".to_string())
+        )));
+        assert!(envs.contains(&("DISABLE_AUTOUPDATER".to_string(), Some("1".to_string()))));
+        assert!(envs.contains(&("CLAUDECODE".to_string(), None)));
+    }
 }

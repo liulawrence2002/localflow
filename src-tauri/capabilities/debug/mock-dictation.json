@@ -1,0 +1,7 @@
+{
+  "$schema": "../../gen/schemas/desktop-schema.json",
+  "identifier": "mock-dictation",
+  "description": "Debug builds only (build.rs reads this folder in a debug build): lets the settings window run the mock dictation.",
+  "windows": ["main"],
+  "permissions": ["allow-begin-mock-session", "allow-finish-mock-session"]
+}

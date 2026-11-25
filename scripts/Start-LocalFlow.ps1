@@ -13,6 +13,18 @@ if ((Test-Path -LiteralPath $cargoBin) -and (($env:Path -split ";") -notcontains
   $env:Path = "$cargoBin;$env:Path"
 }
 
+# The first build compiles the in-process speech engine from C++ and needs CMake, which the
+# Visual Studio Build Tools ship.
+function Add-CMakePath {
+  if (Get-Command cmake -ErrorAction SilentlyContinue) { return }
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+  if (-not (Test-Path -LiteralPath $vswhere)) { return }
+  $vs = & $vswhere -latest -products * -property installationPath
+  if (-not $vs) { return }
+  $cmakeBin = Join-Path $vs "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+  if (Test-Path -LiteralPath $cmakeBin) { $env:Path = "$cmakeBin;$env:Path" }
+}
+
 function Get-ProcessPath {
   param([System.Diagnostics.Process]$Process)
   try {
@@ -69,7 +81,10 @@ function Ensure-ReleaseBuild {
     npm install
   }
 
-  npm run tauri:build
+  # Only the executable: the installers are not needed to run from the checkout.
+  Add-CMakePath
+  npm run tauri:build -- --no-bundle
+  if ($LASTEXITCODE -ne 0) { throw "The release build failed (exit code $LASTEXITCODE)." }
 }
 
 function Ensure-Ollama {

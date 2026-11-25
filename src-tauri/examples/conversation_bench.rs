@@ -101,7 +101,7 @@ impl AudioSource for PacedMic {
         if pending.is_empty() {
             // Between questions the room is silent, not dead: keep the audio clock running.
             drop(pending);
-            out.extend(std::iter::repeat(0.0).take(MIC_RATE as usize / 100));
+            out.extend(std::iter::repeat_n(0.0, MIC_RATE as usize / 100));
             return;
         }
         out.append(&mut pending);

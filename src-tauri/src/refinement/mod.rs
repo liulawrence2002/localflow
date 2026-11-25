@@ -1,3 +1,6 @@
+//! The refinement boundary the mock dictation (debug builds) runs through. Real cleanup of
+//! dictated text is `llm::cleanup`, against the local Ollama server.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,31 +39,4 @@ impl RefinementProvider for MockRefinementProvider {
             warnings: vec!["Mock provider used; no local LLM was contacted.".to_string()],
         })
     }
-}
-
-pub struct NoOpRefinementProvider;
-
-impl RefinementProvider for NoOpRefinementProvider {
-    fn refine(&self, transcript: &str) -> Result<RefinementOutput, String> {
-        Ok(RefinementOutput {
-            text: transcript.to_string(),
-            confidence: 1.0,
-            resolved_corrections: Vec::new(),
-            warnings: Vec::new(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct OllamaRefinementProviderConfig {
-    pub base_url: String,
-    pub model: String,
-    pub timeout_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct LlamaCppRefinementProviderConfig {
-    pub base_url: String,
-    pub model_alias: String,
-    pub timeout_ms: u64,
 }

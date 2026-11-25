@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest something LocalFlow could do, or do better.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        LocalFlow runs everything on your computer: no cloud speech recognition or language
+        model, no telemetry, and no silent network fallback (see `AGENTS.md` and
+        `docs/PRIVACY.md`). Requests that need a cloud service are unlikely to be accepted.
+
+        **Never paste transcripts, dictated text, page text or personal paths** in an example.
+        Describe them in general terms instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The task, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How it could work, including what you would say or press.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and network
+      description: Would this read anything new, keep anything, or contact any service?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: checkboxes
+    id: check
+    attributes:
+      label: Before you submit
+      options:
+        - label: This request contains no transcripts, dictated or page text, and no paths with my user name.
+          required: true

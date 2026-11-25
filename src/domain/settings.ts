@@ -30,6 +30,11 @@ export function addDictionaryEntry(
   };
 }
 
+/**
+ * Change one dictionary entry. Text is trimmed, but a row is never deleted by an edit: a patch
+ * that would leave the phrase empty keeps the phrase there was. Callers commit text when the
+ * user leaves the field, so typing ("pie torch") is never trimmed mid-word.
+ */
 export function updateDictionaryEntry(
   settings: LocalFlowSettings,
   id: string,
@@ -37,9 +42,13 @@ export function updateDictionaryEntry(
 ): LocalFlowSettings {
   return {
     ...settings,
-    dictionary: settings.dictionary
-      .map((entry) => (entry.id === id ? sanitizeDictionaryEntry({ ...entry, ...patch }) : entry))
-      .filter((entry) => entry.phrase),
+    dictionary: settings.dictionary.map((entry) => {
+      if (entry.id !== id) {
+        return entry;
+      }
+      const next = sanitizeDictionaryEntry({ ...entry, ...patch });
+      return next.phrase ? next : { ...next, phrase: entry.phrase };
+    }),
   };
 }
 
@@ -73,9 +82,17 @@ export function updateReplacementRule(
 ): LocalFlowSettings {
   return {
     ...settings,
-    replacements: settings.replacements
-      .map((rule) => (rule.id === id ? sanitizeReplacementRule({ ...rule, ...patch }) : rule))
-      .filter((rule) => rule.incorrect && rule.correct),
+    replacements: settings.replacements.map((rule) => {
+      if (rule.id !== id) {
+        return rule;
+      }
+      const next = sanitizeReplacementRule({ ...rule, ...patch });
+      return {
+        ...next,
+        incorrect: next.incorrect || rule.incorrect,
+        correct: next.correct || rule.correct,
+      };
+    }),
   };
 }
 
@@ -109,9 +126,17 @@ export function updateSnippet(
 ): LocalFlowSettings {
   return {
     ...settings,
-    snippets: settings.snippets
-      .map((snippet) => (snippet.id === id ? sanitizeSnippet({ ...snippet, ...patch }) : snippet))
-      .filter((snippet) => snippet.trigger && snippet.expansion),
+    snippets: settings.snippets.map((snippet) => {
+      if (snippet.id !== id) {
+        return snippet;
+      }
+      const next = sanitizeSnippet({ ...snippet, ...patch });
+      return {
+        ...next,
+        trigger: next.trigger || snippet.trigger,
+        expansion: next.expansion || snippet.expansion,
+      };
+    }),
   };
 }
 
@@ -145,9 +170,13 @@ export function updateStyleProfile(
 ): LocalFlowSettings {
   return {
     ...settings,
-    styles: settings.styles
-      .map((style) => (style.id === id ? sanitizeStyleProfile({ ...style, ...patch }) : style))
-      .filter((style) => style.name),
+    styles: settings.styles.map((style) => {
+      if (style.id !== id) {
+        return style;
+      }
+      const next = sanitizeStyleProfile({ ...style, ...patch });
+      return next.name ? next : { ...next, name: style.name };
+    }),
   };
 }
 
@@ -180,7 +209,48 @@ export function createCustomStyleDraft(name = "Custom application"): DraftStyleP
   };
 }
 
+/** The end-of-speech wait the native layer accepts, in milliseconds. */
+export const endOfSpeechRange = { min: 300, max: 3000 } as const;
+
+/**
+ * Settings with every number in the range its native field holds (`u8`/`u16` in Rust), so a
+ * save can never be refused by the native layer for a value the UI let through.
+ */
+export function clampForNative(settings: LocalFlowSettings): LocalFlowSettings {
+  return {
+    ...settings,
+    models: {
+      ...settings.models,
+      asrThreads: clampInteger(settings.models.asrThreads, 1, 255, 4),
+    },
+    microphone: {
+      ...settings.microphone,
+      endOfSpeechMs: clampInteger(
+        settings.microphone.endOfSpeechMs,
+        endOfSpeechRange.min,
+        endOfSpeechRange.max,
+        900,
+      ),
+      maxRecordingSeconds: clampInteger(settings.microphone.maxRecordingSeconds, 1, 65_535, 120),
+    },
+    styles: settings.styles.map(sanitizeStyleProfile),
+  };
+}
+
+function clampInteger(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/**
+ * Fill in anything missing from settings that came from storage or the native layer. Tolerates
+ * absent sections and lists, so an older or partial payload still loads.
+ */
 export function normalizeSettings(settings: LocalFlowSettings): LocalFlowSettings {
+  const listOf = <T>(value: T[] | undefined): T[] => (Array.isArray(value) ? value : []);
+  const styles = listOf(settings.styles);
   return {
     ...defaultSettings,
     ...settings,
@@ -188,11 +258,11 @@ export function normalizeSettings(settings: LocalFlowSettings): LocalFlowSetting
     models: { ...defaultSettings.models, ...settings.models },
     microphone: { ...defaultSettings.microphone, ...settings.microphone },
     privacy: { ...defaultSettings.privacy, ...settings.privacy },
-    dictionary: settings.dictionary.map(sanitizeDictionaryEntry),
-    replacements: settings.replacements.map(sanitizeReplacementRule),
-    snippets: settings.snippets.map(sanitizeSnippet),
-    styles: settings.styles.length
-      ? settings.styles.map((style) =>
+    dictionary: listOf(settings.dictionary).map(sanitizeDictionaryEntry),
+    replacements: listOf(settings.replacements).map(sanitizeReplacementRule),
+    snippets: listOf(settings.snippets).map(sanitizeSnippet),
+    styles: styles.length
+      ? styles.map((style) =>
           sanitizeStyleProfile({
             ...createCustomStyleDraft(style.name),
             ...style,
@@ -212,7 +282,7 @@ export function normalizeSettings(settings: LocalFlowSettings): LocalFlowSetting
 function sanitizeDictionaryEntry(entry: DictionaryEntry): DictionaryEntry {
   return {
     ...entry,
-    phrase: entry.phrase.trim(),
+    phrase: (entry.phrase ?? "").trim(),
     pronunciationHint: entry.pronunciationHint?.trim() || undefined,
   };
 }
@@ -220,23 +290,23 @@ function sanitizeDictionaryEntry(entry: DictionaryEntry): DictionaryEntry {
 function sanitizeReplacementRule(rule: ReplacementRule): ReplacementRule {
   return {
     ...rule,
-    incorrect: rule.incorrect.trim(),
-    correct: rule.correct.trim(),
+    incorrect: (rule.incorrect ?? "").trim(),
+    correct: (rule.correct ?? "").trim(),
   };
 }
 
 function sanitizeSnippet(snippet: Snippet): Snippet {
   return {
     ...snippet,
-    trigger: snippet.trigger.trim(),
-    expansion: snippet.expansion.trim(),
+    trigger: (snippet.trigger ?? "").trim(),
+    expansion: (snippet.expansion ?? "").trim(),
   };
 }
 
 function sanitizeStyleProfile(style: StyleProfile): StyleProfile {
   return {
     ...style,
-    name: style.name.trim(),
+    name: (style.name ?? "").trim(),
     conciseness: clampSetting(style.conciseness),
     formality: clampSetting(style.formality),
   };

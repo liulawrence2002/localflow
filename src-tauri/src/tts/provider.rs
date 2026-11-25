@@ -7,6 +7,8 @@
 
 use std::{fmt, time::Duration};
 
+use crate::cancel::CancelFlag;
+
 /// Mono audio produced by a voice engine, in `[-1, 1]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SynthesizedAudio {
@@ -37,6 +39,8 @@ pub enum TtsError {
     Failed(String),
     /// There was nothing to say after the text was cleaned up.
     NothingToSay,
+    /// The request was stopped before it finished.
+    Cancelled,
 }
 
 impl fmt::Display for TtsError {
@@ -49,6 +53,7 @@ impl fmt::Display for TtsError {
                 waited.as_secs()
             ),
             Self::NothingToSay => formatter.write_str("There is no text to read aloud."),
+            Self::Cancelled => formatter.write_str("Reading aloud was stopped."),
         }
     }
 }
@@ -68,8 +73,10 @@ pub trait TextToSpeechProvider: Send + Sync {
         Ok(())
     }
 
-    /// Turn `text` into audio, blocking until done, failed, or timed out.
-    fn synthesize(&self, text: &str) -> Result<SynthesizedAudio, TtsError>;
+    /// Turn `text` into audio, blocking until done, failed or timed out. Setting `cancel`
+    /// stops the engine working on it (not just the wait for it); the call then returns
+    /// [`TtsError::Cancelled`] soon after.
+    fn synthesize(&self, text: &str, cancel: &CancelFlag) -> Result<SynthesizedAudio, TtsError>;
 
     /// Release resources (stop a sidecar, free the model). Idempotent.
     fn shutdown(&self) {}

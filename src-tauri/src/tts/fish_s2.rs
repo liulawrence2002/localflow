@@ -21,8 +21,8 @@ use std::{
     path::PathBuf,
     process::{Child, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        Arc, Condvar, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -37,6 +37,7 @@ use crate::{
         sidecar::{hidden_sidecar_command, tcp_listener_pid, ChildLifetimeGuard},
     },
     audio::wav::decode_wav_mono,
+    cancel::CancelFlag,
 };
 
 pub const FISH_S2_PROVIDER_ID: &str = "fish-s2";
@@ -108,16 +109,35 @@ impl RunningServer {
 
 /// How long a failed start is remembered before another attempt is made.
 const START_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+/// How often a request in progress checks whether it was cancelled.
+const CANCEL_POLL: Duration = Duration::from_millis(25);
+
+/// Where the server process is in its life.
+#[derive(Default)]
+enum ServerPhase {
+    #[default]
+    Stopped,
+    /// A caller is starting it, without holding the lock (loading the model can take minutes).
+    /// Setting the flag makes that start give up and kill the process.
+    Starting {
+        abort: Arc<AtomicBool>,
+    },
+    Running(RunningServer),
+}
 
 #[derive(Default)]
 struct ServerState {
-    running: Option<RunningServer>,
+    phase: ServerPhase,
     last_start_failure: Option<(Instant, String)>,
 }
 
 pub struct FishS2Provider {
     config: FishS2Config,
     server: Mutex<ServerState>,
+    /// Signalled when a start finishes, for callers waiting on it.
+    started: Condvar,
+    /// One request at a time: two would share, and on failure kill, one server.
+    one_request: Mutex<()>,
     client: reqwest::blocking::Client,
     starts: AtomicU64,
 }
@@ -128,6 +148,8 @@ impl FishS2Provider {
         Ok(Self {
             config,
             server: Mutex::new(ServerState::default()),
+            started: Condvar::new(),
+            one_request: Mutex::new(()),
             client,
             starts: AtomicU64::new(0),
         })
@@ -140,10 +162,10 @@ impl FishS2Provider {
 
     /// Whether the sidecar is currently loaded.
     pub fn is_loaded(&self) -> bool {
-        self.lock_server()
-            .running
-            .as_mut()
-            .is_some_and(RunningServer::is_alive)
+        match &mut self.lock_server().phase {
+            ServerPhase::Running(server) => server.is_alive(),
+            _ => false,
+        }
     }
 
     fn lock_server(&self) -> std::sync::MutexGuard<'_, ServerState> {
@@ -169,17 +191,30 @@ impl FishS2Provider {
         Ok(())
     }
 
+    /// The port of a live server, starting one if needed. The lock is not held while the
+    /// server starts, so stopping or unloading never waits for a model load; a second caller
+    /// waits for the start already under way instead of starting another process.
     fn ensure_running(&self) -> Result<u16, TtsError> {
         let mut guard = self.lock_server();
-
-        if let Some(server) = guard.running.as_mut() {
-            if server.is_alive() {
-                return Ok(server.port);
+        loop {
+            match &mut guard.phase {
+                ServerPhase::Running(server) => {
+                    if server.is_alive() {
+                        return Ok(server.port);
+                    }
+                    tracing::warn!("fish-s2 server exited unexpectedly; restarting");
+                    if let ServerPhase::Running(dead) = std::mem::take(&mut guard.phase) {
+                        dead.stop();
+                    }
+                }
+                ServerPhase::Starting { .. } => {
+                    guard = self
+                        .started
+                        .wait(guard)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                ServerPhase::Stopped => break,
             }
-            tracing::warn!("fish-s2 server exited unexpectedly; restarting");
-        }
-        if let Some(dead) = guard.running.take() {
-            dead.stop();
         }
 
         if let Some((failed_at, reason)) = &guard.last_start_failure {
@@ -190,21 +225,44 @@ impl FishS2Provider {
             }
         }
 
-        match self.check_files().and_then(|()| self.start_server()) {
-            Ok(server) => {
+        let abort = Arc::new(AtomicBool::new(false));
+        guard.phase = ServerPhase::Starting {
+            abort: abort.clone(),
+        };
+        drop(guard);
+
+        let result = self.check_files().and_then(|()| self.start_server(&abort));
+
+        let mut guard = self.lock_server();
+        let (outcome, discard) = match result {
+            Ok(server) if !abort.load(Ordering::SeqCst) => {
                 let port = server.port;
-                guard.running = Some(server);
+                guard.phase = ServerPhase::Running(server);
                 guard.last_start_failure = None;
-                Ok(port)
+                (Ok(port), None)
+            }
+            Ok(server) => {
+                guard.phase = ServerPhase::Stopped;
+                (Err(stopped_while_starting()), Some(server))
             }
             Err(error) => {
-                guard.last_start_failure = Some((Instant::now(), error.to_string()));
-                Err(error)
+                guard.phase = ServerPhase::Stopped;
+                // A start that was called off is not a failure to back off from.
+                if !abort.load(Ordering::SeqCst) {
+                    guard.last_start_failure = Some((Instant::now(), error.to_string()));
+                }
+                (Err(error), None)
             }
+        };
+        drop(guard);
+        self.started.notify_all();
+        if let Some(server) = discard {
+            server.stop();
         }
+        outcome
     }
 
-    fn start_server(&self) -> Result<RunningServer, TtsError> {
+    fn start_server(&self, abort: &AtomicBool) -> Result<RunningServer, TtsError> {
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .and_then(|listener| listener.local_addr())
             .map(|address| address.port())
@@ -252,6 +310,11 @@ impl FishS2Provider {
 
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         loop {
+            if abort.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(stopped_while_starting());
+            }
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(TtsError::Unavailable(format!(
                     "The Fish S2 engine exited during startup with {status}"
@@ -294,27 +357,101 @@ impl FishS2Provider {
         })
     }
 
+    /// Stop the server, or call off a start in progress. Never waits for a model load.
     fn stop_server(&self) {
-        if let Some(server) = self.lock_server().running.take() {
+        let taken = {
+            let mut guard = self.lock_server();
+            match &guard.phase {
+                ServerPhase::Starting { abort } => {
+                    abort.store(true, Ordering::SeqCst);
+                    None
+                }
+                ServerPhase::Running(_) => match std::mem::take(&mut guard.phase) {
+                    ServerPhase::Running(server) => Some(server),
+                    _ => None,
+                },
+                ServerPhase::Stopped => None,
+            }
+        };
+        if let Some(server) = taken {
             server.stop();
         }
     }
 
     fn stop_server_on_port(&self, port: u16) {
-        let mut guard = self.lock_server();
-        if guard
-            .running
-            .as_ref()
-            .is_some_and(|server| server.port == port)
-        {
-            if let Some(server) = guard.running.take() {
-                server.stop();
+        let taken = {
+            let mut guard = self.lock_server();
+            match &guard.phase {
+                ServerPhase::Running(server) if server.port == port => {
+                    match std::mem::take(&mut guard.phase) {
+                        ServerPhase::Running(server) => Some(server),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        if let Some(server) = taken {
+            server.stop();
+        }
+    }
+
+    /// One request, at most two attempts: a server that exited while idle is restarted once.
+    /// `port` is where the request was sent, for the watcher that stops it on cancel.
+    fn synthesize_once(
+        &self,
+        text: &str,
+        cancel: &CancelFlag,
+        port_in_use: &AtomicU32,
+    ) -> Result<SynthesizedAudio, TtsError> {
+        let deadline = synthesis_deadline(text);
+        let mut last_error = String::new();
+        for attempt in 0..2 {
+            if cancel.is_cancelled() {
+                return Err(TtsError::Cancelled);
+            }
+            let port = self.ensure_running()?;
+            port_in_use.store(u32::from(port), Ordering::SeqCst);
+            // A cancel that came while the server was starting found no port to stop.
+            if cancel.is_cancelled() {
+                return Err(TtsError::Cancelled);
+            }
+            let started_at = Instant::now();
+
+            match request_speech(&self.client, port, text, deadline) {
+                Ok(audio) => return Ok(audio),
+                // The server was stopped to end this request: do not start it again for it.
+                Err(_) if cancel.is_cancelled() => return Err(TtsError::Cancelled),
+                Err(RequestError::Timeout) => {
+                    self.stop_server_on_port(port);
+                    return Err(TtsError::Timeout {
+                        provider: FISH_S2_PROVIDER_ID,
+                        waited: started_at.elapsed(),
+                    });
+                }
+                Err(RequestError::BadAudio(reason)) => {
+                    return Err(TtsError::Failed(format!(
+                        "Fish S2 returned unusable audio: {reason}"
+                    )));
+                }
+                Err(RequestError::Transport(reason)) => {
+                    tracing::warn!(attempt, error = %reason, "fish-s2 request failed; restarting");
+                    last_error = reason;
+                    self.stop_server_on_port(port);
+                }
             }
         }
+
+        Err(TtsError::Failed(format!(
+            "Fish S2 request failed twice: {last_error}"
+        )))
     }
 }
 
-/// An HTTP client that can only talk to loopback as written: no proxy, no redirects.
+fn stopped_while_starting() -> TtsError {
+    TtsError::Unavailable("The Fish S2 engine was stopped while it was starting.".to_string())
+}
+// An HTTP client that can only talk to loopback as written: no proxy, no redirects.
 fn loopback_client() -> Result<reqwest::blocking::Client, TtsError> {
     reqwest::blocking::Client::builder()
         .no_proxy()
@@ -431,41 +568,40 @@ impl TextToSpeechProvider for FishS2Provider {
         self.ensure_running().map(|_| ())
     }
 
-    fn synthesize(&self, text: &str) -> Result<SynthesizedAudio, TtsError> {
+    /// One request at a time. While it runs, a watcher stops the server if `cancel` is set:
+    /// the engine keeps generating for a client that has hung up, and minutes of work for
+    /// audio nobody will hear would also hold up the next request. The next request starts
+    /// the server again.
+    fn synthesize(&self, text: &str, cancel: &CancelFlag) -> Result<SynthesizedAudio, TtsError> {
         let text = prepare_text_for_speech(text).ok_or(TtsError::NothingToSay)?;
-        let deadline = synthesis_deadline(&text);
-
-        let mut last_error = String::new();
-        // One retry: a server that exited while idle is restarted transparently.
-        for attempt in 0..2 {
-            let port = self.ensure_running()?;
-            let started_at = Instant::now();
-
-            match request_speech(&self.client, port, &text, deadline) {
-                Ok(audio) => return Ok(audio),
-                Err(RequestError::Timeout) => {
-                    self.stop_server_on_port(port);
-                    return Err(TtsError::Timeout {
-                        provider: FISH_S2_PROVIDER_ID,
-                        waited: started_at.elapsed(),
-                    });
-                }
-                Err(RequestError::BadAudio(reason)) => {
-                    return Err(TtsError::Failed(format!(
-                        "Fish S2 returned unusable audio: {reason}"
-                    )));
-                }
-                Err(RequestError::Transport(reason)) => {
-                    tracing::warn!(attempt, error = %reason, "fish-s2 request failed; restarting");
-                    last_error = reason;
-                    self.stop_server_on_port(port);
-                }
-            }
+        let _one_request = self
+            .one_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cancel.is_cancelled() {
+            return Err(TtsError::Cancelled);
         }
 
-        Err(TtsError::Failed(format!(
-            "Fish S2 request failed twice: {last_error}"
-        )))
+        let port_in_use = AtomicU32::new(0);
+        let finished = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                while !finished.load(Ordering::SeqCst) {
+                    if cancel.is_cancelled() {
+                        if let Ok(port) = u16::try_from(port_in_use.load(Ordering::SeqCst)) {
+                            if port != 0 {
+                                self.stop_server_on_port(port);
+                            }
+                        }
+                        return;
+                    }
+                    thread::sleep(CANCEL_POLL);
+                }
+            });
+            let result = self.synthesize_once(&text, cancel, &port_in_use);
+            finished.store(true, Ordering::SeqCst);
+            result
+        })
     }
 
     fn shutdown(&self) {
@@ -483,7 +619,10 @@ impl Drop for FishS2Provider {
 mod tests {
     use super::*;
     use crate::audio::wav::encode_wav_mono;
-    use std::io::{Read, Write};
+    use std::{
+        io::{Read, Write},
+        sync::mpsc,
+    };
 
     fn config(server: &str) -> FishS2Config {
         FishS2Config {
@@ -589,8 +728,7 @@ mod tests {
             "Read this aloud.",
             Duration::from_secs(5),
         )
-        .err()
-        .expect("stub answered with an error");
+        .expect_err("stub answered with an error");
 
         match error {
             RequestError::Transport(reason) => {
@@ -610,8 +748,7 @@ mod tests {
             "Hello.",
             Duration::from_secs(5),
         )
-        .err()
-        .expect("stub answered with junk");
+        .expect_err("stub answered with junk");
 
         assert!(matches!(error, RequestError::BadAudio(_)));
     }
@@ -637,7 +774,10 @@ mod tests {
         let provider = FishS2Provider::new(config("Z:/someone/fish/s2.exe")).unwrap();
 
         let first = provider.prepare().unwrap_err().to_string();
-        let second = provider.synthesize("Hello there.").unwrap_err().to_string();
+        let second = provider
+            .synthesize("Hello there.", &CancelFlag::default())
+            .unwrap_err()
+            .to_string();
 
         assert_eq!(first, "Missing Fish S2 engine (s2.exe)");
         assert!(second.contains("not being restarted yet"));
@@ -650,8 +790,179 @@ mod tests {
     fn empty_text_is_rejected_before_any_engine_work() {
         let provider = FishS2Provider::new(config("Z:/someone/fish/s2.exe")).unwrap();
 
-        assert_eq!(provider.synthesize("  \n "), Err(TtsError::NothingToSay));
+        assert_eq!(
+            provider.synthesize("  \n ", &CancelFlag::default()),
+            Err(TtsError::NothingToSay)
+        );
         assert_eq!(provider.start_count(), 0);
+    }
+
+    #[test]
+    fn a_request_cancelled_before_it_starts_sends_nothing_and_starts_nothing() {
+        let provider = FishS2Provider::new(config("Z:/someone/fish/s2.exe")).unwrap();
+        let cancel = CancelFlag::default();
+        cancel.cancel();
+
+        assert_eq!(
+            provider.synthesize("Hello there.", &cancel),
+            Err(TtsError::Cancelled)
+        );
+        assert_eq!(provider.start_count(), 0);
+    }
+
+    #[test]
+    fn stopping_during_a_start_calls_it_off_without_waiting_for_it() {
+        let provider = FishS2Provider::new(config("Z:/someone/fish/s2.exe")).unwrap();
+        let abort = Arc::new(AtomicBool::new(false));
+        provider.lock_server().phase = ServerPhase::Starting {
+            abort: abort.clone(),
+        };
+
+        let started = Instant::now();
+        provider.shutdown();
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(abort.load(Ordering::SeqCst));
+        // The starter owns the phase until its start returns.
+        assert!(matches!(
+            provider.lock_server().phase,
+            ServerPhase::Starting { .. }
+        ));
+    }
+
+    #[test]
+    fn a_second_caller_waits_for_the_start_already_under_way() {
+        let provider = Arc::new(FishS2Provider::new(config("Z:/someone/fish/s2.exe")).unwrap());
+        provider.lock_server().phase = ServerPhase::Starting {
+            abort: Arc::new(AtomicBool::new(false)),
+        };
+
+        let waiting = provider.clone();
+        let caller = thread::spawn(move || {
+            let started = Instant::now();
+            let result = waiting.prepare();
+            (result, started.elapsed())
+        });
+        thread::sleep(Duration::from_millis(150));
+        {
+            // The first start fails.
+            let mut state = provider.lock_server();
+            state.phase = ServerPhase::Stopped;
+            state.last_start_failure = Some((Instant::now(), "it broke".to_string()));
+        }
+        provider.started.notify_all();
+
+        let (result, waited) = caller.join().unwrap();
+        assert!(waited >= Duration::from_millis(140), "{waited:?}");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not being restarted yet"));
+        assert_eq!(provider.start_count(), 0);
+    }
+
+    /// A stand-in for a running `s2.cpp`: a real (harmless) child process in the provider's
+    /// state, and a listener on its port that holds each request open until told to hang up.
+    #[cfg(windows)]
+    fn provider_with_a_hanging_server() -> (Arc<FishS2Provider>, mpsc::Sender<()>, Arc<AtomicU32>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let child = std::process::Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let provider = Arc::new(FishS2Provider::new(config("Z:/someone/fish/s2.exe")).unwrap());
+        provider.lock_server().phase = ServerPhase::Running(RunningServer {
+            child,
+            port,
+            _lifetime: None,
+        });
+
+        let (hang_up_tx, hang_up_rx) = mpsc::channel::<()>();
+        let connections = Arc::new(AtomicU32::new(0));
+        let counted = connections.clone();
+        thread::spawn(move || {
+            let mut open = Vec::new();
+            listener.set_nonblocking(true).unwrap();
+            loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    open.push(stream);
+                }
+                if hang_up_rx.try_recv().is_ok() {
+                    // As the killed engine would: every connection closes.
+                    open.clear();
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        (provider, hang_up_tx, connections)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancelling_a_request_in_progress_stops_the_engine_and_does_not_restart_it() {
+        let (provider, hang_up, connections) = provider_with_a_hanging_server();
+        let cancel = CancelFlag::default();
+
+        let worker = {
+            let provider = provider.clone();
+            let cancel = cancel.clone();
+            thread::spawn(move || provider.synthesize("Read this aloud.", &cancel))
+        };
+        let wait_until = |what: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !what() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            what()
+        };
+        assert!(wait_until(&|| connections.load(Ordering::SeqCst) == 1));
+        assert!(provider.is_loaded());
+
+        cancel.cancel();
+        // The watcher stops the engine; its connections then close.
+        assert!(wait_until(&|| !provider.is_loaded()));
+        hang_up.send(()).unwrap();
+
+        assert_eq!(worker.join().unwrap(), Err(TtsError::Cancelled));
+        assert_eq!(
+            provider.start_count(),
+            0,
+            "a cancelled request must not restart it"
+        );
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn requests_run_one_at_a_time() {
+        let (provider, hang_up, connections) = provider_with_a_hanging_server();
+        let first_cancel = CancelFlag::default();
+        let second_cancel = CancelFlag::default();
+
+        let first = {
+            let (provider, cancel) = (provider.clone(), first_cancel.clone());
+            thread::spawn(move || provider.synthesize("First.", &cancel))
+        };
+        thread::sleep(Duration::from_millis(200));
+        let second = {
+            let (provider, cancel) = (provider.clone(), second_cancel.clone());
+            thread::spawn(move || provider.synthesize("Second.", &cancel))
+        };
+        thread::sleep(Duration::from_millis(300));
+        // The second waits for the first instead of sharing its server.
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+
+        second_cancel.cancel();
+        first_cancel.cancel();
+        thread::sleep(Duration::from_millis(100));
+        hang_up.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), Err(TtsError::Cancelled));
+        assert_eq!(second.join().unwrap(), Err(TtsError::Cancelled));
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
     #[test]

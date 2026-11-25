@@ -1,5 +1,7 @@
 # LocalFlow production-readiness review (architecture)
 
+> **Research snapshot dated 2026-11-22.** Kept as written; model choices, measurements and plans may have changed since, and it may not match the current code. For what was decided and built, see [VOICE_ASSISTANT_PLAN.md](../../VOICE_ASSISTANT_PLAN.md) and [development/PLAN.md](../../development/PLAN.md).
+
 > Research appendix produced on 2026-11-22 by an independent research agent for the voice pipeline review. It is kept as written, apart from removing machine-specific paths. Line references to `native_dictation.rs` describe the code before the changes in `../VOICE_PIPELINE_REVIEW.md`. Figures are labelled by the author as vendor, third-party, reproduced, or unverified; treat unlabelled numbers as unverified.
 
 Scope: read-only review of `the LocalFlow repository` on branch `feature/topographic-waveform-overlay` (HEAD `eb17641`).
@@ -31,16 +33,16 @@ The live path works as a single-user prototype and has good safety instincts (se
 
 Hard. There is no seam: the coordinator is the provider.
 
-| Coupling | Evidence |
-|---|---|
-| Coordinator calls the whisper CLI function directly and passes it the `AppHandle` | `nd.rs:961`, `nd.rs:1562-1567` |
-| Engine contract is "WAV on disk in, JSON file on disk out"; the coordinator owns both files | `nd.rs:945-950`, `nd.rs:957`, `nd.rs:963-964`, `nd.rs:1609` |
-| Model file name hardcoded | `nd.rs:1970` |
-| Language hardcoded to English | `nd.rs:1588-1589` |
-| Refinement is a free function bound to one URL constant and the Ollama `/api/generate` wire format | `nd.rs:251`, `nd.rs:1698-1768` |
-| Every error is a `String`, so the coordinator cannot tell "missing binary" from "timeout" from "bad output" and cannot decide whether to fall back | `nd.rs:1567`, `nd.rs:1702`, `nd.rs:1731` |
-| Stage latency fields are named after the engines (`whisper_ms`, `ollama_cleanup_ms`) | `nd.rs:172`, `nd.rs:179` |
-| No fallback chain: one engine, one error, session ends | `nd.rs:965` |
+| Coupling                                                                                                                                           | Evidence                                                    |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Coordinator calls the whisper CLI function directly and passes it the `AppHandle`                                                                  | `nd.rs:961`, `nd.rs:1562-1567`                              |
+| Engine contract is "WAV on disk in, JSON file on disk out"; the coordinator owns both files                                                        | `nd.rs:945-950`, `nd.rs:957`, `nd.rs:963-964`, `nd.rs:1609` |
+| Model file name hardcoded                                                                                                                          | `nd.rs:1970`                                                |
+| Language hardcoded to English                                                                                                                      | `nd.rs:1588-1589`                                           |
+| Refinement is a free function bound to one URL constant and the Ollama `/api/generate` wire format                                                 | `nd.rs:251`, `nd.rs:1698-1768`                              |
+| Every error is a `String`, so the coordinator cannot tell "missing binary" from "timeout" from "bad output" and cannot decide whether to fall back | `nd.rs:1567`, `nd.rs:1702`, `nd.rs:1731`                    |
+| Stage latency fields are named after the engines (`whisper_ms`, `ollama_cleanup_ms`)                                                               | `nd.rs:172`, `nd.rs:179`                                    |
+| No fallback chain: one engine, one error, session ends                                                                                             | `nd.rs:965`                                                 |
 
 Adding a persistent `whisper-server` or Parakeet today means editing `process_session`, the latency snapshot, the diagnostics rows and the path-resolution helpers.
 
@@ -82,17 +84,17 @@ Trait signatures are in section 8.2. The shape, in short:
 
 ### 2.1 Thread and channel map
 
-| Thread | Created at | Lifetime | Blocks on |
-|---|---|---|---|
-| Recorder loop | `nd.rs:277` | Process | Unbounded `mpsc` receive (`nd.rs:648`); WASAPI device open (`nd.rs:734-754`); health-file I/O |
-| cpal audio callback | `nd.rs:1381-1416` | Per recording | `samples` mutex, plus heap allocation (`nd.rs:1393-1397`, `nd.rs:1426-1427`) |
-| Level meter / VAD | `nd.rs:1161` | Per recording | 55 ms sleep; `samples` mutex; health-file I/O through `emit_native_event` |
-| Session worker | `nd.rs:874` | Per recording | `Command::output()` with no timeout (`nd.rs:1598-1600`) |
-| Background cleanup | `nd.rs:1110` | Per recording | Blocking reqwest, 20 s per attempt, 2 attempts (`nd.rs:1723`, `nd.rs:1704-1710`) |
-| Ollama warm-up | `nd.rs:1771` | Per recording | Blocking reqwest, 12 s (`nd.rs:1784`) |
-| Clipboard restore | `nd.rs:1884` | Per paste | 400 ms sleep |
-| Overlay hide | `nd.rs:2080` | Per ready / inserted / error event | 700 ms sleep |
-| Launch-signal watcher | `desktop_health.rs:148` | Process | 550 ms poll, forever (`desktop_health.rs:161-173`) |
+| Thread                | Created at              | Lifetime                           | Blocks on                                                                                     |
+| --------------------- | ----------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| Recorder loop         | `nd.rs:277`             | Process                            | Unbounded `mpsc` receive (`nd.rs:648`); WASAPI device open (`nd.rs:734-754`); health-file I/O |
+| cpal audio callback   | `nd.rs:1381-1416`       | Per recording                      | `samples` mutex, plus heap allocation (`nd.rs:1393-1397`, `nd.rs:1426-1427`)                  |
+| Level meter / VAD     | `nd.rs:1161`            | Per recording                      | 55 ms sleep; `samples` mutex; health-file I/O through `emit_native_event`                     |
+| Session worker        | `nd.rs:874`             | Per recording                      | `Command::output()` with no timeout (`nd.rs:1598-1600`)                                       |
+| Background cleanup    | `nd.rs:1110`            | Per recording                      | Blocking reqwest, 20 s per attempt, 2 attempts (`nd.rs:1723`, `nd.rs:1704-1710`)              |
+| Ollama warm-up        | `nd.rs:1771`            | Per recording                      | Blocking reqwest, 12 s (`nd.rs:1784`)                                                         |
+| Clipboard restore     | `nd.rs:1884`            | Per paste                          | 400 ms sleep                                                                                  |
+| Overlay hide          | `nd.rs:2080`            | Per ready / inserted / error event | 700 ms sleep                                                                                  |
+| Launch-signal watcher | `desktop_health.rs:148` | Process                            | 550 ms poll, forever (`desktop_health.rs:161-173`)                                            |
 
 Locks: `sessions`, `last_transcript`, `latency_snapshots`, `command_tx` (`nd.rs:34-38`), the per-recording `samples` and `last_voice_at`, and the global `HEALTH_LOCK` (`desktop_health.rs:20`). No lock is taken while another is held, so I found no deadlock. Poison is recovered almost everywhere; the exceptions are `command_tx` (`nd.rs:633`, `nd.rs:760`) and `samples` at stop (`nd.rs:841`).
 
@@ -100,6 +102,7 @@ Locks: `sessions`, `last_transcript`, `latency_snapshots`, `command_tx` (`nd.rs:
 
 **C1 (P0-1). The whisper sidecar has no timeout, no kill and no cancel.**
 `run_whisper` uses `command.output()` (`nd.rs:1598-1600`). If the process hangs, the worker thread never returns. The session guard only checks after whisper returns (`nd.rs:971`), so supersede or cancel does not stop the process. Consequences:
+
 - The overlay stays on "processing", because hide is only scheduled for `ready`, `inserted` and `error` (`nd.rs:2057`).
 - The temp WAV of the user's speech stays on disk, because deletion follows the call (`nd.rs:963-964`).
 - Each further recording spawns another worker and another whisper process; nothing caps the count.
@@ -110,15 +113,17 @@ Quit is `app.exit(0)` (`lib.rs:108`). There is no `RunEvent` handler and no Job 
 
 **C3 (P0-4). The level meter skips its watchdog when no samples arrive.**
 An empty chunk hits `continue` before `detector.observe()` runs (`nd.rs:1181-1183`, `nd.rs:1189`). `observe()` is the only place the 120 s cap and the 2.5 s no-speech timeout are enforced (`nd.rs:1238-1244`). If the device stops delivering callbacks (unplugged mid-recording, driver stall), then:
+
 - the session stays in `listening` indefinitely;
 - the stream error callback only logs (`nd.rs:1378`);
 - Escape stays registered as a global shortcut (`nd.rs:791`), so Escape is swallowed in every application until the user presses the dictation hotkey again.
 
 **C4 (P1). Recorder commands carry no session id.**
 `RecorderCommand` is `{ app, state: String, received_at }` (`nd.rs:155-159`). The level meter of recording A can enqueue `auto_stop` or `cancel` after A has been finished by the hotkey, because it only checks its stop channel once per 55 ms loop (`nd.rs:1166-1169`, `nd.rs:1200-1205`). The stale command is then applied to whatever is current:
+
 - a stale `cancel` invalidates A's in-flight worker (`nd.rs:686-696`), so the dictation is dropped;
 - a stale `auto_stop` stops recording B if B started in between (`nd.rs:679-685`).
-The window is a few milliseconds per recording, so this will be rare but not reproducible when it happens.
+  The window is a few milliseconds per recording, so this will be rare but not reproducible when it happens.
 
 **C5 (P1). The health file is rewritten about 18 times per second while recording.**
 `emit_native_event` calls `desktop_health::record_overlay_event` for every event, including each audio-feature event (`nd.rs:2044`, called from `nd.rs:1187` via `nd.rs:2021-2023`). Each call takes a global lock, reads and parses `desktop-health.json`, re-serialises it and rewrites it (`desktop_health.rs:282-302`). This runs on the VAD thread, so end-of-speech timing depends on disk and antivirus latency. The hotkey handler does the same I/O on the event-loop thread for every press and release (`hotkeys/mod.rs:60`) and contends for the same lock. The write is not atomic (`desktop_health.rs:300`). The same function also calls `window.show()` on every feature event (`nd.rs:2039`).
@@ -127,6 +132,7 @@ The window is a few milliseconds per recording, so this will be rare but not rep
 Starting a new recording bumps the session (`nd.rs:772`). When the earlier worker's whisper call returns, it fails the check at `nd.rs:971-974` and returns before `store_last_transcript` (`nd.rs:1016`). A user who starts the next sentence while the previous one is still transcribing loses the previous sentence, and "Copy last transcript" cannot recover it. Cold-spawn whisper makes that window as long as the transcription itself.
 
 **C7 (P2). Capture buffer.**
+
 - Bounded only by the level-meter thread (120 s, `nd.rs:262`). See C3 for how that bound is lost.
 - Pre-allocated for 20 s (`nd.rs:748`); beyond that it reallocates inside the audio callback.
 - The callback allocates a `Vec` per buffer and takes a mutex (`nd.rs:1421-1428`).
@@ -145,29 +151,29 @@ After a fixed 400 ms the previous text is written back (`nd.rs:1889-1894`) witho
 
 ## 3. Fault tolerance on the live path
 
-| Failure | Handling today | Surfaced | Recoverable | Evidence |
-|---|---|---|---|---|
-| No default microphone | Error returned | Yes, overlay error | Yes | `nd.rs:735-737` |
-| Mic muted or blocked by Windows privacy (stream of zeros) | No-speech timeout sends `cancel` | **No.** Overlay just closes after 2.5 s | Yes, but undiagnosable | `nd.rs:1195-1199`, `nd.rs:1242-1244` |
-| Same, key released between 0.7 s and 2.5 s | Near-silent error with device name | Yes | Yes | `nd.rs:863-868` |
-| Device disconnect mid-recording | Stream error logged only; watchdog disabled (C3) | **No** | Only by pressing the hotkey again | `nd.rs:1378`, `nd.rs:1181-1183` |
-| Recording under 250 ms | Error | Yes | Yes | `nd.rs:846-848` |
-| whisper binary or model missing | Error listing the paths checked | Yes | Yes | `nd.rs:2001-2015` |
-| whisper non-zero exit | Error with stderr | Yes | Yes | `nd.rs:1602-1607` |
-| whisper hang | **None** (C1) | **No**, overlay stuck | **No**, thread and process leak | `nd.rs:1598-1600` |
-| whisper JSON missing or malformed | Error | Yes | Yes | `nd.rs:1657-1676` |
-| whisper blank or marker output | Error | Yes | Yes | `nd.rs:967-969`, `nd.rs:1679-1696` |
-| whisper hallucination on noise | Not detected; pasted as text | No | Manual undo | n/a |
-| Ollama down, slow or 404 | Background failure; deterministic text already inserted | Diagnostics row only | Yes | `nd.rs:1131-1143` |
-| Ollama invalid JSON | One repair attempt, then failure | Diagnostics row only | Yes | `nd.rs:1706-1716` |
-| Clipboard busy | Error; transcript already stored for recovery | Yes | Yes, "Copy last transcript" | `nd.rs:1016`, `nd.rs:1046`, `nd.rs:1859-1865` |
-| Target window changed | Fail closed; transcript stored | Yes | Yes | `nd.rs:1036-1044` |
-| No foreground window at record start | Records and transcribes, then refuses to paste | Only at the end | Yes | `nd.rs:729-732`, `nd.rs:116-123` |
-| Focus moved to another field in the same window | Not detected (HWND and PID only) | No | No | `nd.rs:116-123` |
-| Hotkey still held when paste fires | Not handled (F2 below) | No | No | `nd.rs:1911-1917` |
-| Settings row fails to deserialise | Defaults used | Log only | **No**, next save overwrites the row | `lib.rs:52-54`, `storage/mod.rs:83-86` |
-| `save_settings` fails | Frontend silently falls back to `localStorage` | **No** | **No** | `src/services/localflowClient.ts:86-96` |
-| Hotkeys fail to register | Error pulse and health record | Yes | Restart | `hotkeys/mod.rs:109-114` |
+| Failure                                                   | Handling today                                          | Surfaced                                | Recoverable                          | Evidence                                      |
+| --------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------- | ------------------------------------ | --------------------------------------------- |
+| No default microphone                                     | Error returned                                          | Yes, overlay error                      | Yes                                  | `nd.rs:735-737`                               |
+| Mic muted or blocked by Windows privacy (stream of zeros) | No-speech timeout sends `cancel`                        | **No.** Overlay just closes after 2.5 s | Yes, but undiagnosable               | `nd.rs:1195-1199`, `nd.rs:1242-1244`          |
+| Same, key released between 0.7 s and 2.5 s                | Near-silent error with device name                      | Yes                                     | Yes                                  | `nd.rs:863-868`                               |
+| Device disconnect mid-recording                           | Stream error logged only; watchdog disabled (C3)        | **No**                                  | Only by pressing the hotkey again    | `nd.rs:1378`, `nd.rs:1181-1183`               |
+| Recording under 250 ms                                    | Error                                                   | Yes                                     | Yes                                  | `nd.rs:846-848`                               |
+| whisper binary or model missing                           | Error listing the paths checked                         | Yes                                     | Yes                                  | `nd.rs:2001-2015`                             |
+| whisper non-zero exit                                     | Error with stderr                                       | Yes                                     | Yes                                  | `nd.rs:1602-1607`                             |
+| whisper hang                                              | **None** (C1)                                           | **No**, overlay stuck                   | **No**, thread and process leak      | `nd.rs:1598-1600`                             |
+| whisper JSON missing or malformed                         | Error                                                   | Yes                                     | Yes                                  | `nd.rs:1657-1676`                             |
+| whisper blank or marker output                            | Error                                                   | Yes                                     | Yes                                  | `nd.rs:967-969`, `nd.rs:1679-1696`            |
+| whisper hallucination on noise                            | Not detected; pasted as text                            | No                                      | Manual undo                          | n/a                                           |
+| Ollama down, slow or 404                                  | Background failure; deterministic text already inserted | Diagnostics row only                    | Yes                                  | `nd.rs:1131-1143`                             |
+| Ollama invalid JSON                                       | One repair attempt, then failure                        | Diagnostics row only                    | Yes                                  | `nd.rs:1706-1716`                             |
+| Clipboard busy                                            | Error; transcript already stored for recovery           | Yes                                     | Yes, "Copy last transcript"          | `nd.rs:1016`, `nd.rs:1046`, `nd.rs:1859-1865` |
+| Target window changed                                     | Fail closed; transcript stored                          | Yes                                     | Yes                                  | `nd.rs:1036-1044`                             |
+| No foreground window at record start                      | Records and transcribes, then refuses to paste          | Only at the end                         | Yes                                  | `nd.rs:729-732`, `nd.rs:116-123`              |
+| Focus moved to another field in the same window           | Not detected (HWND and PID only)                        | No                                      | No                                   | `nd.rs:116-123`                               |
+| Hotkey still held when paste fires                        | Not handled (F2 below)                                  | No                                      | No                                   | `nd.rs:1911-1917`                             |
+| Settings row fails to deserialise                         | Defaults used                                           | Log only                                | **No**, next save overwrites the row | `lib.rs:52-54`, `storage/mod.rs:83-86`        |
+| `save_settings` fails                                     | Frontend silently falls back to `localStorage`          | **No**                                  | **No**                               | `src/services/localflowClient.ts:86-96`       |
+| Hotkeys fail to register                                  | Error pulse and health record                           | Yes                                     | Restart                              | `hotkeys/mod.rs:109-114`                      |
 
 **F1 (P1). Errors are visible for 700 ms.**
 The overlay hide timer for `error` is the same 700 ms used for `inserted` (`nd.rs:2057-2058`, `nd.rs:2081`). Multi-sentence messages such as the near-silent diagnostic (`nd.rs:865`) or the focus-changed recovery hint (`nd.rs:1041`) cannot be read in a 593 x 91 pill in that time.
@@ -221,6 +227,7 @@ Events to the overlay carry phase, message and audio features only (`nd.rs:215-2
 ## 5. Security
 
 **S1 (P0-2). Dictated text is exposed through the clipboard beyond the 400 ms paste window.**
+
 - `clipboard.set_text` is called with no exclusion formats (`nd.rs:1863-1865`). With Windows clipboard history enabled the text is retained in history; with cloud clipboard sync enabled it is uploaded. That conflicts with the AGENTS.md rule of no cloud path for dictated content.
 - Only text is saved and restored (`nd.rs:1861`, `nd.rs:1891-1895`). If the clipboard held an image or files, that content is destroyed and the transcript stays on the clipboard indefinitely.
 - arboard 3.6.1, already in `Cargo.lock`, provides `exclude_from_history`, `exclude_from_cloud` and `exclude_from_monitoring` on Windows.
@@ -228,6 +235,7 @@ Events to the overlay carry phase, message and audio features only (`nd.rs:215-2
 
 **S2 (P0-3). The Ollama client can send transcripts off the loopback interface.**
 The URL is a constant (`nd.rs:251`), which is good, but the client is built with defaults (`nd.rs:1732-1735`):
+
 - reqwest 0.12.28 applies `HTTP_PROXY` / `ALL_PROXY` from the environment unless `.no_proxy()` is called. Only `NO_PROXY` exempts a host; there is no implicit loopback exemption (checked in the vendored `hyper-util` matcher). On a machine with a proxy variable set, the POST containing the transcript goes to the proxy.
 - The default redirect policy follows up to 10 redirects. Whatever answers on port 11434 can redirect the request, body included, to another host.
 - Fix: `.no_proxy()` and `.redirect(Policy::none())`. S effort, low risk.
@@ -236,12 +244,14 @@ The URL is a constant (`nd.rs:251`), which is good, but the client is built with
 Loopback ports are machine-wide. Any local process, including one owned by another user on a shared machine, can bind 11434 when Ollama is not running and receive every transcript. `docs/network-policy.md:19` says native integrations must call the shared policy; the Rust path has no policy function at all, only the constant. Longer-term fix: an app-supervised refiner on an ephemeral port with listener-PID verification (section 8.4).
 
 **S4 (P1). Executable and model path resolution.**
+
 - `LOCALFLOW_WHISPER_CLI` and `LOCALFLOW_WHISPER_MODEL` are honoured in release builds (`nd.rs:1946-1948`, `nd.rs:1962-1964`). Any process that can set a user environment variable can make LocalFlow run an arbitrary binary and hand it the user's speech.
 - `workspace_runtime_dir()` compiles the build machine's absolute repo path into the binary through `env!("CARGO_MANIFEST_DIR")` (`nd.rs:1985-1991`) and searches it in production (`nd.rs:1981`). The release binary therefore contains the builder's user name and will execute `whisper-cli.exe` from that path if the bundled copy is absent.
 - The sidecar runs with the inherited environment and with its own folder as working directory (`nd.rs:1575-1577`); no hash or signature check.
 - Fix: gate both fallbacks behind `cfg(debug_assertions)`. S effort, low risk for installed builds; the repo-based launcher still works because resources are copied next to the release exe.
 
 **S5 (P1). CSP is disabled and both windows share one capability.**
+
 - `"csp": null` (`src-tauri/tauri.conf.json:44-46`).
 - The overlay window, which only needs to listen to events, gets the same capability as the main window (`src-tauri/capabilities/default.json:5`), including `global-shortcut:allow-register` / `allow-unregister` and `opener:default` (`default.json:8-11`). No frontend code imports either plugin (searched `src`, `packages`, `tests`).
 - All commands, including `get_last_transcript`, are callable from the overlay.
@@ -252,6 +262,7 @@ Seven commands (`lib.rs:71-79`). The three mock commands ship in production (`li
 
 **S7 (P2, no injection found). The whisper `--prompt` argument.**
 The prompt is passed as a separate argument through `Command::arg` (`nd.rs:1594-1596`), so there is no shell. It always starts with `Glossary: ` (`nd.rs:1637`), so a term cannot be read as a flag. Residual points:
+
 - the cap counts bytes while the constant is named chars (`nd.rs:1615`, `nd.rs:1628`);
 - control characters and newlines in terms are passed through;
 - dictionary terms appear on the process command line, readable by other processes of the same user.
@@ -271,16 +282,16 @@ Only the launcher script de-duplicates (`scripts/Start-LocalFlow.ps1:117-130`). 
 
 ### 6.1 Dead or mock-only Rust
 
-| Item | Evidence |
-|---|---|
-| `AsrProvider`, `MockAsrProvider`, `WhisperCppProviderConfig` | `src-tauri/src/asr/mod.rs:16-44`; used only at `app_state.rs:254-258` |
-| `StreamingAsrProvider`, `StreamingSession`, stabilizer, window planner, WER | `asr/streaming.rs:12` (`allow(dead_code)`), `asr/stabilizer.rs`, `asr/windows.rs`, `asr/metrics.rs` |
-| `RefinementProvider` mocks and two unused config structs | `src-tauri/src/refinement/mod.rs:12-66` |
-| `AudioCapture`, `TextInserter`, `ContextProvider`, `StartupRegistration` (trait plus mock or no-op only) | `src-tauri/src/audio/mod.rs`, `insertion/mod.rs`, `context/mod.rs`, `platform/mod.rs` |
-| Workflow reducer, driven only by mock commands | `src-tauri/src/workflow/mod.rs:158`; `app_state.rs:226-346` |
-| `dictation_history` and `dictionary_entries` tables, never read or written | `src-tauri/src/storage/mod.rs:32-47` |
-| `refining` overlay phase, never emitted | `nd.rs:2038` |
-| Settings fields never read by the live path | `app_state.rs:75-111` (hotkeys, three model fields, all microphone fields, all privacy fields) |
+| Item                                                                                                     | Evidence                                                                                            |
+| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `AsrProvider`, `MockAsrProvider`, `WhisperCppProviderConfig`                                             | `src-tauri/src/asr/mod.rs:16-44`; used only at `app_state.rs:254-258`                               |
+| `StreamingAsrProvider`, `StreamingSession`, stabilizer, window planner, WER                              | `asr/streaming.rs:12` (`allow(dead_code)`), `asr/stabilizer.rs`, `asr/windows.rs`, `asr/metrics.rs` |
+| `RefinementProvider` mocks and two unused config structs                                                 | `src-tauri/src/refinement/mod.rs:12-66`                                                             |
+| `AudioCapture`, `TextInserter`, `ContextProvider`, `StartupRegistration` (trait plus mock or no-op only) | `src-tauri/src/audio/mod.rs`, `insertion/mod.rs`, `context/mod.rs`, `platform/mod.rs`               |
+| Workflow reducer, driven only by mock commands                                                           | `src-tauri/src/workflow/mod.rs:158`; `app_state.rs:226-346`                                         |
+| `dictation_history` and `dictionary_entries` tables, never read or written                               | `src-tauri/src/storage/mod.rs:32-47`                                                                |
+| `refining` overlay phase, never emitted                                                                  | `nd.rs:2038`                                                                                        |
+| Settings fields never read by the live path                                                              | `app_state.rs:75-111` (hotkeys, three model fields, all microphone fields, all privacy fields)      |
 
 ### 6.2 Rust and TypeScript duplication
 
@@ -296,12 +307,12 @@ Eight TypeScript domain modules have no importer outside `tests/`: `whisperSidec
 
 ### 6.3 Unused dependencies (confirmed by search)
 
-| Dependency | Where declared | Finding |
-|---|---|---|
-| `thiserror` | `src-tauri/Cargo.toml:33` | No reference anywhere in `src-tauri/src` |
-| `tauri-plugin-opener` | `src-tauri/Cargo.toml:28`, initialised at `lib.rs:34` | No frontend or Rust caller |
-| `@tauri-apps/plugin-opener` | `package.json:27` | No import in `src`, `packages`, `tests` |
-| `@tauri-apps/plugin-global-shortcut` | `package.json:26` | No import in `src`, `packages`, `tests` (the Rust plugin is used) |
+| Dependency                           | Where declared                                        | Finding                                                           |
+| ------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| `thiserror`                          | `src-tauri/Cargo.toml:33`                             | No reference anywhere in `src-tauri/src`                          |
+| `tauri-plugin-opener`                | `src-tauri/Cargo.toml:28`, initialised at `lib.rs:34` | No frontend or Rust caller                                        |
+| `@tauri-apps/plugin-opener`          | `package.json:27`                                     | No import in `src`, `packages`, `tests`                           |
+| `@tauri-apps/plugin-global-shortcut` | `package.json:26`                                     | No import in `src`, `packages`, `tests` (the Rust plugin is used) |
 
 `regex`, `hound`, `arboard`, `cpal`, `rusqlite`, `chrono`, `reqwest`, `lucide-react` and `@tauri-apps/api` are all in use. I did not audit the devDependencies individually.
 
@@ -332,6 +343,7 @@ The resource globs are `*.exe` and `*.dll` (`src-tauri/tauri.conf.json:52-53`). 
 `scripts/Start-LocalFlow.ps1:109-110` starts `src-tauri\target\release\localflow.exe` and builds it if missing; `Start-LocalFlow.vbs` and `package.json:10` run PowerShell with `-ExecutionPolicy Bypass`. The MSI and NSIS outputs exist (`docs/development/PLAN.md:137-140`) but the scripts and the boot test (`scripts/Test-DesktopBoot.ps1`) assume a repo checkout.
 
 **D5 (P2). Packaging gaps.**
+
 - No code-signing configuration and no Ollama prerequisite check in the installer.
 - No start-at-login (`src-tauri/src/platform/mod.rs` is a no-op).
 - No LICENSE or third-party notices at the repo root, although whisper.cpp binaries and SDL2 are redistributed.
@@ -556,18 +568,18 @@ impl SidecarSupervisor {
 
 ### 8.5 Incremental migration (each step leaves the app working)
 
-| Step | Change | Covers | Effort | Risk |
-|---|---|---|---|---|
-| 1 | Hot fixes inside `native_dictation.rs`: whisper deadline and kill; `.no_proxy()` and no redirects; clipboard exclusion formats; watchdog runs on empty chunks; debug-only env and workspace fallbacks | P0-1 to P0-4, S4 | M | Low |
-| 2 | Small correctness fixes: session id on recorder commands; store transcript before the supersede check; release modifiers before paste; throttle health writes; `#[serde(default)]` on settings; stop swallowing `invoke` errors | C4, C6, F2, C5, F4, F5 | M | Low to medium |
-| 3 | Add `sidecar::job` and `sidecar::oneshot`; exit handler; temp-file guard and startup sweep | C2, C8 | M | Low |
-| 4 | Add `error.rs`, `net::loopback`, new `AsrEngine` / `Refiner` traits; wrap today's code as `WhisperCliEngine` and `OllamaRefiner`; coordinator calls the traits. Pure refactor, same behaviour | Section 1 | M | Medium |
-| 5 | `FallbackChain` with a single link each; provider config in settings; wire `whisper_model_path`, `language`, `asr_threads` | Section 1, D3 | M | Low |
-| 6 | Latency snapshot for every outcome, engine id and split timings, JSON export; `bin/asr_bench.rs` over the local corpus | Section 4 | M | Low |
-| 7 | Split the remaining concerns out of `native_dictation.rs` into `audio/`, `insertion/`, `overlay/`, `dictation/`; typed phase enum from `workflow` | Section 6 | L | Medium |
-| 8 | `SidecarSupervisor` and `WhisperServerEngine` as first link, CLI as fallback; measure with step 6 before changing the default | C1, latency | L | Medium |
-| 9 | CSP and capability split; remove mock commands from release builds; remove unused dependencies; explicit bundle list; runtime manifest with checksums | S5, S6, D1, D2 | M | Medium |
-| 10 | Delete or relocate the unused TypeScript domain modules and the superseded Rust mocks; refresh docs | Section 6 | M | Low |
+| Step | Change                                                                                                                                                                                                                          | Covers                 | Effort | Risk          |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ------ | ------------- |
+| 1    | Hot fixes inside `native_dictation.rs`: whisper deadline and kill; `.no_proxy()` and no redirects; clipboard exclusion formats; watchdog runs on empty chunks; debug-only env and workspace fallbacks                           | P0-1 to P0-4, S4       | M      | Low           |
+| 2    | Small correctness fixes: session id on recorder commands; store transcript before the supersede check; release modifiers before paste; throttle health writes; `#[serde(default)]` on settings; stop swallowing `invoke` errors | C4, C6, F2, C5, F4, F5 | M      | Low to medium |
+| 3    | Add `sidecar::job` and `sidecar::oneshot`; exit handler; temp-file guard and startup sweep                                                                                                                                      | C2, C8                 | M      | Low           |
+| 4    | Add `error.rs`, `net::loopback`, new `AsrEngine` / `Refiner` traits; wrap today's code as `WhisperCliEngine` and `OllamaRefiner`; coordinator calls the traits. Pure refactor, same behaviour                                   | Section 1              | M      | Medium        |
+| 5    | `FallbackChain` with a single link each; provider config in settings; wire `whisper_model_path`, `language`, `asr_threads`                                                                                                      | Section 1, D3          | M      | Low           |
+| 6    | Latency snapshot for every outcome, engine id and split timings, JSON export; `bin/asr_bench.rs` over the local corpus                                                                                                          | Section 4              | M      | Low           |
+| 7    | Split the remaining concerns out of `native_dictation.rs` into `audio/`, `insertion/`, `overlay/`, `dictation/`; typed phase enum from `workflow`                                                                               | Section 6              | L      | Medium        |
+| 8    | `SidecarSupervisor` and `WhisperServerEngine` as first link, CLI as fallback; measure with step 6 before changing the default                                                                                                   | C1, latency            | L      | Medium        |
+| 9    | CSP and capability split; remove mock commands from release builds; remove unused dependencies; explicit bundle list; runtime manifest with checksums                                                                           | S5, S6, D1, D2         | M      | Medium        |
+| 10   | Delete or relocate the unused TypeScript domain modules and the superseded Rust mocks; refresh docs                                                                                                                             | Section 6              | M      | Low           |
 
 ---
 
@@ -575,48 +587,48 @@ impl SidecarSupervisor {
 
 ### P0: bug or safety issue
 
-| ID | Finding | Evidence | Effort | Risk |
-|---|---|---|---|---|
-| P0-1 | Whisper sidecar has no timeout, kill or cancel; a hang leaves the overlay on "processing", leaks a thread and process, and leaves the speech WAV on disk | `nd.rs:1598-1600`, `nd.rs:971`, `nd.rs:2057`, `nd.rs:963-964` | M | Low |
-| P0-2 | Dictated text is written to the clipboard without history / cloud exclusion; non-text clipboard content is destroyed and the transcript is left behind | `nd.rs:1861-1865`, `nd.rs:1891-1895` | S (exclusion), M (format preservation) | Low |
-| P0-3 | Ollama client honours proxy environment variables and follows redirects, so a transcript can leave loopback | `nd.rs:1732-1735`, `nd.rs:251` | S | Low |
-| P0-4 | Level meter skips the max-duration and no-speech checks when no samples arrive; device loss leaves the session listening and Escape grabbed globally | `nd.rs:1181-1183`, `nd.rs:1238-1244`, `nd.rs:1378`, `nd.rs:791` | S | Low |
+| ID   | Finding                                                                                                                                                  | Evidence                                                        | Effort                                 | Risk |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------- | ---- |
+| P0-1 | Whisper sidecar has no timeout, kill or cancel; a hang leaves the overlay on "processing", leaks a thread and process, and leaves the speech WAV on disk | `nd.rs:1598-1600`, `nd.rs:971`, `nd.rs:2057`, `nd.rs:963-964`   | M                                      | Low  |
+| P0-2 | Dictated text is written to the clipboard without history / cloud exclusion; non-text clipboard content is destroyed and the transcript is left behind   | `nd.rs:1861-1865`, `nd.rs:1891-1895`                            | S (exclusion), M (format preservation) | Low  |
+| P0-3 | Ollama client honours proxy environment variables and follows redirects, so a transcript can leave loopback                                              | `nd.rs:1732-1735`, `nd.rs:251`                                  | S                                      | Low  |
+| P0-4 | Level meter skips the max-duration and no-speech checks when no samples arrive; device loss leaves the session listening and Escape grabbed globally     | `nd.rs:1181-1183`, `nd.rs:1238-1244`, `nd.rs:1378`, `nd.rs:791` | S                                      | Low  |
 
 ### P1: high value
 
-| ID | Finding | Evidence | Effort | Risk |
-|---|---|---|---|---|
-| P1-1 | No provider seam; existing traits cannot express the live call | `asr/mod.rs:16-18`, `asr/streaming.rs:92-98`, `refinement/mod.rs:12-14`, `nd.rs:961`, `nd.rs:1112` | M to L | Medium |
-| P1-2 | Superseded dictation is dropped before it is stored for recovery | `nd.rs:971-974`, `nd.rs:1016` | S | Low |
-| P1-3 | Recorder commands have no session id; stale `auto_stop` / `cancel` can hit the wrong session | `nd.rs:155-159`, `nd.rs:679-696`, `nd.rs:1200-1205` | S | Low |
-| P1-4 | Health file read and rewritten about 18 times per second on the VAD thread, and on the event loop per hotkey event | `nd.rs:2044`, `desktop_health.rs:282-302`, `hotkeys/mod.rs:60` | S | Low |
-| P1-5 | Paste ignores held modifiers; hold-to-talk plus auto-stop sends Ctrl+Alt+V | `nd.rs:1911-1917`, `nd.rs:1195-1204` | S | Medium |
-| P1-6 | Sidecars orphaned on exit; no Job Object or exit handler | `lib.rs:108`, `nd.rs:1641-1648` | M | Low |
-| P1-7 | Release build runs executables from environment overrides and from the build machine's repo path | `nd.rs:1946-1948`, `nd.rs:1962-1964`, `nd.rs:1981-1991` | S | Low |
-| P1-8 | Nothing verifies the listener on 11434; any local process can collect transcripts | `nd.rs:251`, `nd.rs:1737-1747` | L (supervised refiner) | Medium |
-| P1-9 | CSP disabled; overlay shares the main capability, including unused global-shortcut and opener permissions | `tauri.conf.json:44-46`, `capabilities/default.json:5-11` | M | Medium |
-| P1-10 | Settings have no serde defaults; a schema change resets and then overwrites user data | `app_state.rs:60-159`, `lib.rs:52-54`, `storage/mod.rs:83-86` | S | Low |
-| P1-11 | Frontend swallows command errors and reports success from the browser fallback | `src/services/localflowClient.ts:86-96` | S | Low |
-| P1-12 | Cancel only works while recording; no UI-reachable native cancel | `nd.rs:836`, `app_state.rs:336-346` | S | Low |
-| P1-13 | Muted or privacy-blocked microphone gives a silent close; errors shown for 700 ms | `nd.rs:1195-1199`, `nd.rs:2057-2058`, `nd.rs:2081` | S | Low |
-| P1-14 | No production log sink; latency recorded only for successful pastes; no benchmark harness | `lib.rs:28-31`, `main.rs:2`, `nd.rs:1050-1073` | M | Low |
-| P1-15 | Installer bundles about 25 unneeded executables; runtime not reproducible from the repo; single hardcoded English model | `tauri.conf.json:52-54`, `nd.rs:1970`, `.gitignore` | M | Low |
+| ID    | Finding                                                                                                                 | Evidence                                                                                           | Effort                 | Risk   |
+| ----- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------- | ------ |
+| P1-1  | No provider seam; existing traits cannot express the live call                                                          | `asr/mod.rs:16-18`, `asr/streaming.rs:92-98`, `refinement/mod.rs:12-14`, `nd.rs:961`, `nd.rs:1112` | M to L                 | Medium |
+| P1-2  | Superseded dictation is dropped before it is stored for recovery                                                        | `nd.rs:971-974`, `nd.rs:1016`                                                                      | S                      | Low    |
+| P1-3  | Recorder commands have no session id; stale `auto_stop` / `cancel` can hit the wrong session                            | `nd.rs:155-159`, `nd.rs:679-696`, `nd.rs:1200-1205`                                                | S                      | Low    |
+| P1-4  | Health file read and rewritten about 18 times per second on the VAD thread, and on the event loop per hotkey event      | `nd.rs:2044`, `desktop_health.rs:282-302`, `hotkeys/mod.rs:60`                                     | S                      | Low    |
+| P1-5  | Paste ignores held modifiers; hold-to-talk plus auto-stop sends Ctrl+Alt+V                                              | `nd.rs:1911-1917`, `nd.rs:1195-1204`                                                               | S                      | Medium |
+| P1-6  | Sidecars orphaned on exit; no Job Object or exit handler                                                                | `lib.rs:108`, `nd.rs:1641-1648`                                                                    | M                      | Low    |
+| P1-7  | Release build runs executables from environment overrides and from the build machine's repo path                        | `nd.rs:1946-1948`, `nd.rs:1962-1964`, `nd.rs:1981-1991`                                            | S                      | Low    |
+| P1-8  | Nothing verifies the listener on 11434; any local process can collect transcripts                                       | `nd.rs:251`, `nd.rs:1737-1747`                                                                     | L (supervised refiner) | Medium |
+| P1-9  | CSP disabled; overlay shares the main capability, including unused global-shortcut and opener permissions               | `tauri.conf.json:44-46`, `capabilities/default.json:5-11`                                          | M                      | Medium |
+| P1-10 | Settings have no serde defaults; a schema change resets and then overwrites user data                                   | `app_state.rs:60-159`, `lib.rs:52-54`, `storage/mod.rs:83-86`                                      | S                      | Low    |
+| P1-11 | Frontend swallows command errors and reports success from the browser fallback                                          | `src/services/localflowClient.ts:86-96`                                                            | S                      | Low    |
+| P1-12 | Cancel only works while recording; no UI-reachable native cancel                                                        | `nd.rs:836`, `app_state.rs:336-346`                                                                | S                      | Low    |
+| P1-13 | Muted or privacy-blocked microphone gives a silent close; errors shown for 700 ms                                       | `nd.rs:1195-1199`, `nd.rs:2057-2058`, `nd.rs:2081`                                                 | S                      | Low    |
+| P1-14 | No production log sink; latency recorded only for successful pastes; no benchmark harness                               | `lib.rs:28-31`, `main.rs:2`, `nd.rs:1050-1073`                                                     | M                      | Low    |
+| P1-15 | Installer bundles about 25 unneeded executables; runtime not reproducible from the repo; single hardcoded English model | `tauri.conf.json:52-54`, `nd.rs:1970`, `.gitignore`                                                | M                      | Low    |
 
 ### P2: nice to have
 
-| ID | Finding | Evidence | Effort | Risk |
-|---|---|---|---|---|
-| P2-1 | Ollama warm-up runs a generation on every recording, including in low-resource mode; new HTTP client per request | `nd.rs:792-802`, `nd.rs:1770-1788`, `nd.rs:1732` | S | Low |
-| P2-2 | Background cleanup result is never inserted; it only replaces the "copy last" text, which then differs from what was pasted | `nd.rs:1116-1119` | Product decision | n/a |
-| P2-3 | Serde error text and upstream bodies can carry model output into logs and the health file | `nd.rs:1792-1793`, `nd.rs:1754-1760`, `nd.rs:1603-1606`, `nd.rs:892` | S | Low |
-| P2-4 | Temp files: predictable names, no crash sweep, transcript JSON on disk; `delete_audio_after_processing` unread | `nd.rs:945-950`, `app_state.rs:110` | S | Low |
-| P2-5 | Clipboard restore is unconditional after a fixed 400 ms | `nd.rs:1889-1894` | S | Low |
-| P2-6 | Audio callback allocates and locks; buffer preallocated for 20 s; three full copies at stop | `nd.rs:748`, `nd.rs:1421-1428`, `nd.rs:839-842` | M | Medium |
-| P2-7 | Mock commands and mock providers ship in release | `lib.rs:74-76`, `app_state.rs:226-346` | S | Low |
-| P2-8 | Unused dependencies: `thiserror`, `tauri-plugin-opener`, two npm plugin packages | `Cargo.toml:28`, `Cargo.toml:33`, `package.json:26-27` | S | Low |
-| P2-9 | Eight TypeScript domain modules and most Rust mock modules are test-only duplicates | Section 6 | M | Low |
-| P2-10 | Stale docs and a script that writes a file nothing reads | Section 6.4 | S | None |
-| P2-11 | No single-instance guard; settings window may not be reopenable after close | `lib.rs:98-101`, `scripts/Start-LocalFlow.ps1:117-130` | S | Low |
-| P2-12 | Target identity is HWND plus PID only | `nd.rs:116-123` | L (UI Automation) | Medium |
-| P2-13 | `save_settings` accepts unvalidated input; whisper prompt cap counts bytes | `app_state.rs:212-223`, `nd.rs:1615-1628` | S | Low |
-| P2-14 | No signing, licence notices, CI or start-at-login | Section 7 | M | Low |
+| ID    | Finding                                                                                                                     | Evidence                                                             | Effort            | Risk   |
+| ----- | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------- | ------ |
+| P2-1  | Ollama warm-up runs a generation on every recording, including in low-resource mode; new HTTP client per request            | `nd.rs:792-802`, `nd.rs:1770-1788`, `nd.rs:1732`                     | S                 | Low    |
+| P2-2  | Background cleanup result is never inserted; it only replaces the "copy last" text, which then differs from what was pasted | `nd.rs:1116-1119`                                                    | Product decision  | n/a    |
+| P2-3  | Serde error text and upstream bodies can carry model output into logs and the health file                                   | `nd.rs:1792-1793`, `nd.rs:1754-1760`, `nd.rs:1603-1606`, `nd.rs:892` | S                 | Low    |
+| P2-4  | Temp files: predictable names, no crash sweep, transcript JSON on disk; `delete_audio_after_processing` unread              | `nd.rs:945-950`, `app_state.rs:110`                                  | S                 | Low    |
+| P2-5  | Clipboard restore is unconditional after a fixed 400 ms                                                                     | `nd.rs:1889-1894`                                                    | S                 | Low    |
+| P2-6  | Audio callback allocates and locks; buffer preallocated for 20 s; three full copies at stop                                 | `nd.rs:748`, `nd.rs:1421-1428`, `nd.rs:839-842`                      | M                 | Medium |
+| P2-7  | Mock commands and mock providers ship in release                                                                            | `lib.rs:74-76`, `app_state.rs:226-346`                               | S                 | Low    |
+| P2-8  | Unused dependencies: `thiserror`, `tauri-plugin-opener`, two npm plugin packages                                            | `Cargo.toml:28`, `Cargo.toml:33`, `package.json:26-27`               | S                 | Low    |
+| P2-9  | Eight TypeScript domain modules and most Rust mock modules are test-only duplicates                                         | Section 6                                                            | M                 | Low    |
+| P2-10 | Stale docs and a script that writes a file nothing reads                                                                    | Section 6.4                                                          | S                 | None   |
+| P2-11 | No single-instance guard; settings window may not be reopenable after close                                                 | `lib.rs:98-101`, `scripts/Start-LocalFlow.ps1:117-130`               | S                 | Low    |
+| P2-12 | Target identity is HWND plus PID only                                                                                       | `nd.rs:116-123`                                                      | L (UI Automation) | Medium |
+| P2-13 | `save_settings` accepts unvalidated input; whisper prompt cap counts bytes                                                  | `app_state.rs:212-223`, `nd.rs:1615-1628`                            | S                 | Low    |
+| P2-14 | No signing, licence notices, CI or start-at-login                                                                           | Section 7                                                            | M                 | Low    |

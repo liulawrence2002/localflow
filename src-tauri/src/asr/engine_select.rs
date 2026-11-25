@@ -153,35 +153,70 @@ pub(crate) fn resolve_asr(
     )?;
     let model_path = plan.model_path().to_path_buf();
 
-    let engines = app.state::<AsrEngines>();
-    let mut slot = engines
-        .slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    if let Some(existing) = slot.as_ref() {
-        if existing.plan == plan {
-            return Ok(ResolvedAsr {
-                provider: existing.provider.clone(),
-                model_path,
-            });
-        }
-    }
-    if let Some(previous) = slot.take() {
-        previous.provider.shutdown();
-    }
-
-    let provider = build_asr_provider(&plan);
-    tracing::info!(engine = %provider.describe(), "ASR engine selected");
-    *slot = Some(AsrEngineSlot {
-        plan,
-        provider: provider.clone(),
-    });
-
+    let provider = app
+        .state::<AsrEngines>()
+        .provider_for(plan, build_asr_provider);
     Ok(ResolvedAsr {
         provider,
         model_path,
     })
+}
+
+impl AsrEngines {
+    fn lock_slot(&self) -> std::sync::MutexGuard<'_, Option<AsrEngineSlot>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The engine for `plan`: the loaded one if it matches, otherwise a new one from
+    /// `build`. A replaced engine is retired on its own thread after the slot is released:
+    /// shutting it down can wait for a transcription in progress to finish, and nothing
+    /// else (dictation, a conversation starting) may wait on the slot meanwhile.
+    pub(crate) fn provider_for(
+        &self,
+        plan: AsrEnginePlan,
+        build: impl FnOnce(&AsrEnginePlan) -> Arc<dyn SpeechToTextProvider>,
+    ) -> Arc<dyn SpeechToTextProvider> {
+        let (provider, previous) = {
+            let mut slot = self.lock_slot();
+            if let Some(existing) = slot.as_ref() {
+                if existing.plan == plan {
+                    return existing.provider.clone();
+                }
+            }
+            let previous = slot.take();
+            let provider = build(&plan);
+            tracing::info!(engine = %provider.describe(), "ASR engine selected");
+            *slot = Some(AsrEngineSlot {
+                plan,
+                provider: provider.clone(),
+            });
+            (provider, previous)
+        };
+        if let Some(previous) = previous {
+            retire_in_background(previous.provider);
+        }
+        provider
+    }
+
+    /// Take the loaded engine out, leaving none.
+    pub(crate) fn take(&self) -> Option<Arc<dyn SpeechToTextProvider>> {
+        self.lock_slot().take().map(|slot| slot.provider)
+    }
+}
+
+/// Shut a replaced engine down on its own thread.
+fn retire_in_background(provider: Arc<dyn SpeechToTextProvider>) {
+    let spawned = thread::Builder::new()
+        .name("localflow-asr-retire".to_string())
+        .spawn({
+            let provider = provider.clone();
+            move || provider.shutdown()
+        });
+    if spawned.is_err() {
+        provider.shutdown();
+    }
 }
 
 /// Build the engine chain for `plan`. Every engine here is local; there is no remote
@@ -257,16 +292,12 @@ pub(crate) fn prepare_asr_in_background(app: AppHandle) {
     });
 }
 
-/// Stop any ASR sidecar. Called when the app exits.
+/// Stop any ASR sidecar. Called when the app exits, from a thread the exit waits on for a
+/// bounded time. The engines do not wait for work in progress: a model in use is freed when
+/// that work ends, and a sidecar that is starting is stopped once it has.
 pub fn shutdown(app: &AppHandle) {
-    let engines = app.state::<AsrEngines>();
-    let slot = engines
-        .slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    if let Some(slot) = slot {
-        slot.provider.shutdown();
+    if let Some(provider) = app.state::<AsrEngines>().take() {
+        provider.shutdown();
     }
 }
 
@@ -411,5 +442,86 @@ mod tests {
         assert!(plan_asr_engine(tiny, false, None, None, None)
             .unwrap_err()
             .contains("whisper-cli.exe"));
+    }
+
+    /// An engine whose shutdown takes `shutdown_takes`, as one waiting for a transcription in
+    /// progress would.
+    struct SlowToStop {
+        shutdown_takes: std::time::Duration,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SpeechToTextProvider for SlowToStop {
+        fn id(&self) -> &'static str {
+            "slow"
+        }
+
+        fn describe(&self) -> String {
+            "slow to stop".to_string()
+        }
+
+        fn transcribe(
+            &self,
+            _: &super::super::provider::TranscriptionRequest<'_>,
+        ) -> Result<super::super::provider::Transcription, super::super::provider::AsrError>
+        {
+            Err(super::super::provider::AsrError::Failed("unused".into()))
+        }
+
+        fn shutdown(&self) {
+            thread::sleep(self.shutdown_takes);
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn replacing_the_engine_does_not_wait_for_the_old_one_to_stop() {
+        use std::{
+            sync::atomic::{AtomicBool, Ordering},
+            time::{Duration, Instant},
+        };
+
+        let engines = AsrEngines::default();
+        let first_stopped = Arc::new(AtomicBool::new(false));
+        let cli = PathBuf::from("Z:/someone/whisper-cli.exe");
+        let plan = |model: &str| AsrEnginePlan::WhisperCli {
+            whisper: WhisperFiles {
+                cli_path: cli.clone(),
+                model_path: PathBuf::from(model),
+            },
+        };
+        let stopped = first_stopped.clone();
+        let first = engines.provider_for(plan("a.bin"), |_| {
+            Arc::new(SlowToStop {
+                shutdown_takes: Duration::from_millis(400),
+                stopped,
+            })
+        });
+        // The same plan reuses the engine.
+        let again = engines.provider_for(plan("a.bin"), |_| unreachable!("must be reused"));
+        assert!(Arc::ptr_eq(&first, &again));
+
+        let started = Instant::now();
+        let second = engines.provider_for(plan("b.bin"), |_| {
+            Arc::new(SlowToStop {
+                shutdown_takes: Duration::ZERO,
+                stopped: Arc::new(AtomicBool::new(false)),
+            })
+        });
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(!Arc::ptr_eq(&first, &second));
+        // The slot is free at once, while the old engine is still stopping.
+        assert!(engines.take().is_some());
+        assert!(!first_stopped.load(Ordering::SeqCst));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !first_stopped.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            first_stopped.load(Ordering::SeqCst),
+            "the old engine is retired"
+        );
     }
 }

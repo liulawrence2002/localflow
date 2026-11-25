@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Downloads the fast conversation voice into .localflow-runtime\models\phonon.
+  Downloads the fast conversation voice into a LocalFlow runtime folder (models\phonon).
 
 .DESCRIPTION
   This is an explicit, user-run download. LocalFlow itself never downloads models and never
@@ -10,11 +10,16 @@
   Phonon 31m (English) by Gradium: Apache-2.0 weights and default voice, about 65 MB in
   total. It runs on the CPU, faster than real time, and streams audio as it is generated.
 
+.PARAMETER Destination
+  The runtime folder. Default: the checkout's .localflow-runtime when this script is in a Git
+  checkout, otherwise %LOCALAPPDATA%\LocalFlow, which an installed LocalFlow reads.
+
 .EXAMPLE
   .\scripts\Get-PhononModel.ps1
   .\scripts\Get-PhononModel.ps1 -Force    # download again even if the files are present
 #>
 param(
+  [string]$Destination,
   [switch]$Force
 )
 
@@ -29,8 +34,18 @@ $files = @(
   @{ Name = "model.q8.gguf"; Sha256 = "a7d9aad2cd6dc66473f24a08bc6d2939030ef4d751ef82349361fbef3272dbae" }
 )
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$modelDir = Join-Path $repoRoot ".localflow-runtime\models\phonon"
+if (-not $Destination) {
+  # A checkout keeps its runtime next to the source; an installed copy reads the per-user
+  # folder.
+  $checkout = Split-Path -Parent $PSScriptRoot
+  if (Test-Path -LiteralPath (Join-Path $checkout ".git")) {
+    $Destination = Join-Path $checkout ".localflow-runtime"
+  }
+  else {
+    $Destination = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "LocalFlow"
+  }
+}
+$modelDir = Join-Path $Destination "models\phonon"
 New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
 
 function Get-Sha256 {
@@ -51,8 +66,9 @@ foreach ($file in $files) {
   }
 
   Write-Host "Downloading $($file.Name) from huggingface.co ..."
-  # curl.exe ships with Windows 10 and later; no telemetry, no user data.
-  & curl.exe --fail --location --silent --show-error --output $partial "$baseUrl/$($file.Name)"
+  # curl.exe ships with Windows 10 and later; no telemetry, no user data. HTTPS only, also
+  # for the redirect to Hugging Face's file host.
+  & curl.exe --fail --location --silent --show-error --proto "=https" --proto-redir "=https" --output $partial "$baseUrl/$($file.Name)"
   if ($LASTEXITCODE -ne 0) {
     Remove-Item -LiteralPath $partial -ErrorAction SilentlyContinue
     throw "Download of $($file.Name) failed (curl exit code $LASTEXITCODE)."

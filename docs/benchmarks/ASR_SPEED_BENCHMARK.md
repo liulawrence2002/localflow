@@ -10,13 +10,13 @@ audio, 25 clips of 1-3 s). No transcript text is printed or stored by the harnes
 `examples/asr_bench.rs --sweep-threads`, one pass. "Quiet" means nothing else was building
 or benchmarking; the laptop was on battery (Balanced power plan).
 
-| Threads | Median / p95 per clip, quiet | Median / p95 per clip, while other builds ran |
-| --- | --- | --- |
-| 4 | 625 / 1,598 ms | 1,759 / 7,671 ms |
-| 6 | 590 / 1,556 ms | 1,140 / 3,065 ms |
-| 8 | 635 / 1,949 ms | 1,036 / 2,564 ms |
-| 12 | 570 / 1,487 ms | 1,167 / 2,871 ms |
-| 22 | no result after 15 min (stopped) | no result after 43 min (stopped) |
+| Threads | Median / p95 per clip, quiet     | Median / p95 per clip, while other builds ran |
+| ------- | -------------------------------- | --------------------------------------------- |
+| 4       | 625 / 1,598 ms                   | 1,759 / 7,671 ms                              |
+| 6       | 590 / 1,556 ms                   | 1,140 / 3,065 ms                              |
+| 8       | 635 / 1,949 ms                   | 1,036 / 2,564 ms                              |
+| 12      | 570 / 1,487 ms                   | 1,167 / 2,871 ms                              |
+| 22      | no result after 15 min (stopped) | no result after 43 min (stopped)              |
 
 Word error rate was 0.93 % in every configuration. transcribe.cpp's default is not "every
 CPU": it uses min(8, usable CPUs), so 8 on this laptop. Between 6 and 12 threads the
@@ -32,13 +32,13 @@ load or run fails. Three runs of the corpus test
 (`real_parakeet_gpu_agrees_with_the_cpu_on_the_bench_corpus`); the first two while other
 work was running, the third quieter.
 
-|                                         | CPU                | GPU             |
-| --------------------------------------- | ------------------ | --------------- |
-| Word error rate                         | 0.93 %             | 0.85 %          |
-| Warm median, 1-3 s clips                | 734 / 680 / 383 ms | 199 / 190 / 135 ms |
-| Warm median, all clips                  | 1,486 / 1,304 / 646 ms | 385 / 320 / 211 ms |
-| Model load                              | 489-546 ms         | 1,204-1,439 ms  |
-| First 1-3 s clip in a fresh process     | 516 ms             | 132 ms          |
+|                                     | CPU                    | GPU                |
+| ----------------------------------- | ---------------------- | ------------------ |
+| Word error rate                     | 0.93 %                 | 0.85 %             |
+| Warm median, 1-3 s clips            | 734 / 680 / 383 ms     | 199 / 190 / 135 ms |
+| Warm median, all clips              | 1,486 / 1,304 / 646 ms | 385 / 320 / 211 ms |
+| Model load                          | 489-546 ms             | 1,204-1,439 ms     |
+| First 1-3 s clip in a fresh process | 516 ms                 | 132 ms             |
 
 127 of 136 transcripts were identical between CPU and GPU (5 word edits in 2,358 words).
 With `llama3.2:3b` loaded in Ollama (2.6 GB), the GPU's memory use went from 2,581 MiB to a

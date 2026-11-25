@@ -1,5 +1,22 @@
-//! Where the local speech binaries and models live: packaged resources first, then the
-//! development runtime folder.
+//! Where the local speech binaries and models live.
+//!
+//! Runtime folders are searched in this order:
+//!
+//! 1. `localflow-runtime` in the app's resource folder: what the installer ships (the
+//!    whisper.cpp fallback programs and the tiny.en model). On Windows the resource folder is
+//!    the folder of the executable.
+//! 2. The per-user folder `%LOCALAPPDATA%\LocalFlow`, where the model scripts put downloads
+//!    for an installed copy. It mirrors `.localflow-runtime`: `models\`, `models\phonon\`,
+//!    `models\fish\`, `fish\` and so on.
+//! 3. Only with the `dev-runtime` feature (on by default): `.localflow-runtime` in the checkout
+//!    the app was built from. Release builds turn the feature off, so the executable carries
+//!    no build-machine path and never looks there.
+//!
+//! Executables (the whisper.cpp programs, the Fish engine) are only ever started from these
+//! folders. The `LOCALFLOW_WHISPER_CLI` override is honoured only with `dev-runtime`.
+//!
+//! "Missing" messages name files and the script that installs them, never a local path:
+//! they reach the settings window and diagnostics, and paths carry the user's name.
 
 use std::{
     env,
@@ -18,44 +35,154 @@ pub(crate) const PREFERRED_SPEECH_MODELS: &[&str] =
 /// Whisper models usable by the whisper.cpp sidecars, for the local fallback.
 pub(crate) const FALLBACK_WHISPER_MODELS: &[&str] = &["ggml-tiny.en-q5_1.bin"];
 
+/// Folder under the app's resource folder that holds the bundled runtime.
+pub(crate) const RESOURCE_RUNTIME_DIR: &str = "localflow-runtime";
+/// Folder under `%LOCALAPPDATA%` that holds the user's downloaded models.
+pub(crate) const USER_RUNTIME_DIR: &str = "LocalFlow";
+
+/// The whisper.cpp programs, relative to a runtime folder.
+pub(crate) const WHISPER_PROGRAM_DIR: &[&str] = &["whisper", "Release"];
+pub(crate) const WHISPER_CLI_FILE: &str = "whisper-cli.exe";
+pub(crate) const WHISPER_SERVER_FILE: &str = "whisper-server.exe";
+
 pub(crate) fn whisper_cli_path(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(path) = env::var("LOCALFLOW_WHISPER_CLI") {
-        return require_file(PathBuf::from(path), "whisper.cpp executable");
+    if let Some(path) = whisper_cli_override() {
+        return require_file(path, "whisper.cpp executable");
     }
 
     find_file(
         "whisper.cpp executable",
-        runtime_candidates(app).into_iter().map(|runtime| {
-            runtime
-                .join("whisper")
-                .join("Release")
-                .join("whisper-cli.exe")
-        }),
+        runtime_candidates(app)
+            .iter()
+            .map(|runtime| whisper_program_dir(runtime).join(WHISPER_CLI_FILE)),
     )
+}
+
+/// `LOCALFLOW_WHISPER_CLI`, honoured only in development builds: a release build never starts
+/// a program from outside its own folders.
+fn whisper_cli_override() -> Option<PathBuf> {
+    let value = env::var_os("LOCALFLOW_WHISPER_CLI")?;
+    if cfg!(feature = "dev-runtime") {
+        Some(PathBuf::from(value))
+    } else {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "LOCALFLOW_WHISPER_CLI is ignored: this build runs only its own programs"
+            );
+        });
+        None
+    }
+}
+
+/// Folder holding `whisper-cli.exe`, `whisper-server.exe` and their DLLs under `runtime`.
+pub(crate) fn whisper_program_dir(runtime: &Path) -> PathBuf {
+    WHISPER_PROGRAM_DIR
+        .iter()
+        .fold(runtime.to_path_buf(), |dir, part| dir.join(part))
 }
 
 /// Resolve the speech model: an explicit environment override, then the path from settings,
 /// then the best installed model.
 pub(crate) fn speech_model_path(app: &AppHandle, configured: &str) -> Result<PathBuf, String> {
-    if let Ok(path) = env::var("LOCALFLOW_WHISPER_MODEL") {
-        return require_file(PathBuf::from(path), "speech model");
+    let resolution = resolve_speech_model(
+        speech_model_override(),
+        configured,
+        &runtime_candidates(app),
+    );
+    if resolution.stale_configured_path {
+        // A stale path must not break dictation; an installed model is used instead.
+        tracing::warn!("configured speech model path does not exist; using an installed model");
+    }
+    resolution.model.map(|model| model.path)
+}
+
+/// `LOCALFLOW_WHISPER_MODEL`, a model file that takes the place of every other choice.
+pub(crate) fn speech_model_override() -> Option<PathBuf> {
+    env::var("LOCALFLOW_WHISPER_MODEL").ok().map(PathBuf::from)
+}
+
+/// Where the speech model in use came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpeechModelSource {
+    /// `LOCALFLOW_WHISPER_MODEL`.
+    Override,
+    /// The path in Settings > Models.
+    Configured,
+    /// The first installed of [`PREFERRED_SPEECH_MODELS`].
+    Installed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedSpeechModel {
+    pub(crate) path: PathBuf,
+    pub(crate) source: SpeechModelSource,
+}
+
+/// The outcome of choosing the speech model, shared by the speech engine and the readiness
+/// checklist so the two never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpeechModelResolution {
+    /// The model dictation will load, or why there is none.
+    pub(crate) model: Result<ResolvedSpeechModel, String>,
+    /// A path is set in Settings but no file is there. Not an error: an installed model is
+    /// used instead, when there is one.
+    pub(crate) stale_configured_path: bool,
+    /// `LOCALFLOW_WHISPER_MODEL` was set, so nothing else was considered.
+    pub(crate) overridden: bool,
+}
+
+/// Choose the speech model. Pure apart from checking which files exist.
+///
+/// An override must exist (it replaces every other choice); a configured path is used when
+/// its file exists and otherwise falls back, like having none; then the first installed of
+/// [`PREFERRED_SPEECH_MODELS`], by model preference first and runtime folder second.
+pub(crate) fn resolve_speech_model(
+    override_path: Option<PathBuf>,
+    configured: &str,
+    runtimes: &[PathBuf],
+) -> SpeechModelResolution {
+    if let Some(path) = override_path {
+        return SpeechModelResolution {
+            model: require_file(path, "speech model").map(|path| ResolvedSpeechModel {
+                path,
+                source: SpeechModelSource::Override,
+            }),
+            stale_configured_path: false,
+            overridden: true,
+        };
     }
 
     let configured = configured.trim();
+    let mut stale_configured_path = false;
     if !configured.is_empty() {
         let path = PathBuf::from(configured);
         if path.is_file() {
-            return Ok(path);
+            return SpeechModelResolution {
+                model: Ok(ResolvedSpeechModel {
+                    path,
+                    source: SpeechModelSource::Configured,
+                }),
+                stale_configured_path: false,
+                overridden: false,
+            };
         }
-        // A stale path must not break dictation; fall through to the bundled models.
-        tracing::warn!("configured speech model path does not exist; using an installed model");
+        stale_configured_path = true;
     }
 
-    let runtimes = runtime_candidates(app);
-    find_file(
+    let model = find_file(
         "speech model",
-        preferred_model_candidates(&runtimes, PREFERRED_SPEECH_MODELS),
+        preferred_model_candidates(runtimes, PREFERRED_SPEECH_MODELS),
     )
+    .map(|path| ResolvedSpeechModel {
+        path,
+        source: SpeechModelSource::Installed,
+    });
+    SpeechModelResolution {
+        model,
+        stale_configured_path,
+        overridden: false,
+    }
 }
 
 /// Candidate model paths ordered by model preference first, runtime folder second, so the
@@ -71,17 +198,52 @@ pub(crate) fn preferred_model_candidates(runtimes: &[PathBuf], preferred: &[&str
         .collect()
 }
 
+/// The runtime folders to search, in order (see the module documentation).
 pub(crate) fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
+    let paths = app.path();
+    ordered_runtime_dirs(
+        paths.resource_dir().ok(),
+        paths.local_data_dir().ok(),
+        dev_runtime_dir(),
+    )
+}
 
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("localflow-runtime"));
+/// The runtime folders for a resource folder, a local application data folder and an
+/// optional development folder, in search order and without duplicates. Pure, for tests.
+pub(crate) fn ordered_runtime_dirs(
+    resource_dir: Option<PathBuf>,
+    local_data_dir: Option<PathBuf>,
+    dev_dir: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let ordered = [
+        resource_dir.map(|dir| dir.join(RESOURCE_RUNTIME_DIR)),
+        local_data_dir.map(|dir| dir.join(USER_RUNTIME_DIR)),
+        dev_dir,
+    ];
+    for candidate in ordered.into_iter().flatten() {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
     }
-
-    candidates.push(workspace_runtime_dir());
     candidates
 }
 
+/// The checkout's `.localflow-runtime`, in development builds only.
+fn dev_runtime_dir() -> Option<PathBuf> {
+    #[cfg(feature = "dev-runtime")]
+    {
+        Some(workspace_runtime_dir())
+    }
+    #[cfg(not(feature = "dev-runtime"))]
+    {
+        None
+    }
+}
+
+/// `.localflow-runtime` next to the source tree this build was compiled from. Exists only
+/// with the `dev-runtime` feature, so release builds do not embed the build machine's path.
+#[cfg(feature = "dev-runtime")]
 pub(crate) fn workspace_runtime_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -94,7 +256,7 @@ pub(crate) fn require_file(path: PathBuf, label: &str) -> Result<PathBuf, String
     if path.is_file() {
         Ok(path)
     } else {
-        Err(format!("Missing {label}: {}", path.display()))
+        Err(missing_message(label, &[path]))
     }
 }
 
@@ -108,10 +270,52 @@ pub(crate) fn find_file(
         if candidate.is_file() {
             return Ok(candidate);
         }
-        checked.push(candidate.display().to_string());
+        checked.push(candidate);
     }
 
-    Err(format!("Missing {label}. Checked: {}", checked.join("; ")))
+    Err(missing_message(label, &checked))
+}
+
+/// "Missing speech model (a.gguf or b.bin); 6 locations checked. Run scripts\X.ps1." File
+/// names only: the folders that were checked are counted, not named.
+pub(crate) fn missing_message(label: &str, checked: &[PathBuf]) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for path in checked {
+        if let Some(name) = path.file_name() {
+            let name = name.to_string_lossy().into_owned();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+
+    let mut message = format!("Missing {label}");
+    if !names.is_empty() {
+        message.push_str(&format!(" ({})", names.join(" or ")));
+    }
+    if checked.len() > 1 {
+        message.push_str(&format!("; {} locations checked", checked.len()));
+    }
+    message.push('.');
+    if let Some(hint) = names.iter().find_map(|name| install_hint(name)) {
+        message.push(' ');
+        message.push_str(hint);
+    }
+    message
+}
+
+/// What installs a runtime file, for the "missing" messages.
+pub(crate) fn install_hint(file_name: &str) -> Option<&'static str> {
+    let name = file_name.to_ascii_lowercase();
+    if name.starts_with("parakeet-") && name.ends_with(".gguf") {
+        Some("Run scripts\\Get-AsrModel.ps1.")
+    } else if name.starts_with("ggml-tiny.en") {
+        Some("Run scripts\\Get-AsrModel.ps1 -Model tiny.en.")
+    } else if name == WHISPER_CLI_FILE || name == WHISPER_SERVER_FILE {
+        Some("Reinstall LocalFlow, or run scripts\\Get-WhisperRuntime.ps1.")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +336,211 @@ mod tests {
                 PathBuf::from("bundled").join("models").join("small.bin"),
                 PathBuf::from("dev").join("models").join("small.bin"),
             ]
+        );
+    }
+
+    #[test]
+    fn runtime_folders_are_bundled_then_per_user_then_development() {
+        let dirs = ordered_runtime_dirs(
+            Some(PathBuf::from("app")),
+            Some(PathBuf::from("local")),
+            Some(PathBuf::from("checkout").join(".localflow-runtime")),
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("app").join("localflow-runtime"),
+                PathBuf::from("local").join("LocalFlow"),
+                PathBuf::from("checkout").join(".localflow-runtime"),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_folders_are_skipped_and_duplicates_dropped() {
+        assert_eq!(
+            ordered_runtime_dirs(None, Some(PathBuf::from("local")), None),
+            vec![PathBuf::from("local").join("LocalFlow")]
+        );
+        let same = PathBuf::from("local").join("LocalFlow");
+        assert_eq!(
+            ordered_runtime_dirs(None, Some(PathBuf::from("local")), Some(same.clone())),
+            vec![same]
+        );
+        assert!(ordered_runtime_dirs(None, None, None).is_empty());
+    }
+
+    #[test]
+    fn the_checkout_is_searched_only_in_development_builds() {
+        assert_eq!(dev_runtime_dir().is_some(), cfg!(feature = "dev-runtime"));
+    }
+
+    #[test]
+    fn whisper_programs_live_in_whisper_release() {
+        assert_eq!(
+            whisper_program_dir(Path::new("rt")).join(WHISPER_CLI_FILE),
+            PathBuf::from("rt")
+                .join("whisper")
+                .join("Release")
+                .join("whisper-cli.exe")
+        );
+    }
+
+    #[test]
+    fn missing_messages_name_files_and_scripts_but_no_folder() {
+        let secret = PathBuf::from("C:\\Users\\someone-private\\AppData\\Local\\LocalFlow");
+        let checked = preferred_model_candidates(
+            &[secret.clone(), PathBuf::from("D:\\elsewhere")],
+            PREFERRED_SPEECH_MODELS,
+        );
+
+        let message = find_file("speech model", checked).unwrap_err();
+
+        assert_eq!(
+            message,
+            "Missing speech model (parakeet-tdt-0.6b-v3-Q5_K_M.gguf or ggml-tiny.en-q5_1.bin); \
+             4 locations checked. Run scripts\\Get-AsrModel.ps1."
+        );
+        assert!(!message.contains("someone-private"));
+        assert!(!message.contains("elsewhere"));
+    }
+
+    #[test]
+    fn a_missing_single_file_names_only_the_file() {
+        let message = require_file(
+            PathBuf::from("C:\\Users\\someone-private\\tools\\whisper-cli.exe"),
+            "whisper.cpp executable",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            message,
+            "Missing whisper.cpp executable (whisper-cli.exe). Reinstall LocalFlow, or run \
+             scripts\\Get-WhisperRuntime.ps1."
+        );
+    }
+
+    /// A runtime folder with the given files under `models`, removed when dropped.
+    struct TempModels(PathBuf);
+
+    impl TempModels {
+        fn new(name: &str, files: &[&str]) -> Self {
+            let root = env::temp_dir().join(format!(
+                "localflow-runtime-paths-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("models")).unwrap();
+            for file in files {
+                std::fs::write(root.join("models").join(file), b"x").unwrap();
+            }
+            Self(root)
+        }
+    }
+
+    impl Drop for TempModels {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const PARAKEET: &str = "parakeet-tdt-0.6b-v3-Q5_K_M.gguf";
+    const TINY: &str = "ggml-tiny.en-q5_1.bin";
+
+    #[test]
+    fn parakeet_is_preferred_over_tiny_en() {
+        let runtime = TempModels::new("both", &[PARAKEET, TINY]);
+
+        let resolution = resolve_speech_model(None, "", &[runtime.0.clone()]);
+
+        let model = resolution.model.unwrap();
+        assert_eq!(model.path, runtime.0.join("models").join(PARAKEET));
+        assert_eq!(model.source, SpeechModelSource::Installed);
+        assert!(!resolution.stale_configured_path);
+    }
+
+    #[test]
+    fn tiny_en_alone_is_a_working_speech_model() {
+        let runtime = TempModels::new("tiny", &[TINY]);
+
+        let model = resolve_speech_model(None, "  ", &[runtime.0.clone()])
+            .model
+            .unwrap();
+
+        assert_eq!(model.path, runtime.0.join("models").join(TINY));
+    }
+
+    #[test]
+    fn a_stale_configured_path_falls_back_and_is_flagged() {
+        let runtime = TempModels::new("stale", &[TINY]);
+        let gone = runtime.0.join("gone.bin");
+
+        let resolution = resolve_speech_model(None, gone.to_str().unwrap(), &[runtime.0.clone()]);
+
+        assert!(resolution.stale_configured_path);
+        assert_eq!(
+            resolution.model.unwrap().path,
+            runtime.0.join("models").join(TINY)
+        );
+    }
+
+    #[test]
+    fn an_existing_configured_path_wins_over_installed_models() {
+        let runtime = TempModels::new("configured", &[PARAKEET, "mine.bin"]);
+        let mine = runtime.0.join("models").join("mine.bin");
+
+        let model = resolve_speech_model(None, mine.to_str().unwrap(), &[runtime.0.clone()])
+            .model
+            .unwrap();
+
+        assert_eq!(model.path, mine);
+        assert_eq!(model.source, SpeechModelSource::Configured);
+    }
+
+    #[test]
+    fn an_override_must_exist_and_never_falls_back() {
+        let runtime = TempModels::new("override", &[PARAKEET]);
+
+        let missing =
+            resolve_speech_model(Some(runtime.0.join("nope.bin")), "", &[runtime.0.clone()]);
+        let present = resolve_speech_model(
+            Some(runtime.0.join("models").join(PARAKEET)),
+            "ignored.bin",
+            &[],
+        );
+
+        assert_eq!(
+            missing.model.unwrap_err(),
+            "Missing speech model (nope.bin)."
+        );
+        assert_eq!(present.model.unwrap().source, SpeechModelSource::Override);
+        assert!(!present.stale_configured_path);
+        assert!(present.overridden && missing.overridden);
+    }
+
+    #[test]
+    fn no_model_anywhere_is_an_error_that_names_the_script() {
+        let runtime = TempModels::new("empty", &[]);
+
+        let resolution = resolve_speech_model(None, "", &[runtime.0.clone()]);
+
+        assert!(resolution
+            .model
+            .unwrap_err()
+            .ends_with("Run scripts\\Get-AsrModel.ps1."));
+    }
+
+    #[test]
+    fn unknown_files_get_no_install_hint() {
+        assert_eq!(
+            missing_message("speech model", &[PathBuf::from("x").join("custom.bin")]),
+            "Missing speech model (custom.bin)."
+        );
+        assert_eq!(missing_message("thing", &[]), "Missing thing.");
+        assert_eq!(
+            install_hint("ggml-tiny.en-q5_1.bin"),
+            Some("Run scripts\\Get-AsrModel.ps1 -Model tiny.en.")
         );
     }
 }

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Downloads the turn-completion model into .localflow-runtime\models.
+  Downloads the turn-completion model into a LocalFlow runtime folder (models).
 
 .DESCRIPTION
   This is an explicit, user-run download. LocalFlow itself never downloads models and never
@@ -16,10 +16,15 @@
   smaller 8-bit "-cpu" file is deliberately not used: LocalFlow's built-in runtime does not
   reproduce the reference answers for it.
 
+.PARAMETER Destination
+  The runtime folder. Default: the checkout's .localflow-runtime when this script is in a Git
+  checkout, otherwise %LOCALAPPDATA%\LocalFlow, which an installed LocalFlow reads.
+
 .EXAMPLE
   .\scripts\Get-SmartTurnModel.ps1
 #>
 param(
+  [string]$Destination,
   [switch]$Force
 )
 
@@ -30,8 +35,18 @@ $name = "smart-turn-v3.2-gpu.onnx"
 $sha256 = "ab8dc64b88713f90b571c15b714bd1330e6c883cad8763dacf65c9376dc539be"
 $url = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/$revision/$name"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$modelsDir = Join-Path $repoRoot ".localflow-runtime\models"
+if (-not $Destination) {
+  # A checkout keeps its runtime next to the source; an installed copy reads the per-user
+  # folder.
+  $checkout = Split-Path -Parent $PSScriptRoot
+  if (Test-Path -LiteralPath (Join-Path $checkout ".git")) {
+    $Destination = Join-Path $checkout ".localflow-runtime"
+  }
+  else {
+    $Destination = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "LocalFlow"
+  }
+}
+$modelsDir = Join-Path $Destination "models"
 $target = Join-Path $modelsDir $name
 $partial = "$target.part"
 New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
@@ -47,8 +62,9 @@ if ((Test-Path -LiteralPath $target) -and -not $Force -and ((Get-Sha256 $target)
 }
 
 Write-Host "Downloading $name from huggingface.co ..."
-# curl.exe ships with Windows 10 and later; no telemetry, no user data.
-& curl.exe --fail --location --silent --show-error --output $partial $url
+# curl.exe ships with Windows 10 and later; no telemetry, no user data. HTTPS only, also
+# for the redirect to Hugging Face's file host.
+& curl.exe --fail --location --silent --show-error --proto "=https" --proto-redir "=https" --output $partial $url
 if ($LASTEXITCODE -ne 0) {
   Remove-Item -LiteralPath $partial -ErrorAction SilentlyContinue
   throw "Download failed (curl exit code $LASTEXITCODE)."

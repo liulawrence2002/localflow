@@ -126,20 +126,30 @@ export function resolveExplicitSelfCorrections(text: string): string {
   }
 
   const actuallyMatch = normalized.match(/^(?<before>.+?)\s+actually\s+(?<after>.+)$/iu);
-  if (actuallyMatch?.groups && wordCount(actuallyMatch.groups.before) >= 3) {
-    return actuallyMatch.groups.after.trim();
+  const actuallyBefore = actuallyMatch?.groups?.before;
+  const actuallyAfter = actuallyMatch?.groups?.after;
+  if (
+    actuallyBefore !== undefined &&
+    actuallyAfter !== undefined &&
+    wordCount(actuallyBefore) >= 3
+  ) {
+    return actuallyAfter.trim();
   }
 
   const sorryMatch = normalized.match(/^(?<before>.+?)\s+sorry\s+(?<after>.+)$/iu);
-  if (sorryMatch?.groups) {
-    return replaceLastToken(sorryMatch.groups.before, sorryMatch.groups.after);
+  const sorryBefore = sorryMatch?.groups?.before;
+  const sorryAfter = sorryMatch?.groups?.after;
+  if (sorryBefore !== undefined && sorryAfter !== undefined) {
+    return replaceLastToken(sorryBefore, sorryAfter);
   }
 
   const noMatch = normalized.match(
     /^(?<before>(?:\S+\s+){2,}\S+)\s+no\s+(?<after>\S+(?:\s+\S+){0,2})$/iu,
   );
-  if (noMatch?.groups) {
-    return replaceLastToken(noMatch.groups.before, noMatch.groups.after);
+  const noBefore = noMatch?.groups?.before;
+  const noAfter = noMatch?.groups?.after;
+  if (noBefore !== undefined && noAfter !== undefined) {
+    return replaceLastToken(noBefore, noAfter);
   }
 
   return normalized;

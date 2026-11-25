@@ -1,9 +1,22 @@
-//! Client for the local Ollama server. Loopback only: no proxy, no redirects, and
-//! cloud-hosted model tags are refused.
+//! Client for the local Ollama server. Loopback only: no proxy, no redirects, and only
+//! models Ollama says run on this computer.
+//!
+//! Ollama can also serve "cloud" models, which it forwards to Ollama's servers. Their tags
+//! usually end in `cloud`, but a model can be copied or created under any name, so the name
+//! is only the first check: before any text is sent, Ollama is asked about the model
+//! (`/api/show`) and anything that names a remote host or remote model is refused. So is a
+//! model it cannot vouch for (an error or an answer that is not a model description): when
+//! in doubt, nothing is sent.
 
-use std::{thread, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct OllamaGenerateRequest<'a> {
@@ -31,8 +44,13 @@ pub(crate) struct OllamaGenerateResponse {
 }
 
 pub(crate) const OLLAMA_MODEL: &str = "llama3.2:3b";
+pub(crate) const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const OLLAMA_TAGS_URL: &str = "http://127.0.0.1:11434/api/tags";
 pub(crate) const OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
+/// How long Ollama's answer about a model is trusted. Short, because a model can be replaced
+/// under the same name (`ollama cp`); long enough that a conversation's turns, and the
+/// keep-warm requests between them, do not ask each time.
+const MODEL_CHECK_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) const OLLAMA_KEEP_ALIVE: &str = "30m";
 /// Enough for the longest dictation (120 s is roughly 400 words) sent twice in the cleanup
@@ -46,11 +64,7 @@ pub(crate) fn request_ollama_generate(
     temperature: f32,
     model: &str,
 ) -> Result<String, String> {
-    if is_cloud_model_tag(model) {
-        return Err(format!(
-            "Ollama model \"{model}\" is a cloud-hosted tag. LocalFlow only uses local models."
-        ));
-    }
+    ensure_local_model(OLLAMA_BASE_URL, model).map_err(|refusal| refusal.message(model))?;
 
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
@@ -99,6 +113,142 @@ pub(crate) fn request_ollama_generate(
     Ok(payload.response)
 }
 
+/// Why a model was not used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelRefusal {
+    /// It runs on Ollama's servers: its tag says so, or Ollama does.
+    Cloud,
+    NotInstalled,
+    OllamaNotRunning,
+    /// Ollama's answer could not be read, so the model is not known to run here.
+    Unknown,
+}
+
+impl ModelRefusal {
+    /// A sentence for the user. Names the configured model, never any text.
+    pub(crate) fn message(self, model: &str) -> String {
+        match self {
+            Self::Cloud => format!(
+                "Ollama model \"{model}\" is a cloud-hosted model that runs on Ollama's servers. \
+                 LocalFlow only uses models that run on this computer."
+            ),
+            Self::NotInstalled => {
+                format!("Ollama model \"{model}\" was not found locally. Run: ollama pull {model}")
+            }
+            Self::OllamaNotRunning => {
+                "Local Ollama is not running. Start Ollama and try again.".to_string()
+            }
+            Self::Unknown => format!(
+                "LocalFlow could not confirm that Ollama model \"{model}\" runs on this computer, \
+                 so nothing was sent to it."
+            ),
+        }
+    }
+}
+
+type ModelVerdicts = HashMap<(String, String), (Result<(), ModelRefusal>, Instant)>;
+
+fn verdicts() -> &'static Mutex<ModelVerdicts> {
+    static VERDICTS: OnceLock<Mutex<ModelVerdicts>> = OnceLock::new();
+    VERDICTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Refuse a model unless the Ollama server at `base_url` says it runs on this computer.
+/// Checked before every request that carries text; a clear answer is remembered for
+/// [`MODEL_CHECK_TTL`], anything else is asked again next time.
+pub(crate) fn ensure_local_model(base_url: &str, model: &str) -> Result<(), ModelRefusal> {
+    if is_cloud_model_tag(model) {
+        return Err(ModelRefusal::Cloud);
+    }
+    let key = (base_url.to_string(), model.trim().to_string());
+    {
+        let mut known = verdicts()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match known.get(&key) {
+            Some((verdict, at)) if at.elapsed() < MODEL_CHECK_TTL => return *verdict,
+            Some(_) => {
+                known.remove(&key);
+            }
+            None => {}
+        }
+    }
+    let verdict = ask_ollama_about(base_url, model);
+    if matches!(verdict, Ok(()) | Err(ModelRefusal::Cloud)) {
+        verdicts()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, (verdict, Instant::now()));
+    }
+    verdict
+}
+
+fn ask_ollama_about(base_url: &str, model: &str) -> Result<(), ModelRefusal> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(2))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ModelRefusal::Unknown)?;
+    let response = client
+        .post(format!("{base_url}/api/show"))
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .map_err(|error| {
+            if error.is_connect() {
+                ModelRefusal::OllamaNotRunning
+            } else {
+                ModelRefusal::Unknown
+            }
+        })?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        404 => return Err(ModelRefusal::NotInstalled),
+        _ => return Err(ModelRefusal::Unknown),
+    }
+    let body = response.text().map_err(|_| ModelRefusal::Unknown)?;
+    model_location(&body)
+}
+
+/// Whether an `/api/show` reply describes a model that runs here. A cloud model's reply
+/// carries `remote_host` and `remote_model`; a reply without the fields every model
+/// description has is not taken as a yes.
+fn model_location(body: &str) -> Result<(), ModelRefusal> {
+    let value: Value = serde_json::from_str(body).map_err(|_| ModelRefusal::Unknown)?;
+    let fields = value.as_object().ok_or(ModelRefusal::Unknown)?;
+    if names_a_remote(fields) {
+        return Err(ModelRefusal::Cloud);
+    }
+    let describes_a_model = [
+        "details",
+        "modelfile",
+        "model_info",
+        "capabilities",
+        "template",
+        "parameters",
+    ]
+    .iter()
+    .any(|key| fields.contains_key(*key));
+    if describes_a_model {
+        Ok(())
+    } else {
+        Err(ModelRefusal::Unknown)
+    }
+}
+
+/// Whether a model description (from `/api/show` or one `/api/tags` entry) names a remote
+/// host or model.
+fn names_a_remote(fields: &Map<String, Value>) -> bool {
+    ["remote_host", "remote_model"]
+        .iter()
+        .any(|key| match fields.get(*key) {
+            None | Some(Value::Null) => false,
+            Some(Value::String(text)) => !text.trim().is_empty(),
+            Some(_) => true,
+        })
+}
+
 /// Whether an Ollama model name refers to a cloud-hosted model (for example
 /// `gemma4:cloud` or `qwen3:480b-cloud`). Those run on Ollama's servers, so they are refused.
 pub(crate) fn is_cloud_model_tag(model: &str) -> bool {
@@ -134,12 +284,7 @@ pub(crate) fn warm_ollama_in_background(model: String) {
 #[derive(Debug, Deserialize)]
 struct OllamaTagsResponse {
     #[serde(default)]
-    models: Vec<OllamaTag>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaTag {
-    name: String,
+    models: Vec<Map<String, Value>>,
 }
 
 /// Names of the models installed in local Ollama, without cloud-hosted tags (which LocalFlow
@@ -172,14 +317,19 @@ pub(crate) fn list_local_models() -> Result<Vec<String>, String> {
     parse_model_names(&body)
 }
 
-/// Model names from an Ollama `/api/tags` reply, cloud-hosted tags removed.
+/// Model names from an Ollama `/api/tags` reply, without cloud models: neither those whose
+/// tag says so nor those whose entry names a remote host or model, whatever they are called.
 fn parse_model_names(body: &str) -> Result<Vec<String>, String> {
     let tags: OllamaTagsResponse = serde_json::from_str(body)
         .map_err(|_| "Local Ollama sent an unreadable reply.".to_string())?;
     Ok(tags
         .models
         .into_iter()
-        .map(|tag| tag.name)
+        .filter(|entry| !names_a_remote(entry))
+        .filter_map(|entry| match entry.get("name") {
+            Some(Value::String(name)) => Some(name.clone()),
+            _ => None,
+        })
         .filter(|name| !name.trim().is_empty() && !is_cloud_model_tag(name))
         .collect())
 }
@@ -202,9 +352,150 @@ mod tests {
         assert!(error.contains("cloud-hosted"));
     }
 
+    /// A loopback server answering one request per entry of `replies` (status line, body),
+    /// in order. Returns its base URL and each request's first line.
+    fn stand_in_ollama(
+        replies: Vec<(&'static str, String)>,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for (status, body) in replies {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                loop {
+                    let read = socket.read(&mut buffer).unwrap_or(0);
+                    request.extend_from_slice(&buffer[..read]);
+                    let text = String::from_utf8_lossy(&request).to_string();
+                    if let Some(split) = text.find("\r\n\r\n") {
+                        let length = text[..split]
+                            .lines()
+                            .find_map(|line| {
+                                line.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= split + 4 + length {
+                            break;
+                        }
+                    }
+                    if read == 0 {
+                        break;
+                    }
+                }
+                let first_line = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let _ = seen_tx.send(first_line);
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes());
+                let _ = socket.write_all(body.as_bytes());
+            }
+        });
+        (base, seen_rx)
+    }
+
+    const LOCAL_SHOW: &str = r#"{"modelfile":"FROM x","parameters":"stop x","details":{"parent_model":"","format":"gguf","family":"llama"},"capabilities":["completion","tools"],"modified_at":"2026-07-04T09:14:55-04:00"}"#;
+    const CLOUD_SHOW: &str = r#"{"remote_model":"gpt-oss:120b","remote_host":"https://ollama.com:443","details":{"format":""},"capabilities":["completion"]}"#;
+
+    #[test]
+    fn a_model_description_is_local_only_without_remote_fields() {
+        assert_eq!(model_location(LOCAL_SHOW), Ok(()));
+        assert_eq!(model_location(CLOUD_SHOW), Err(ModelRefusal::Cloud));
+        assert_eq!(
+            model_location(r#"{"remote_model":"x","details":{}}"#),
+            Err(ModelRefusal::Cloud)
+        );
+        assert_eq!(model_location(r#"{"remote_host":"","details":{}}"#), Ok(()));
+        // Fail closed: nothing recognisable is not a yes.
+        assert_eq!(model_location("{}"), Err(ModelRefusal::Unknown));
+        assert_eq!(model_location("[]"), Err(ModelRefusal::Unknown));
+        assert_eq!(model_location("<html>"), Err(ModelRefusal::Unknown));
+    }
+
+    #[test]
+    fn a_renamed_cloud_model_is_refused_and_the_answer_remembered() {
+        let (base, seen) = stand_in_ollama(vec![("200 OK", CLOUD_SHOW.to_string())]);
+
+        // No "cloud" in the name: only Ollama's answer gives it away.
+        assert_eq!(
+            ensure_local_model(&base, "my-assistant:latest"),
+            Err(ModelRefusal::Cloud)
+        );
+        assert_eq!(seen.recv().unwrap(), "POST /api/show HTTP/1.1");
+        // Asked once: the stand-in has no second answer, and none is needed.
+        assert_eq!(
+            ensure_local_model(&base, "my-assistant:latest"),
+            Err(ModelRefusal::Cloud)
+        );
+        assert!(ModelRefusal::Cloud
+            .message("my-assistant:latest")
+            .contains("cloud-hosted"));
+    }
+
+    #[test]
+    fn a_local_model_is_allowed_and_an_unclear_answer_is_not_remembered() {
+        let (base, _seen) = stand_in_ollama(vec![
+            ("500 Internal Server Error", "{}".to_string()),
+            ("200 OK", "not a model".to_string()),
+            ("200 OK", LOCAL_SHOW.to_string()),
+            (
+                "404 Not Found",
+                r#"{"error":"model not found"}"#.to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            ensure_local_model(&base, "llama3.2:3b"),
+            Err(ModelRefusal::Unknown)
+        );
+        assert_eq!(
+            ensure_local_model(&base, "llama3.2:3b"),
+            Err(ModelRefusal::Unknown)
+        );
+        assert_eq!(ensure_local_model(&base, "llama3.2:3b"), Ok(()));
+        assert_eq!(ensure_local_model(&base, "llama3.2:3b"), Ok(()));
+        assert_eq!(
+            ensure_local_model(&base, "missing:1b"),
+            Err(ModelRefusal::NotInstalled)
+        );
+    }
+
+    #[test]
+    fn a_server_that_is_not_running_refuses_the_model() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(
+            ensure_local_model(&format!("http://127.0.0.1:{port}"), "llama3.2:3b"),
+            Err(ModelRefusal::OllamaNotRunning)
+        );
+    }
+
+    /// Checks the fields against the Ollama installed here. Ignored by default: it needs a
+    /// running Ollama with `llama3.2:3b` pulled. Read-only (`/api/show`).
+    #[test]
+    #[ignore = "needs a local Ollama with llama3.2:3b"]
+    fn real_ollama_reports_an_installed_model_as_local() {
+        assert_eq!(ensure_local_model(OLLAMA_BASE_URL, OLLAMA_MODEL), Ok(()));
+    }
+
     #[test]
     fn installed_models_are_listed_without_cloud_tags() {
-        let body = r#"{"models":[{"name":"llama3.2:3b","size":1},{"name":"gemma4:cloud"},{"name":"qwen3:480b-cloud"},{"name":"nomic-embed-text:latest"},{"name":"  "}]}"#;
+        let body = r#"{"models":[{"name":"llama3.2:3b","size":1},{"name":"gemma4:cloud"},{"name":"qwen3:480b-cloud"},{"name":"nomic-embed-text:latest"},{"name":"  "},{"name":"renamed:latest","remote_model":"gpt-oss:120b","remote_host":"https://ollama.com:443"},{"name":"half:latest","remote_host":"https://ollama.com:443"},{"size":3}]}"#;
 
         assert_eq!(
             parse_model_names(body).unwrap(),

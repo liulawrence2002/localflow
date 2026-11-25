@@ -162,11 +162,11 @@ Measured 2026-11-24 with the same harness, plugged in, all runs back to back in 
 so they can be compared with each other: three passes of the four questions each. These
 builds include the slice 24 turn-taking changes and Smart Turn.
 
-|                                                 | Median | Slowest  | Recognition per turn, short questions |
-| ----------------------------------------------- | ------ | -------- | ------------------------------------- |
-| Speech recognition on the GPU (Vulkan)          | 568 ms | 853 ms   | 432-591 ms                            |
-| Speech recognition on the CPU, with Smart Turn  | 993 ms | 1,380 ms | 549-762 ms                            |
-| Speech recognition on the CPU, no Smart Turn    | 965 ms | 1,256 ms | 636-840 ms                            |
+|                                                | Median | Slowest  | Recognition per turn, short questions |
+| ---------------------------------------------- | ------ | -------- | ------------------------------------- |
+| Speech recognition on the GPU (Vulkan)         | 568 ms | 853 ms   | 432-591 ms                            |
+| Speech recognition on the CPU, with Smart Turn | 993 ms | 1,380 ms | 549-762 ms                            |
+| Speech recognition on the CPU, no Smart Turn   | 965 ms | 1,256 ms | 636-840 ms                            |
 
 Smart Turn costs nothing measurable here: it runs on its own threads while the recogniser
 works. The GPU takes about 40 % off the response time.

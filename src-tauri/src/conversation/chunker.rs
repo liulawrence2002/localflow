@@ -154,9 +154,9 @@ fn line_start(text: &str, before: usize) -> usize {
 /// leaves at least `min_chars` characters before it.
 fn last_clause_mark(text: &str, min_chars: usize) -> Option<usize> {
     let mut best = None;
-    let mut count = 0usize;
     let mut previous: Option<(usize, char)> = None;
-    for (index, character) in text.char_indices() {
+    // `count` is the number of characters before this one.
+    for (count, (index, character)) in text.char_indices().enumerate() {
         if let Some((mark_index, mark)) = previous {
             if matches!(mark, ',' | ';' | ':' | '—' | '–')
                 && character.is_whitespace()
@@ -166,7 +166,6 @@ fn last_clause_mark(text: &str, min_chars: usize) -> Option<usize> {
             }
         }
         previous = Some((index, character));
-        count += 1;
     }
     best
 }
