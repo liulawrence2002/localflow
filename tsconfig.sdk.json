@@ -1,0 +1,28 @@
+{
+  // The SDK package, checked with its own options and emitting declarations only, which the
+  // app project (tsconfig.json) reads through the project reference.
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "packages/localflow-sdk/src",
+    "outDir": "node_modules/.tmp/localflow-sdk",
+    "tsBuildInfoFile": "node_modules/.tmp/localflow-sdk.tsbuildinfo",
+
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["packages/localflow-sdk/src"]
+}

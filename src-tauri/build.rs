@@ -4,8 +4,6 @@
 const APP_COMMANDS: &[&str] = &[
     "get_status",
     "save_settings",
-    "begin_mock_session",
-    "finish_mock_session",
     "cancel_session",
     "get_last_transcript",
     "copy_last_transcript",
@@ -22,7 +20,13 @@ const APP_COMMANDS: &[&str] = &[
     "remove_coding_project",
     "suggest_project_spoken_names",
     "detect_coding_agents",
+    "readiness_status",
 ];
+
+/// Commands that exist only in debug builds (`cfg(debug_assertions)` in `lib.rs`): the mock
+/// dictation. Their permissions are in `capabilities/debug/`, which only a debug build reads,
+/// so a release build neither has the commands nor can grant them.
+const DEBUG_ONLY_COMMANDS: &[&str] = &["begin_mock_session", "finish_mock_session"];
 
 fn main() {
     // The GPU build links vulkan-1.lib from the Vulkan SDK; point the linker at it so the
@@ -35,9 +39,24 @@ fn main() {
         }
     }
 
+    // Cargo's profile: "debug" for a dev build, which is the one with debug assertions.
+    let debug_build = std::env::var("PROFILE").as_deref() == Ok("debug");
+    let (commands, capabilities): (&'static [&'static str], &'static str) = if debug_build {
+        let all: Vec<&'static str> = APP_COMMANDS
+            .iter()
+            .chain(DEBUG_ONLY_COMMANDS)
+            .copied()
+            .collect();
+        (Box::leak(all.into_boxed_slice()), "./capabilities/**/*")
+    } else {
+        (APP_COMMANDS, "./capabilities/*.json")
+    };
+    println!("cargo:rerun-if-changed=capabilities");
+
     tauri_build::try_build(
         tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),
+            .capabilities_path_pattern(capabilities)
+            .app_manifest(tauri_build::AppManifest::new().commands(commands)),
     )
     .expect("failed to run the Tauri build script");
 }

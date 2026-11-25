@@ -25,7 +25,7 @@ use std::{
     path::PathBuf,
     process::{Child, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     thread,
@@ -107,6 +107,10 @@ pub struct WhisperServerProvider {
     client: reqwest::blocking::Client,
     starts: AtomicU64,
     requests: AtomicU64,
+    /// Set by [`SpeechToTextProvider::shutdown`]: the provider has been replaced or the app is
+    /// closing, so its server is never started again. Without it, the request that was
+    /// running when the server was stopped retried and started a server nobody would stop.
+    retired: AtomicBool,
 }
 
 impl WhisperServerProvider {
@@ -128,6 +132,7 @@ impl WhisperServerProvider {
             client,
             starts: AtomicU64::new(0),
             requests: AtomicU64::new(0),
+            retired: AtomicBool::new(false),
         })
     }
 
@@ -182,6 +187,9 @@ impl WhisperServerProvider {
     /// whole start means concurrent callers wait for the same process instead of racing to
     /// spawn several.
     fn ensure_running(&self) -> Result<u16, AsrError> {
+        if self.is_retired() {
+            return Err(retired_error());
+        }
         let mut guard = self.lock_server();
 
         if let Some(server) = guard.running.as_mut() {
@@ -203,6 +211,11 @@ impl WhisperServerProvider {
         }
 
         match self.check_files().and_then(|()| self.start_server()) {
+            // Retired while it was starting (the shutdown could not take the lock).
+            Ok(server) if self.is_retired() => {
+                server.stop();
+                Err(retired_error())
+            }
             Ok(server) => {
                 let port = server.port;
                 guard.running = Some(server);
@@ -304,6 +317,26 @@ impl WhisperServerProvider {
 
     fn stop_server(&self) {
         if let Some(server) = self.lock_server().running.take() {
+            server.stop();
+        }
+    }
+
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::SeqCst)
+    }
+
+    /// Stop for good. Never waits for a server that is starting: that start stops the
+    /// process itself once it sees the flag.
+    fn retire(&self) {
+        self.retired.store(true, Ordering::SeqCst);
+        let running = match self.server.try_lock() {
+            Ok(mut guard) => guard.running.take(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                poisoned.into_inner().running.take()
+            }
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(server) = running {
             server.stop();
         }
     }
@@ -516,9 +549,15 @@ impl SpeechToTextProvider for WhisperServerProvider {
         )))
     }
 
+    /// Called only when the provider is replaced or the app exits, so it retires the
+    /// provider: the server is stopped and never started again.
     fn shutdown(&self) {
-        self.stop_server();
+        self.retire();
     }
+}
+
+fn retired_error() -> AsrError {
+    AsrError::Unavailable("whisper.cpp server was shut down".to_string())
 }
 
 impl Drop for WhisperServerProvider {
@@ -590,6 +629,53 @@ mod tests {
         assert!(!first.contains("Z:/"), "error must not contain a full path");
         assert!(second.contains("not being restarted yet"));
         assert_eq!(provider.start_count(), 0);
+    }
+
+    #[test]
+    fn a_retired_provider_never_starts_its_server_again() {
+        let provider = WhisperServerProvider::new(WhisperServerConfig::new(
+            PathBuf::from("Z:/definitely/missing/whisper-server.exe"),
+            PathBuf::from("Z:/missing/model.bin"),
+            WhisperDecodeOptions::default(),
+        ))
+        .unwrap();
+
+        provider.shutdown();
+
+        let error = provider.prepare().unwrap_err().to_string();
+        assert!(error.contains("shut down"), "{error}");
+        let samples = vec![0.0f32; 1_600];
+        let request = TranscriptionRequest {
+            samples: &samples,
+            language: "en",
+            initial_prompt: None,
+        };
+        // The retry inside a transcription refuses too, rather than starting a server.
+        assert!(provider.transcribe(&request).is_err());
+        assert_eq!(provider.start_count(), 0);
+    }
+
+    #[test]
+    fn retiring_does_not_wait_for_a_start_in_progress() {
+        let provider = std::sync::Arc::new(
+            WhisperServerProvider::new(WhisperServerConfig::new(
+                PathBuf::from("Z:/definitely/missing/whisper-server.exe"),
+                PathBuf::from("Z:/missing/model.bin"),
+                WhisperDecodeOptions::default(),
+            ))
+            .unwrap(),
+        );
+        // A start in progress holds the server lock.
+        let held = provider.lock_server();
+        let started = Instant::now();
+        let retiring = {
+            let provider = provider.clone();
+            thread::spawn(move || provider.shutdown())
+        };
+        retiring.join().unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(provider.is_retired());
+        drop(held);
     }
 
     #[test]

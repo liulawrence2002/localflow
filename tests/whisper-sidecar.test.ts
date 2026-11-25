@@ -9,8 +9,8 @@ import type { DictionaryEntry } from "../src/domain/types";
 const baseConfig = {
   executablePath: "C:\\whisper.cpp\\build\\bin\\Release\\whisper-cli.exe",
   modelPath: "C:\\models\\ggml-base.en.bin",
-  audioPath: "C:\\Users\\liula\\AppData\\Local\\LocalFlow\\cache\\session.wav",
-  outputFileBasePath: "C:\\Users\\liula\\AppData\\Local\\LocalFlow\\cache\\session",
+  audioPath: "C:\\Users\\you\\AppData\\Local\\LocalFlow\\cache\\session.wav",
+  outputFileBasePath: "C:\\Users\\you\\AppData\\Local\\LocalFlow\\cache\\session",
   language: "auto",
   threads: 4,
   timeoutMs: 30_000,

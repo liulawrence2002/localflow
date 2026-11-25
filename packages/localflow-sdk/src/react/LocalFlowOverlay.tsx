@@ -60,12 +60,31 @@ export function LocalFlowOverlay({
     const renderer = new TopologyRenderer();
     rendererRef.current = renderer;
     renderer.attach(canvas);
-    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-      renderer.setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    // Follow the Windows "Animation effects" setting while the overlay is open, not only as it
+    // was when the overlay first appeared.
+    const motionQuery =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null;
+    const applyMotionPreference = () => renderer.setReducedMotion(motionQuery?.matches ?? false);
+    if (motionQuery) {
+      applyMotionPreference();
+      if (typeof motionQuery.addEventListener === "function") {
+        motionQuery.addEventListener("change", applyMotionPreference);
+      } else {
+        motionQuery.addListener?.(applyMotionPreference);
+      }
     }
     renderer.start();
 
     return () => {
+      if (motionQuery) {
+        if (typeof motionQuery.removeEventListener === "function") {
+          motionQuery.removeEventListener("change", applyMotionPreference);
+        } else {
+          motionQuery.removeListener?.(applyMotionPreference);
+        }
+      }
       rendererRef.current = null;
       renderer.dispose();
     };

@@ -124,7 +124,7 @@ pub fn number_in_words(mut n: u64) -> String {
         }
         if rest >= 20 {
             words.push(TENS[(rest / 10) as usize]);
-            if rest % 10 != 0 {
+            if !rest.is_multiple_of(10) {
                 words.push(ONES[(rest % 10) as usize]);
             }
         } else if rest > 0 {
@@ -162,7 +162,7 @@ pub fn year_in_words(n: u64) -> Option<String> {
     let centuries = n / 100;
     let remainder = n % 100;
     let mut words = Vec::new();
-    if centuries % 10 != 0 {
+    if !centuries.is_multiple_of(10) {
         words.push(number_in_words(centuries));
         if remainder == 0 {
             words.push("hundred".to_string());
@@ -176,7 +176,7 @@ pub fn year_in_words(n: u64) -> Option<String> {
         words.push(number_in_words(centuries));
     }
     if remainder != 0 {
-        if remainder < 10 && centuries % 10 != 0 {
+        if remainder < 10 && !centuries.is_multiple_of(10) {
             words.push("oh".to_string());
         }
         words.push(number_in_words(remainder));

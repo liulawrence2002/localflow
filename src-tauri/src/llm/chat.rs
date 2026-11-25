@@ -13,7 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::ollama::{is_cloud_model_tag, OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX};
+use super::ollama::{ensure_local_model, ModelRefusal, OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX};
 use crate::cancel::CancelFlag;
 
 const OLLAMA_CHAT_URL: &str = "http://127.0.0.1:11434/api/chat";
@@ -155,6 +155,8 @@ struct ChatStreamMessage {
 /// Chat through the local Ollama server.
 pub struct OllamaChat {
     url: String,
+    /// `http://host:port` of the same server, for asking about a model before using it.
+    base_url: String,
     client: reqwest::blocking::Client,
 }
 
@@ -182,8 +184,13 @@ impl OllamaChat {
             .map_err(|_| {
                 LlmError::Unavailable("Could not create the local model client.".to_string())
             })?;
+        let authority = url
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or_default();
         Ok(Self {
             url: url.to_string(),
+            base_url: format!("http://{authority}"),
             client,
         })
     }
@@ -194,11 +201,13 @@ impl OllamaChat {
         messages: &[ChatMessage],
         num_predict: u32,
     ) -> Result<reqwest::blocking::Response, LlmError> {
-        if is_cloud_model_tag(model) {
-            return Err(LlmError::ModelRefused(format!(
-                "Ollama model \"{model}\" is a cloud-hosted tag. LocalFlow only uses local models."
-            )));
-        }
+        // Before any conversation text leaves for the server: is this model run here?
+        ensure_local_model(&self.base_url, model).map_err(|refusal| match refusal {
+            ModelRefusal::OllamaNotRunning => LlmError::Unavailable(
+                "The local language model is not running. Start Ollama and try again.".to_string(),
+            ),
+            other => LlmError::ModelRefused(other.message(model)),
+        })?;
 
         let response = self
             .client
@@ -429,7 +438,7 @@ mod tests {
         let url = format!("http://{}/api/chat", listener.local_addr().unwrap());
         let (report_tx, report_rx) = mpsc::channel();
 
-        thread::spawn(move || {
+        thread::spawn(move || loop {
             let (mut socket, _) = listener.accept().unwrap();
             let mut request = Vec::new();
             let mut buffer = [0u8; 4096];
@@ -455,6 +464,18 @@ mod tests {
                     break String::new();
                 }
             };
+            // The model check that precedes every request: a local model.
+            if request.starts_with(b"POST /api/show ") {
+                let answer = r#"{"details":{"format":"gguf"},"capabilities":["completion"]}"#;
+                let _ = socket.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    )
+                    .as_bytes(),
+                );
+                continue;
+            }
 
             let mut hung_up = false;
             let head = format!("HTTP/1.1 {status}\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n");
@@ -471,6 +492,7 @@ mod tests {
                 }
             }
             let _ = report_tx.send((body, hung_up));
+            break;
         });
 
         (url, report_rx)

@@ -1,0 +1,39 @@
+# Weekly dependency updates, one grouped pull request per ecosystem for minor and patch
+# versions. Major versions come as their own pull requests so each can be reviewed.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Pinned exactly on purpose (see the comments in src-tauri/Cargo.toml): their APIs
+      # change between minor versions, and Smart Turn's answers were checked against this
+      # tract version. Move them by hand, with the real-model tests.
+      - dependency-name: sonora
+        update-types: [version-update:semver-minor, version-update:semver-major]
+      - dependency-name: ptts
+        update-types: [version-update:semver-minor, version-update:semver-major]
+      - dependency-name: tract-*
+        update-types: [version-update:semver-minor, version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

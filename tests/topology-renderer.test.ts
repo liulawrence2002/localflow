@@ -157,7 +157,7 @@ describe("TopologyRenderer", () => {
     const current = harness.renderer.currentBands;
     expect(current[4]).toBeGreaterThan(0.3);
     expect(current[25]).toBeLessThan(0.02);
-    expect(current[4]).toBeGreaterThan(current[10] * 5);
+    expect(current[4]).toBeGreaterThan((current[10] ?? Number.NaN) * 5);
     harness.renderer.dispose();
   });
 

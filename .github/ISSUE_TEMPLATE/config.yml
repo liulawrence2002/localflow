@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/liulawrence2002/localflow/security/advisories/new
+    about: Report privately through GitHub. Please do not open a public issue for security problems.
+  - name: User guide and troubleshooting
+    url: https://github.com/liulawrence2002/localflow/blob/master/docs/USER_GUIDE.md#troubleshooting
+    about: Installing models, hotkeys, Ollama, and common problems.

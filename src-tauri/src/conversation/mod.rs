@@ -49,7 +49,8 @@ use crate::{
     },
     cancel::CancelFlag,
     coding_agents::{
-        AgentCommand, CodingAgents, CodingAgentsRuntime, CommandContext, ExecutionOutcome,
+        agent::DETECTION_MAX_AGE, AgentCommand, CodingAgents, CodingAgentsRuntime, CommandContext,
+        ExecutionOutcome,
     },
     llm::{chat::OllamaChat, ollama::OLLAMA_MODEL},
     overlay::{emit_audio_features, emit_status, overlay_audio_features},
@@ -80,6 +81,22 @@ pub struct ConversationStatus {
     pub detail: String,
     /// The hotkey that toggles conversation mode, when one could be registered.
     pub hotkey: Option<String>,
+    /// Why the last conversation ended or could not start, when that was not the user's
+    /// choice. Kept until a conversation starts successfully.
+    pub last_stop: Option<LastStop>,
+}
+
+/// A conversation that failed to start or ended because of a problem or a limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastStop {
+    /// The [`StopReason`], as the event spells it: `start_failed`, `device_lost`, `idle` or
+    /// `max_duration`.
+    pub reason: String,
+    /// A sentence for the user. Fixed wording or a problem message; never anything said.
+    pub message: String,
+    /// When it happened, in milliseconds since the Unix epoch.
+    pub at_ms: u64,
 }
 
 pub struct ConversationRuntime {
@@ -93,6 +110,7 @@ struct Shared {
     last_problem: Mutex<Option<String>>,
     last_turn: Mutex<Option<TurnTimings>>,
     hotkey: Mutex<Option<String>>,
+    last_stop: Mutex<Option<LastStop>>,
 }
 
 impl ConversationRuntime {
@@ -207,8 +225,14 @@ struct AppAgents {
 
 impl AgentRuntime for AppAgents {
     fn prepare(&self) {
-        // Runs the agents' `--version` and `--help`, and nothing else.
-        self.agents.detect_all();
+        // Without projects no command can run, so there is nothing to look for.
+        let settings = self.app.state::<LocalFlowRuntime>().current_settings();
+        if settings.coding_agents.projects.is_empty() {
+            return;
+        }
+        // Runs the agents' `--version` and `--help`, and nothing else; reused for half an
+        // hour, and the Coding agents screen's check runs it again at once.
+        self.agents.refresh_if_older_than(DETECTION_MAX_AGE);
     }
 
     fn context(&self) -> CommandContext {
@@ -278,8 +302,8 @@ impl ConversationHost for TauriHost {
 
         let speaker = SpeakerStream::open()?;
         let microphone = MicStream::open()?;
+        // Not the microphone's name: it can name its owner ("Alice's AirPods").
         tracing::info!(
-            microphone = microphone.device_name(),
             detector = detector.id(),
             asr = %asr.provider.describe(),
             model = %model,
@@ -340,6 +364,13 @@ impl ConversationHost for TauriHost {
             Notice::Phase { phase, reason } => {
                 let message =
                     phase_message(phase, reason, lock(&self.shared.last_problem).as_deref());
+                update_last_stop(
+                    &mut lock(&self.shared.last_stop),
+                    phase,
+                    reason,
+                    &message,
+                    now_ms(),
+                );
                 // The overlay knows dictation's phases; conversation borrows the closest ones.
                 match phase {
                     Phase::Starting => emit_status(app, "processing", &message),
@@ -378,6 +409,58 @@ impl ConversationHost for TauriHost {
     }
 }
 
+/// Keep or clear the record of why the last conversation stopped. Set when a conversation
+/// could not start or ended because of a problem or a limit; cleared when one reaches
+/// listening (it started successfully). The user's own "stop" and "goodbye", and making way
+/// for a coding agent, leave nothing to report.
+fn update_last_stop(
+    last_stop: &mut Option<LastStop>,
+    phase: Phase,
+    reason: Option<StopReason>,
+    message: &str,
+    at_ms: u64,
+) {
+    match (phase, reason) {
+        (Phase::Listening, _) => *last_stop = None,
+        (
+            Phase::Off,
+            Some(
+                reason @ (StopReason::StartFailed
+                | StopReason::DeviceLost
+                | StopReason::Idle
+                | StopReason::MaxDuration),
+            ),
+        ) => {
+            *last_stop = Some(LastStop {
+                reason: stop_reason_name(reason).to_string(),
+                message: crate::storage::redact::redact_user_paths(message).into_owned(),
+                at_ms,
+            });
+        }
+        _ => {}
+    }
+}
+
+/// A stop reason as its event's JSON spells it.
+fn stop_reason_name(reason: StopReason) -> &'static str {
+    match reason {
+        StopReason::User => "user",
+        StopReason::Goodbye => "goodbye",
+        StopReason::Idle => "idle",
+        StopReason::MaxDuration => "max_duration",
+        StopReason::StartFailed => "start_failed",
+        StopReason::DeviceLost => "device_lost",
+        StopReason::AgentOpened => "agent_opened",
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 /// The short line shown for a phase. Fixed wording; never derived from speech.
 fn phase_message(phase: Phase, reason: Option<StopReason>, last_problem: Option<&str>) -> String {
     match phase {
@@ -390,7 +473,7 @@ fn phase_message(phase: Phase, reason: Option<StopReason>, last_problem: Option<
             Some(StopReason::Idle) => "Conversation ended: no speech".to_string(),
             Some(StopReason::MaxDuration) => "Conversation ended: time limit".to_string(),
             Some(StopReason::DeviceLost) => {
-                "Conversation ended: the microphone stopped".to_string()
+                "Conversation ended: the microphone stopped working.".to_string()
             }
             Some(StopReason::StartFailed) => last_problem
                 .unwrap_or("The conversation could not start.")
@@ -426,11 +509,13 @@ pub fn conversation_status(app: AppHandle) -> ConversationStatus {
             },
         ),
     };
+    let last_stop = lock(&runtime.shared.last_stop).clone();
     ConversationStatus {
         phase: runtime.phase(),
         available,
         detail,
         hotkey,
+        last_stop,
     }
 }
 
@@ -528,6 +613,82 @@ mod tests {
             phase_message(Phase::Off, Some(StopReason::StartFailed), None),
             "The conversation could not start."
         );
+    }
+
+    #[test]
+    fn a_failed_start_is_kept_until_a_conversation_starts() {
+        let mut last_stop = None;
+        let message = phase_message(
+            Phase::Off,
+            Some(StopReason::StartFailed),
+            Some("No microphone is available."),
+        );
+
+        update_last_stop(
+            &mut last_stop,
+            Phase::Off,
+            Some(StopReason::StartFailed),
+            &message,
+            42,
+        );
+        let expected = Some(LastStop {
+            reason: "start_failed".to_string(),
+            message: "No microphone is available.".to_string(),
+            at_ms: 42,
+        });
+        assert_eq!(last_stop, expected);
+
+        // Starting again does not clear it; only reaching "listening" does.
+        update_last_stop(&mut last_stop, Phase::Starting, None, "Starting", 50);
+        assert_eq!(last_stop, expected);
+        update_last_stop(&mut last_stop, Phase::Listening, None, "Listening", 60);
+        assert_eq!(last_stop, None);
+    }
+
+    #[test]
+    fn only_stops_that_were_not_the_users_choice_are_reported() {
+        for (reason, name) in [
+            (StopReason::DeviceLost, "device_lost"),
+            (StopReason::Idle, "idle"),
+            (StopReason::MaxDuration, "max_duration"),
+        ] {
+            let mut last_stop = None;
+            let message = phase_message(Phase::Off, Some(reason), None);
+            update_last_stop(&mut last_stop, Phase::Off, Some(reason), &message, 1);
+            let recorded = last_stop.expect("reported");
+            assert_eq!(recorded.reason, name);
+            assert_eq!(recorded.message, message);
+            // The same spelling as the event's `reason`.
+            assert_eq!(
+                serde_json::to_value(reason).unwrap(),
+                serde_json::Value::String(name.to_string())
+            );
+        }
+        for reason in [
+            StopReason::User,
+            StopReason::Goodbye,
+            StopReason::AgentOpened,
+        ] {
+            let mut last_stop = None;
+            update_last_stop(&mut last_stop, Phase::Off, Some(reason), "ended", 1);
+            assert_eq!(last_stop, None, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn the_last_stop_serialises_in_camel_case_without_user_folders() {
+        let mut last_stop = None;
+        update_last_stop(
+            &mut last_stop,
+            Phase::Off,
+            Some(StopReason::StartFailed),
+            r"Missing speech model at C:\Users\someone\models\x.gguf",
+            7,
+        );
+        let json = serde_json::to_value(&last_stop).unwrap();
+        assert_eq!(json["reason"], "start_failed");
+        assert_eq!(json["atMs"], 7);
+        assert!(!json["message"].as_str().unwrap().contains("someone"));
     }
 
     #[test]

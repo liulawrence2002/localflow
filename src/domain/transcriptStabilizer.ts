@@ -57,7 +57,7 @@ function longestCommonPrefix(left: string[], right: string[]): string[] {
   const length = Math.min(left.length, right.length);
   let index = 0;
 
-  while (index < length && left[index].toLowerCase() === right[index].toLowerCase()) {
+  while (index < length && left[index]?.toLowerCase() === right[index]?.toLowerCase()) {
     index += 1;
   }
 

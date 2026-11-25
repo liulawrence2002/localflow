@@ -909,7 +909,8 @@ fn report(clips: &[Clip]) -> String {
 
     // Filler flags exist only on synthetic rows.
     let _ = writeln!(out, "\n## Synthetic clips by filler flag\n");
-    let filler_subsets: [(&str, Box<dyn Fn(&Clip) -> bool>); 4] = [
+    type ClipFilter = Box<dyn Fn(&Clip) -> bool>;
+    let filler_subsets: [(&str, ClipFilter); 4] = [
         (
             "Filler word mid-turn (midfiller)",
             Box::new(|c| c.midfiller == Some(true)),

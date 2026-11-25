@@ -9,8 +9,11 @@ param(
   # CPU threads for the CPU side of the GPU comparison (and for the few CPU ops on the GPU path).
   [int]$CpuThreads = 8,
   [string]$Model = "parakeet-tdt-0.6b-v3-Q5_K_M.gguf",
-  [string]$OutDir = "docs\benchmarks",
-  [string]$VulkanSdk = "C:\VulkanSDK\1.4.363.0"
+  # Where the JSON results go, relative to the repository. Inside .localflow-runtime, which
+  # Git ignores; copy a run you want to keep into docs\benchmarks by hand.
+  [string]$OutDir = ".localflow-runtime\bench-results",
+  # The Vulkan SDK, for the GPU part. Default: the VULKAN_SDK variable its installer sets.
+  [string]$VulkanSdk = $env:VULKAN_SDK
 )
 
 # Speech-recognition speed benchmarks. Run on a quiet machine: no compiles, no other
@@ -33,7 +36,13 @@ $out = Join-Path $root $OutDir
 New-Item -ItemType Directory -Force $out | Out-Null
 
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
-$cmakeBin = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+# The in-process speech engine compiles C++ with the CMake that ships with the Build Tools.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+$cmakeBin = ""
+if (Test-Path -LiteralPath $vswhere) {
+  $vs = & $vswhere -latest -products * -property installationPath
+  if ($vs) { $cmakeBin = Join-Path $vs "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin" }
+}
 $env:PATH = "$cargoBin;$cmakeBin;$env:PATH"
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   throw "cargo was not found in $cargoBin."
@@ -67,6 +76,9 @@ if ($Part -in @("Threads", "All")) {
 }
 
 if ($Part -in @("Gpu", "All")) {
+  if (-not $VulkanSdk) {
+    throw "The GPU part needs the Vulkan SDK: install it so VULKAN_SDK is set, or pass -VulkanSdk."
+  }
   if (-not (Test-Path -LiteralPath (Join-Path $VulkanSdk "Bin\glslc.exe"))) {
     throw "The Vulkan SDK was not found at $VulkanSdk (glslc.exe is needed to build the GPU backend)."
   }

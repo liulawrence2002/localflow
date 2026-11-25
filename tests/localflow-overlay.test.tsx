@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalFlowOverlay } from "@localflow/sdk/react";
+import { TopologyRenderer } from "../packages/localflow-sdk/src/react/topology/topologyRenderer";
 
 describe("LocalFlowOverlay", () => {
   let rafSpy: ReturnType<typeof vi.spyOn>;
@@ -80,6 +81,43 @@ describe("LocalFlowOverlay", () => {
     // The mocked rAF never fires its callback, so any additional loop would
     // show up as a second requestAnimationFrame call.
     expect(rafSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows a change to the reduced-motion setting while it is shown", () => {
+    const listeners = new Set<() => void>();
+    const query = {
+      matches: false,
+      media: "(prefers-reduced-motion: reduce)",
+      addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+    };
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = (() => query) as unknown as typeof window.matchMedia;
+    // Only the values are recorded: the renderer itself is far too large to print.
+    const seen: boolean[] = [];
+    const original = TopologyRenderer.prototype.setReducedMotion;
+    TopologyRenderer.prototype.setReducedMotion = function (reducedMotion: boolean) {
+      seen.push(reducedMotion);
+    };
+
+    try {
+      const { unmount } = render(
+        <LocalFlowOverlay state={{ sessionId: "s", phase: "listening", message: "Listening" }} />,
+      );
+      expect(seen).toEqual([false]);
+
+      query.matches = true;
+      for (const listener of [...listeners]) {
+        listener();
+      }
+      expect(seen).toEqual([false, true]);
+
+      unmount();
+      expect(listeners.size).toBe(0);
+    } finally {
+      TopologyRenderer.prototype.setReducedMotion = original;
+      window.matchMedia = originalMatchMedia;
+    }
   });
 
   it("cancels the animation frame and stays quiet after unmount", () => {

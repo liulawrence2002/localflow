@@ -7,8 +7,6 @@
     "core:default",
     "allow-get-status",
     "allow-save-settings",
-    "allow-begin-mock-session",
-    "allow-finish-mock-session",
     "allow-cancel-session",
     "allow-get-last-transcript",
     "allow-copy-last-transcript",
@@ -24,6 +22,7 @@
     "allow-save-coding-project",
     "allow-remove-coding-project",
     "allow-suggest-project-spoken-names",
-    "allow-detect-coding-agents"
+    "allow-detect-coding-agents",
+    "allow-readiness-status"
   ]
 }

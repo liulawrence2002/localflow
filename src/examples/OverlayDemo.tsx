@@ -112,11 +112,12 @@ export function OverlayDemo() {
     let step = 0;
     let timer = 0;
     const advance = () => {
-      setPhase(CYCLE[step].phase);
+      const current = CYCLE[step % CYCLE.length] ?? { phase: "ready", ms: 900 };
+      setPhase(current.phase);
       timer = window.setTimeout(() => {
         step = (step + 1) % CYCLE.length;
         advance();
-      }, CYCLE[step].ms);
+      }, current.ms);
     };
     advance();
     return () => window.clearTimeout(timer);

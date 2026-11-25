@@ -60,6 +60,9 @@ fn main() {
             print_result("success", false, "slept");
         }
         "tree" => {
+            // Never waited on, on purpose: the test checks that killing the job ends this
+            // child too.
+            #[allow(clippy::zombie_processes)]
             let child = Command::new(std::env::current_exe().expect("own path"))
                 .arg(CHILD_FLAG)
                 .stdin(Stdio::null())

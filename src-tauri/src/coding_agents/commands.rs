@@ -185,7 +185,8 @@ pub fn list_coding_projects(runtime: State<'_, LocalFlowRuntime>) -> Vec<CodingP
     project_views(&runtime.current_settings().coding_agents)
 }
 
-#[tauri::command]
+// `async`: off the main thread, because saving writes the settings database.
+#[tauri::command(async)]
 pub fn save_coding_project(
     app: AppHandle,
     runtime: State<'_, LocalFlowRuntime>,
@@ -198,7 +199,7 @@ pub fn save_coding_project(
     Ok(project_views(&runtime.current_settings().coding_agents))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_coding_project(
     app: AppHandle,
     runtime: State<'_, LocalFlowRuntime>,

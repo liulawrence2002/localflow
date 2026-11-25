@@ -18,7 +18,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -327,9 +327,34 @@ struct SpeakerShared {
     flush_requested: AtomicU32,
     /// The last flush request the callback has completed.
     flush_done: AtomicU32,
+    /// Where the audio the latest flush throws away ends (the ring's write position when it
+    /// was asked for). Audio written after it is the next reply and is kept.
+    flush_mark: AtomicUsize,
     /// Set by [`AudioSink::pause`]: the callback fades out, then plays silence and leaves the
     /// queue alone until it is cleared.
     paused: AtomicBool,
+}
+
+impl SpeakerShared {
+    /// Ask the callback to fade out and drop everything queued so far. Returns the request's
+    /// number, which `flush_done` reaches once it has.
+    fn request_flush(&self) -> u32 {
+        // The mark first: the callback reads it once it sees the new request.
+        self.flush_mark
+            .store(self.ring.write_position(), Ordering::SeqCst);
+        self.flush_requested
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1)
+    }
+
+    /// Whether audio from before the latest flush is still queued.
+    fn stale_audio_left(&self) -> bool {
+        let stale = self
+            .flush_mark
+            .load(Ordering::SeqCst)
+            .wrapping_sub(self.ring.read_position());
+        stale > 0 && stale <= self.ring.len()
+    }
 }
 
 pub struct SpeakerStream {
@@ -395,11 +420,7 @@ impl AudioSink for SpeakerStream {
     }
 
     fn flush(&self) {
-        let request = self
-            .shared
-            .flush_requested
-            .fetch_add(1, Ordering::SeqCst)
-            .wrapping_add(1);
+        let request = self.shared.request_flush();
         // The callback runs every few milliseconds. Wait for it to finish the fade, but not
         // forever: a device that has stopped calling back cannot be making sound either.
         let deadline = Instant::now() + Duration::from_millis(250);
@@ -410,11 +431,15 @@ impl AudioSink for SpeakerStream {
             }
             thread::sleep(Duration::from_millis(2));
         }
-        if self.shared.flush_done.load(Ordering::SeqCst) != request {
-            // The callback is not running, so nothing else is reading the ring right now.
+        if self.shared.flush_done.load(Ordering::SeqCst) != request && !self.healthy() {
+            // The stream has failed and its callback will not run again, so this is the
+            // only reader left and may empty the ring itself.
             self.shared.ring.discard_all();
             self.shared.flush_done.store(request, Ordering::SeqCst);
         }
+        // Otherwise a callback that is merely late finishes the flush on its next call. Only
+        // the reader may take from the ring, and the mark keeps the next reply, written from
+        // now on, from being thrown away with the old one.
     }
 
     fn healthy(&self) -> bool {
@@ -470,7 +495,9 @@ impl Renderer {
 
         if let Some(request) = self.fading {
             self.gain -= self.fade_step;
-            let sample = if self.gain > 0.0 {
+            // Only the audio from before the flush is faded; what came after it is the next
+            // reply and starts at full level.
+            let sample = if self.gain > 0.0 && self.shared.stale_audio_left() {
                 self.play_next()
             } else {
                 None
@@ -478,8 +505,11 @@ impl Renderer {
             return match sample {
                 Some(sample) => sample,
                 None => {
-                    // Faded to silence, or nothing was playing: drop the rest and report.
-                    self.shared.ring.discard_all();
+                    // Faded to silence, or nothing was playing: drop the rest of the old
+                    // audio and report.
+                    self.shared
+                        .ring
+                        .discard_until(self.shared.flush_mark.load(Ordering::SeqCst));
                     // A paused speaker stays silent; otherwise the next audio plays at once.
                     self.gain = if self.shared.paused.load(Ordering::Relaxed) {
                         0.0
@@ -548,6 +578,7 @@ fn build_speaker_stream() -> Result<(cpal::Stream, Arc<SpeakerShared>, u32), Str
         played: AtomicU64::new(0),
         flush_requested: AtomicU32::new(0),
         flush_done: AtomicU32::new(0),
+        flush_mark: AtomicUsize::new(0),
         paused: AtomicBool::new(false),
     });
 
@@ -746,6 +777,7 @@ mod tests {
             played: AtomicU64::new(0),
             flush_requested: AtomicU32::new(0),
             flush_done: AtomicU32::new(0),
+            flush_mark: AtomicUsize::new(0),
             paused: AtomicBool::new(false),
         });
         (Renderer::new(shared.clone(), rate), shared)
@@ -823,7 +855,7 @@ mod tests {
         shared.paused.store(true, Ordering::SeqCst);
         render(&mut renderer, 1_000);
 
-        shared.flush_requested.fetch_add(1, Ordering::SeqCst);
+        shared.request_flush();
         render(&mut renderer, 1);
         assert_eq!(shared.flush_done.load(Ordering::SeqCst), 1);
         assert!(shared.ring.is_empty());
@@ -870,7 +902,7 @@ mod tests {
         let mut before = [0.0f32; 480];
         renderer.fill(&mut before, 1, |sample| sample);
 
-        shared.flush_requested.fetch_add(1, Ordering::SeqCst);
+        shared.request_flush();
         let mut after = [1.0f32; 960]; // 20 ms
         renderer.fill(&mut after, 1, |sample| sample);
 
@@ -895,7 +927,7 @@ mod tests {
     fn audio_written_after_a_stop_plays_normally() {
         let (mut renderer, shared) = speaker(48_000);
         shared.ring.push_slice(&[0.5; 2_000]);
-        shared.flush_requested.fetch_add(1, Ordering::SeqCst);
+        shared.request_flush();
         let mut scratch = [0.0f32; 1_000];
         renderer.fill(&mut scratch, 1, |sample| sample);
         assert_eq!(shared.flush_done.load(Ordering::SeqCst), 1);
@@ -906,6 +938,50 @@ mod tests {
         renderer.fill(&mut output, 1, |sample| sample);
 
         assert_eq!(output, [0.25 * PLAYBACK_GAIN; 4]);
+    }
+
+    #[test]
+    fn a_flush_the_callback_was_late_for_keeps_the_next_reply() {
+        let (mut renderer, shared) = speaker(48_000);
+        shared.ring.push_slice(&[0.5; 2_000]);
+        // The flush is asked for while the callback is not running, and the next reply is
+        // queued before it runs again.
+        shared.request_flush();
+        // Negative, so no faded sample of the old audio can be mistaken for it.
+        shared.ring.push_slice(&[-0.25; 8]);
+
+        let output = render(&mut renderer, 1_000);
+
+        assert_eq!(shared.flush_done.load(Ordering::SeqCst), 1);
+        // The new reply is heard whole and at full level, after the fade.
+        let reply = output
+            .iter()
+            .filter(|sample| **sample == -0.25 * PLAYBACK_GAIN)
+            .count();
+        assert_eq!(reply, 8);
+        assert!(shared.ring.is_empty());
+    }
+
+    #[test]
+    fn a_failed_stream_is_emptied_by_the_writer_and_a_healthy_one_never_is() {
+        let (_renderer, shared) = speaker(48_000);
+        let stream = SpeakerStream {
+            shared: shared.clone(),
+            sample_rate: 48_000,
+            _close: mpsc::channel().0,
+        };
+        shared.ring.push_slice(&[0.5; 100]);
+
+        // Healthy but no callback: the writer leaves the ring to the reader.
+        stream.flush();
+        assert_eq!(shared.ring.len(), 100);
+        assert_eq!(shared.flush_done.load(Ordering::SeqCst), 0);
+
+        // Failed: no callback will come, so the writer empties it.
+        shared.failed.store(true, Ordering::SeqCst);
+        stream.flush();
+        assert!(shared.ring.is_empty());
+        assert_eq!(shared.flush_done.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -929,7 +1005,7 @@ mod tests {
     #[test]
     fn a_stop_with_nothing_playing_is_acknowledged_at_once() {
         let (mut renderer, shared) = speaker(48_000);
-        shared.flush_requested.fetch_add(1, Ordering::SeqCst);
+        shared.request_flush();
         let mut output = [1.0f32; 8];
 
         renderer.fill(&mut output, 1, |sample| sample);

@@ -14,6 +14,7 @@
 //! was actually heard.
 
 use std::{
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -37,7 +38,7 @@ use crate::{
     },
     conversation::{engine::PageSource, router::ReadWhat, speaking::speak_pieces},
     insertion::target::foreground_target,
-    overlay::emit_status,
+    overlay::{emit_status, emit_status_if_current, emit_status_tracked},
     platform::uia::{window_info, SnapshotOptions, UiaReader},
     tts::{
         phonon::{PhononConfig, PhononProvider},
@@ -49,6 +50,8 @@ const END_OF_PAGE_LINE: &str = "That's the end of the page.";
 const NO_WINDOW_LINE: &str = "I can't tell which window to read.";
 /// Pause between spoken pieces.
 const SENTENCE_GAP: Duration = Duration::from_millis(140);
+/// The reading voice is kept loaded between readings, and freed after this long without one.
+const VOICE_IDLE_UNLOAD: Duration = Duration::from_secs(300);
 
 /// Which blocks the pieces of the last read came from, so "heard this many pieces" can be
 /// turned into "heard these blocks".
@@ -85,6 +88,9 @@ struct Inner {
     /// Numbers readings so a finished one only clears its own entry.
     next_reading: AtomicU64,
     hotkey: Mutex<Option<String>>,
+    /// The reading voice, loaded on the first reading and reused, with the folder it is
+    /// from. Loading it again for every reading cost the model load each time.
+    voice: Mutex<Option<(PathBuf, Arc<PhononProvider>)>>,
 }
 
 impl Default for ScreenReader {
@@ -98,6 +104,7 @@ impl Default for ScreenReader {
                 active: Mutex::new(None),
                 next_reading: AtomicU64::new(1),
                 hotkey: Mutex::new(None),
+                voice: Mutex::new(None),
             }),
         }
     }
@@ -233,6 +240,34 @@ impl ScreenReader {
         lock(&self.inner.active).is_some()
     }
 
+    /// The reading voice for `model_dir`, loaded once and kept.
+    fn voice(&self, model_dir: PathBuf) -> Arc<PhononProvider> {
+        let mut cached = lock(&self.inner.voice);
+        if let Some((dir, voice)) = cached.as_ref() {
+            if *dir == model_dir {
+                return voice.clone();
+            }
+        }
+        let voice = Arc::new(PhononProvider::new(PhononConfig {
+            model_dir: model_dir.clone(),
+        }));
+        *cached = Some((model_dir, voice.clone()));
+        voice
+    }
+
+    /// The number the next reading will get, to tell whether one started since.
+    fn readings_started(&self) -> u64 {
+        self.inner.next_reading.load(Ordering::SeqCst)
+    }
+
+    /// Free the reading voice if no reading started since `readings` and none is running.
+    fn unload_voice_if_idle(&self, readings: u64) -> bool {
+        if self.readings_started() != readings || self.is_reading() {
+            return false;
+        }
+        lock(&self.inner.voice).take().is_some()
+    }
+
     /// Stop a hotkey-started reading, if one is in progress. Returns whether there was one.
     fn stop_reading(&self) -> bool {
         match lock(&self.inner.active).take() {
@@ -290,8 +325,11 @@ pub fn toggle(app: &AppHandle) {
     let reader = reader.inner().clone();
     let app = app.clone();
     thread::spawn(move || {
-        emit_status(&app, "processing", "Reading the window");
-        let outcome = read_aloud(&app, &reader, target.hwnd, &cancel);
+        // Each status this reading shows is numbered; the next is shown only while the
+        // overlay still shows the last. A dictation, a conversation or a newer reading may
+        // have taken the overlay since, and this reading's end must not hide theirs.
+        let mut shown = emit_status_tracked(&app, "processing", "Reading the window");
+        let outcome = read_aloud(&app, &reader, target.hwnd, &cancel, &mut shown);
         // A newer reading may have started since; only clear this one's entry.
         {
             let mut active = lock(&reader.inner.active);
@@ -302,31 +340,40 @@ pub fn toggle(app: &AppHandle) {
                 *active = None;
             }
         }
-        if cancel.is_cancelled() {
-            emit_status(&app, "cancelled", "Stopped reading");
-            return;
-        }
-        match outcome {
-            Ok(()) => emit_status(&app, "cancelled", "Finished reading"),
-            Err(problem) => {
-                tracing::warn!(problem = %problem, "window could not be read aloud");
-                emit_status(&app, "error", &problem);
+        let (phase, message) = if cancel.is_cancelled() {
+            ("cancelled", "Stopped reading".to_string())
+        } else {
+            match outcome {
+                Ok(()) => ("cancelled", "Finished reading".to_string()),
+                Err(problem) => {
+                    tracing::warn!(problem = %problem, "window could not be read aloud");
+                    ("error", problem)
+                }
             }
+        };
+        emit_status_if_current(&app, shown, phase, &message);
+
+        let readings = reader.readings_started();
+        thread::sleep(VOICE_IDLE_UNLOAD);
+        if reader.unload_voice_if_idle(readings) {
+            tracing::info!("unloaded the idle reading voice");
         }
     });
 }
 
 /// Fetch, speak, and record what was heard. The error is a fixed sentence for the overlay.
+/// `shown` is the overlay status this reading last put up.
 fn read_aloud(
     app: &AppHandle,
     reader: &ScreenReader,
     hwnd: isize,
     cancel: &CancelFlag,
+    shown: &mut u64,
 ) -> Result<(), String> {
     let model_dir = crate::conversation::voice_model_dir(app).ok_or_else(|| {
         "The reading voice is not installed. Run scripts\\Get-PhononModel.ps1.".to_string()
     })?;
-    let voice = PhononProvider::new(PhononConfig { model_dir });
+    let voice = reader.voice(model_dir);
     voice.prepare().map_err(|error| error.to_string())?;
 
     // Why a window cannot be read is said aloud as well as shown.
@@ -342,13 +389,22 @@ fn read_aloud(
     }
 
     let speaker = SpeakerStream::open()?;
-    emit_status(app, "refining", "Reading aloud");
+    if let Some(epoch) = emit_status_if_current(app, *shown, "refining", "Reading aloud") {
+        *shown = epoch;
+    }
     let (tx, rx) = mpsc::channel();
     for piece in pieces {
         let _ = tx.send(piece);
     }
     drop(tx);
-    let spoken = speak_pieces(&voice, &speaker, rx, cancel, SENTENCE_GAP, &mut || {});
+    let spoken = speak_pieces(
+        voice.as_ref(),
+        &speaker,
+        rx,
+        cancel,
+        SENTENCE_GAP,
+        &mut || {},
+    );
     if from_page {
         reader.mark_heard(spoken.finished_pieces);
     }
@@ -398,6 +454,36 @@ pub fn screen_reading_status(app: AppHandle) -> ScreenReadingStatus {
 mod tests {
     use super::*;
     use crate::context::page::raw::{ControlKind, RawNode, Rect};
+
+    #[test]
+    fn the_reading_voice_is_loaded_once_and_freed_only_when_idle() {
+        let reader = ScreenReader::default();
+        let dir = PathBuf::from("Z:/someone/models/phonon");
+
+        let first = reader.voice(dir.clone());
+        let second = reader.voice(dir.clone());
+        assert!(Arc::ptr_eq(&first, &second), "the voice must be reused");
+        // Another install folder gets its own voice.
+        assert!(!Arc::ptr_eq(
+            &first,
+            &reader.voice(PathBuf::from("Z:/other"))
+        ));
+        let first = reader.voice(dir);
+
+        // A reading started after the idle timer was armed keeps the voice.
+        let armed = reader.readings_started();
+        reader.inner.next_reading.fetch_add(1, Ordering::SeqCst);
+        assert!(!reader.unload_voice_if_idle(armed));
+        // A reading in progress keeps it too.
+        let armed = reader.readings_started();
+        *lock(&reader.inner.active) = Some((armed, CancelFlag::default()));
+        assert!(!reader.unload_voice_if_idle(armed));
+        *lock(&reader.inner.active) = None;
+
+        assert!(reader.unload_voice_if_idle(armed));
+        assert!(lock(&reader.inner.voice).is_none());
+        drop(first);
+    }
 
     #[test]
     fn only_blocks_heard_to_the_end_move_the_reading_position() {

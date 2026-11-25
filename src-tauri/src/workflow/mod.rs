@@ -112,10 +112,6 @@ pub enum WorkflowEvent {
     Cancel {
         reason: String,
     },
-    Fail {
-        error: String,
-    },
-    Reset,
 }
 
 impl Default for WorkflowState {
@@ -171,13 +167,6 @@ pub fn transition(mut state: WorkflowState, event: WorkflowEvent) -> WorkflowSta
     }
 
     match event {
-        WorkflowEvent::Reset => WorkflowState::default(),
-        WorkflowEvent::Fail { error } => {
-            state.phase = DictationPhase::Error;
-            state.error = Some(error);
-            state.warning = None;
-            state
-        }
         WorkflowEvent::Cancel { reason } => {
             state.phase = DictationPhase::Cancelled;
             state.active_session = None;

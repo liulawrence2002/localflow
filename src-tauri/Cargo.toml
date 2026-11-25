@@ -1,9 +1,18 @@
 [package]
 name = "localflow"
 version = "0.1.0"
-description = "Local-first desktop dictation"
+description = "Local-first Windows voice app: dictation, spoken conversation with a local model, and reading aloud"
 authors = ["LocalFlow contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/liulawrence2002/localflow"
+homepage = "https://github.com/liulawrence2002/localflow"
+readme = "../README.md"
+keywords = ["dictation", "speech-to-text", "voice", "tauri", "local-first"]
+categories = ["multimedia::audio", "accessibility"]
 edition = "2021"
+rust-version = "1.96"
+# An application, not a library for crates.io.
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -34,6 +43,7 @@ regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -73,8 +83,22 @@ windows = { version = "0.61", features = [
 claxon = "0.4"
 
 [features]
+default = ["dev-runtime"]
+# Also look for models and the whisper.cpp programs in the checkout's `.localflow-runtime`,
+# and honour LOCALFLOW_WHISPER_CLI (see src/runtime_paths.rs). On by default so a local build
+# keeps using its checkout. The release workflow builds with --no-default-features: the
+# executable then carries no build-machine path and runs programs only from its resource
+# folder and %LOCALAPPDATA%\LocalFlow.
+dev-runtime = []
 # Speech recognition on a discrete GPU through Vulkan, with the CPU as the fallback (see
 # src/asr/transcribe_cpp.rs). Off by default. Building it needs the Vulkan SDK: VULKAN_SDK
 # set, %VULKAN_SDK%\Bin (glslc) on PATH and %VULKAN_SDK%\Lib on LIB, or linking fails with
 # LNK1181 vulkan-1.lib. The statically linked executable then imports vulkan-1.dll.
 gpu-vulkan = ["transcribe-cpp/vulkan"]
+
+[profile.release.package.localflow]
+# No symbols and no PDB path in the shipped executable (rustc links it with /DEBUG:NONE).
+# Set for this package only: the link of `localflow.exe` is all it affects, and a
+# profile-wide `[profile.release] strip` would change every dependency's build hash and
+# rebuild the whole release cache (C++ speech engine included) under new file names.
+strip = "symbols"

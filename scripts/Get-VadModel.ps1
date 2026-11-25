@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Downloads the voice-activity model into .localflow-runtime\models.
+  Downloads the voice-activity model into a LocalFlow runtime folder (models).
 
 .DESCRIPTION
   This is an explicit, user-run download. LocalFlow itself never downloads models and never
@@ -11,10 +11,15 @@
   noise and to find the end of what you said. Without it, conversation mode falls back to a
   simple loudness rule.
 
+.PARAMETER Destination
+  The runtime folder. Default: the checkout's .localflow-runtime when this script is in a Git
+  checkout, otherwise %LOCALAPPDATA%\LocalFlow, which an installed LocalFlow reads.
+
 .EXAMPLE
   .\scripts\Get-VadModel.ps1
 #>
 param(
+  [string]$Destination,
   [switch]$Force
 )
 
@@ -25,8 +30,18 @@ $name = "silero-vad-v6.2-F32.gguf"
 $sha256 = "0d871a800c420fdd5d1b17a3aea4296d1c39608f0ff4a9295eb76457eb1c88e6"
 $url = "https://huggingface.co/handy-computer/silero-vad-v6.2-gguf/resolve/$revision/$name"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$modelsDir = Join-Path $repoRoot ".localflow-runtime\models"
+if (-not $Destination) {
+  # A checkout keeps its runtime next to the source; an installed copy reads the per-user
+  # folder.
+  $checkout = Split-Path -Parent $PSScriptRoot
+  if (Test-Path -LiteralPath (Join-Path $checkout ".git")) {
+    $Destination = Join-Path $checkout ".localflow-runtime"
+  }
+  else {
+    $Destination = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "LocalFlow"
+  }
+}
+$modelsDir = Join-Path $Destination "models"
 $target = Join-Path $modelsDir $name
 $partial = "$target.part"
 New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
@@ -42,8 +57,9 @@ if ((Test-Path -LiteralPath $target) -and -not $Force -and ((Get-Sha256 $target)
 }
 
 Write-Host "Downloading $name from huggingface.co ..."
-# curl.exe ships with Windows 10 and later; no telemetry, no user data.
-& curl.exe --fail --location --silent --show-error --output $partial $url
+# curl.exe ships with Windows 10 and later; no telemetry, no user data. HTTPS only, also
+# for the redirect to Hugging Face's file host.
+& curl.exe --fail --location --silent --show-error --proto "=https" --proto-redir "=https" --output $partial $url
 if ($LASTEXITCODE -ne 0) {
   Remove-Item -LiteralPath $partial -ErrorAction SilentlyContinue
   throw "Download failed (curl exit code $LASTEXITCODE)."

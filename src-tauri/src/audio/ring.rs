@@ -109,6 +109,34 @@ impl SampleRing {
         self.read.store(written, Ordering::Release);
         written.wrapping_sub(read)
     }
+
+    /// Reader side: how many samples have ever been read or discarded.
+    pub fn read_position(&self) -> usize {
+        self.read.load(Ordering::Acquire)
+    }
+
+    /// Writer side: how many samples have ever been written. Taken before a flush, it marks
+    /// where the audio to throw away ends, so [`Self::discard_until`] keeps anything written
+    /// after it.
+    pub fn write_position(&self) -> usize {
+        self.written.load(Ordering::Acquire)
+    }
+
+    /// Reader side: throw away what was written before `position` (a value of
+    /// [`Self::write_position`]) and has not been read yet. Returns how many samples that was.
+    pub fn discard_until(&self, position: usize) -> usize {
+        let read = self.read.load(Ordering::Relaxed);
+        let written = self.written.load(Ordering::Acquire);
+        let waiting = written.wrapping_sub(read);
+        let to_drop = position.wrapping_sub(read);
+        // Nothing to do when everything before `position` was already read (`position` is
+        // behind the read counter, which wraps `to_drop` past `waiting`).
+        if to_drop == 0 || to_drop > waiting {
+            return 0;
+        }
+        self.read.store(position, Ordering::Release);
+        to_drop
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +144,34 @@ mod tests {
     use std::{sync::Arc, thread};
 
     use super::*;
+
+    #[test]
+    fn discarding_up_to_a_mark_keeps_what_was_written_after_it() {
+        let ring = SampleRing::new(16);
+        ring.push_slice(&[1.0, 2.0, 3.0]);
+        let mark = ring.write_position();
+        ring.push_slice(&[4.0, 5.0]);
+
+        assert_eq!(ring.discard_until(mark), 3);
+        let mut rest = Vec::new();
+        ring.pop_all(&mut rest);
+        assert_eq!(rest, vec![4.0, 5.0]);
+    }
+
+    #[test]
+    fn a_mark_already_read_past_discards_nothing() {
+        let ring = SampleRing::new(16);
+        ring.push_slice(&[1.0, 2.0]);
+        let mark = ring.write_position();
+        ring.push_slice(&[3.0, 4.0]);
+        assert_eq!(ring.pop(), Some(1.0));
+        assert_eq!(ring.pop(), Some(2.0));
+        assert_eq!(ring.pop(), Some(3.0));
+
+        assert_eq!(ring.discard_until(mark), 0);
+        assert_eq!(ring.pop(), Some(4.0));
+        assert_eq!(ring.discard_until(ring.write_position()), 0);
+    }
 
     #[test]
     fn samples_come_out_in_the_order_they_went_in() {

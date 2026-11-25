@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   describeConversation,
+  describeLastStop,
   describeScreenReading,
+  isProblemStop,
   localModelsToStatus,
   type ConversationPhase,
   type ConversationStatus,
@@ -89,6 +91,57 @@ describe("describeScreenReading", () => {
 
   it("says the desktop app is needed in a browser", () => {
     expect(describeScreenReading(null)).toContain("desktop app");
+  });
+
+  it("checks availability first and never offers a hotkey that would not work", () => {
+    const missingVoice = {
+      ...base,
+      available: false,
+      detail: "The reading voice is not installed. Run scripts\\Get-PhononModel.ps1.",
+    };
+
+    const text = describeScreenReading(missingVoice);
+
+    expect(text).toBe(missingVoice.detail);
+    expect(text).not.toContain("Ctrl+Alt+R");
+    expect(describeScreenReading({ ...missingVoice, reading: true })).toBe(missingVoice.detail);
+    expect(describeScreenReading({ ...missingVoice, detail: "" })).toContain("not available");
+  });
+});
+
+describe("describeLastStop", () => {
+  const atMs = new Date(2026, 10, 25, 14, 2).getTime();
+
+  it("shows a failed start or a lost microphone as a problem", () => {
+    expect(
+      describeLastStop({
+        reason: "start_failed",
+        message: "No default microphone is available.",
+        atMs,
+      }),
+    ).toEqual({ tone: "problem", text: "No default microphone is available.", atMs });
+    expect(
+      describeLastStop({ reason: "device_lost", message: "The microphone stopped.", atMs })?.tone,
+    ).toBe("problem");
+  });
+
+  it("notes a time limit or an opened agent, and says nothing for an ending the user chose", () => {
+    expect(
+      describeLastStop({ reason: "idle", message: "Conversation ended: no speech", atMs })?.tone,
+    ).toBe("info");
+    expect(
+      describeLastStop({ reason: "agent_opened", message: "Dictate your task.", atMs })?.tone,
+    ).toBe("info");
+    expect(describeLastStop({ reason: "user", message: "Conversation ended", atMs })).toBeNull();
+    expect(describeLastStop({ reason: "goodbye", message: "Conversation ended", atMs })).toBeNull();
+    expect(describeLastStop(null)).toBeNull();
+    expect(describeLastStop(undefined)).toBeNull();
+  });
+
+  it("knows which stop reasons are problems", () => {
+    expect(isProblemStop("start_failed")).toBe(true);
+    expect(isProblemStop("idle")).toBe(false);
+    expect(isProblemStop(null)).toBe(false);
   });
 });
 

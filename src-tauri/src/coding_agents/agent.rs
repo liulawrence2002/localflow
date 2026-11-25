@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -524,11 +524,15 @@ pub struct CodingAgentsStatus {
     pub windows_terminal: Option<String>,
 }
 
+/// How long a detection is reused before a new conversation looks again. Detection runs
+/// `claude --version` and `--help`, which take a second or more.
+pub const DETECTION_MAX_AGE: Duration = Duration::from_secs(30 * 60);
+
 /// All agents, and what each could do at the last detection.
 pub struct CodingAgents {
     agents: Vec<Arc<dyn CodingAgent>>,
     locator: Arc<dyn Locator>,
-    availability: Mutex<Option<AgentAvailability>>,
+    availability: Mutex<Option<(AgentAvailability, Instant)>>,
 }
 
 impl CodingAgents {
@@ -572,7 +576,8 @@ impl CodingAgents {
             open_cursor: status_of(AgentKind::Cursor)
                 .map_or(Err(Unavailability::NotInstalled), |s| s.open),
         };
-        *self.availability.lock().unwrap_or_else(|p| p.into_inner()) = Some(availability);
+        *self.availability.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((availability, Instant::now()));
         CodingAgentsStatus {
             agents,
             windows_terminal: self
@@ -582,26 +587,48 @@ impl CodingAgents {
         }
     }
 
+    /// The last detection's result and when it ran, if one has.
+    fn known(&self) -> Option<(AgentAvailability, Instant)> {
+        *self.availability.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// What each agent can do, detecting first if that has not happened yet.
     pub fn availability(&self) -> AgentAvailability {
-        let known = *self.availability.lock().unwrap_or_else(|p| p.into_inner());
-        match known {
-            Some(availability) => availability,
+        match self.known() {
+            Some((availability, _)) => availability,
             None => {
                 self.detect_all();
-                self.availability
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .unwrap_or_else(AgentAvailability::none)
+                self.known()
+                    .map_or_else(AgentAvailability::none, |(availability, _)| availability)
             }
         }
     }
 
-    /// What the command matcher needs: the user's projects and what can run.
+    /// Detect again only if the last detection is older than `max_age` or there was none.
+    /// Returns whether it detected.
+    pub fn refresh_if_older_than(&self, max_age: Duration) -> bool {
+        let fresh = self
+            .known()
+            .is_some_and(|(_, detected_at)| detected_at.elapsed() < max_age);
+        if !fresh {
+            self.detect_all();
+        }
+        !fresh
+    }
+
+    /// What the command matcher needs: the user's projects and what can run. With no
+    /// projects no command can run, so nothing is detected: the matcher then tells the user
+    /// to add a project, which every command needs, rather than naming an agent problem.
     pub fn context(&self, projects: &[CodingProject]) -> CommandContext {
+        let availability = if projects.is_empty() {
+            self.known()
+                .map_or_else(AgentAvailability::all, |(availability, _)| availability)
+        } else {
+            self.availability()
+        };
         CommandContext {
             projects: ProjectIndex::new(projects),
-            availability: self.availability(),
+            availability,
         }
     }
 
@@ -910,6 +937,80 @@ pub(crate) mod tests {
             ..FakeLocator::everything()
         });
         assert_eq!(missing.availability(), AgentAvailability::none());
+    }
+
+    /// A computer with everything installed that counts how often Claude Code is run.
+    struct CountingLocator {
+        inner: FakeLocator,
+        probes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Locator for CountingLocator {
+        fn claude(&self) -> Option<(PathBuf, ClaudeSource)> {
+            self.inner.claude()
+        }
+        fn windows_terminal(&self) -> Option<PathBuf> {
+            self.inner.windows_terminal()
+        }
+        fn cursor(&self) -> Option<PathBuf> {
+            self.inner.cursor()
+        }
+        fn probe_claude(&self, exe: &Path) -> ClaudeProbe {
+            self.probes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.probe_claude(exe)
+        }
+    }
+
+    fn counting_agents() -> (CodingAgents, Arc<CountingLocator>) {
+        let locator = Arc::new(CountingLocator {
+            inner: FakeLocator::everything(),
+            probes: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let as_locator: Arc<dyn Locator> = locator.clone();
+        let launcher: Arc<dyn Launcher> = Arc::new(RecordingLauncher::default());
+        let agents = CodingAgents::new(
+            vec![Arc::new(ClaudeCode::new(as_locator.clone(), launcher))],
+            as_locator,
+        );
+        (agents, locator)
+    }
+
+    fn probes(locator: &CountingLocator) -> usize {
+        locator.probes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn with_no_projects_nothing_is_run_and_the_user_is_told_to_add_one() {
+        let (agents, locator) = counting_agents();
+
+        let context = agents.context(&[]);
+
+        assert_eq!(probes(&locator), 0);
+        assert!(context.projects.is_empty());
+        // Not "not installed": the matcher must get as far as "add a project".
+        assert_eq!(context.availability, AgentAvailability::all());
+    }
+
+    #[test]
+    fn detection_is_reused_until_it_is_old() {
+        let (agents, locator) = counting_agents();
+        let project = CodingProject {
+            id: "p".into(),
+            path: env!("CARGO_MANIFEST_DIR").into(),
+            spoken_names: vec!["localflow".into()],
+        };
+
+        assert!(agents.refresh_if_older_than(DETECTION_MAX_AGE));
+        assert_eq!(probes(&locator), 1);
+        // A second conversation, and the commands in it, reuse the result.
+        assert!(!agents.refresh_if_older_than(DETECTION_MAX_AGE));
+        agents.context(std::slice::from_ref(&project));
+        agents.context(&[]);
+        assert_eq!(probes(&locator), 1);
+        // Once it is old, a new conversation looks again.
+        assert!(agents.refresh_if_older_than(Duration::ZERO));
+        assert_eq!(probes(&locator), 2);
     }
 
     #[test]

@@ -2,6 +2,16 @@
   "name": "localflow",
   "private": true,
   "version": "0.1.0",
+  "description": "Local-first Windows voice app: dictation, hands-free conversation and reading aloud, with speech recognition and language models running on this computer.",
+  "license": "MIT OR Apache-2.0",
+  "author": "LocalFlow contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liulawrence2002/localflow"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -9,7 +19,8 @@
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File ./scripts/Start-LocalFlow.ps1",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -19,8 +30,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"packages/**/*.{ts,tsx,css,json,md}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,js,md}\"",
-    "format:write": "prettier --write \"src/**/*.{ts,tsx,css}\" \"packages/**/*.{ts,tsx,css,json,md}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,js,md}\"",
+    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"packages/**/*.{ts,tsx,css,json,md}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,js,md}\" \"docs/**/*.md\" \".github/**/*.{yml,md}\"",
+    "format:write": "prettier --write \"src/**/*.{ts,tsx,css}\" \"packages/**/*.{ts,tsx,css,json,md}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,js,md}\" \"docs/**/*.md\" \".github/**/*.{yml,md}\"",
     "check": "npm run format && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
@@ -46,7 +57,7 @@
     "prettier": "^3.6.2",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.35.1",
-    "vite": "^7.0.4",
-    "vitest": "^3.2.4"
+    "vite": "^7.3.8",
+    "vitest": "^4.1.12"
   }
 }

@@ -41,11 +41,65 @@ export interface DiagnosticsExport {
   }>;
 }
 
+/** What a Windows user folder is replaced with in an export. */
+export const userFolderPlaceholder = "<user folder>";
+/** What a microphone's name is replaced with in an export. */
+export const microphonePlaceholder = "<microphone>";
+
+/**
+ * `C:\Users\<name>` (either slash), the part of a path that names the person. A name may
+ * contain spaces, so everything up to the next slash is taken: removing too much is safer
+ * than leaving a surname behind.
+ */
+const userFolderPattern = /\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/"'<>|:*?\r\n]+/gi;
+/** The "Last recording start" row: `<device> at <time> (<rate> Hz, <n> ch)`. */
+const recordingStartPattern = /^(?<device>.+?) at (?<rest>\S+ \(\d+ Hz, \d+ ch\))$/;
+/** Native messages that quote a device name: `... from "<device>" ...`. */
+const quotedDevicePattern = /(from |device )"[^"]*"/gi;
+
+/**
+ * Microphone names that appear in the diagnostics, so they can be removed from an export.
+ * Current native builds leave the name out; older ones put it in "Last recording start".
+ */
+export function findMicrophoneNames(status: AppStatus): string[] {
+  const names = new Set<string>();
+  const configured = status.settings.microphone.selectedDeviceName.trim();
+  if (configured && configured.toLowerCase() !== "default microphone") {
+    names.add(configured);
+  }
+  for (const metric of status.diagnostics) {
+    const device = recordingStartPattern.exec(metric.value)?.groups?.device?.trim();
+    if (device) {
+      names.add(device);
+    }
+  }
+  return [...names].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Remove what identifies the person or their hardware from a line of diagnostics: the user
+ * folder in any path, and microphone names.
+ */
+export function redactLocalDetails(text: string, microphoneNames: string[] = []): string {
+  let redacted = text.replace(userFolderPattern, userFolderPlaceholder);
+  for (const name of microphoneNames) {
+    if (name) {
+      redacted = redacted.split(name).join(microphonePlaceholder);
+    }
+  }
+  const recordingStart = recordingStartPattern.exec(redacted);
+  if (recordingStart?.groups?.rest && recordingStart.groups.device !== microphonePlaceholder) {
+    redacted = `${microphonePlaceholder} at ${recordingStart.groups.rest}`;
+  }
+  return redacted.replace(quotedDevicePattern, `$1"${microphonePlaceholder}"`);
+}
+
 export function buildDiagnosticsExport(
   status: AppStatus,
   options: DiagnosticsExportOptions = {},
 ): DiagnosticsExport {
   const activeSession = status.workflow.activeSession;
+  const microphoneNames = findMicrophoneNames(status);
 
   return {
     application: "LocalFlow",
@@ -71,7 +125,11 @@ export function buildDiagnosticsExport(
       snippets: status.settings.snippets.length,
       styleProfiles: status.settings.styles.length,
     },
-    diagnostics: status.diagnostics,
+    diagnostics: status.diagnostics.map((metric) => ({
+      label: redactLocalDetails(metric.label, microphoneNames),
+      value: redactLocalDetails(metric.value, microphoneNames),
+      status: metric.status,
+    })),
     history: status.history.map((item) => sanitizeHistoryItem(item, options.includeTranscriptText)),
   };
 }

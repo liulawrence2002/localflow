@@ -1,0 +1,124 @@
+/*
+ * Design tokens. Colours follow the Windows light or dark theme through prefers-color-scheme.
+ * Text pairs meet WCAG AA (4.5:1 for text, 3:1 for control borders and focus rings) in both.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces */
+  --color-bg: #f4f5f1;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f6f8f5;
+  --color-border: #d8ddd7;
+  --color-control-border: #8a958e;
+  --color-shadow: rgba(31, 43, 37, 0.07);
+
+  /* Text */
+  --color-text: #1f2422;
+  --color-text-muted: #56615b;
+  --color-link: #1f5fa8;
+
+  /* Accent and focus */
+  --color-accent: #236342;
+  --color-accent-text: #ffffff;
+  --color-accent-hover: #1b4f35;
+  --color-focus: #2563c9;
+
+  /* States: background and text for pills and notices */
+  --color-ok-bg: #e1f0e8;
+  --color-ok-text: #1f5b3c;
+  --color-ok-border: #9cc9ae;
+  --color-warning-bg: #f8edd6;
+  --color-warning-text: #6e4a10;
+  --color-warning-border: #dcbf82;
+  --color-danger-bg: #fbe7e2;
+  --color-danger-text: #8b3525;
+  --color-danger-border: #e2a597;
+  --color-info-bg: #e5eef8;
+  --color-info-text: #1f4f80;
+  --color-info-border: #a9c3e0;
+  --color-neutral-bg: #eceeec;
+  --color-neutral-text: #4f5752;
+
+  /* Sidebar */
+  --color-sidebar-bg: #262b29;
+  --color-sidebar-text: #e4e8e3;
+  --color-sidebar-muted: #b8c3bc;
+  --color-sidebar-active-bg: #3a4640;
+  --color-sidebar-active-border: #5f7569;
+  --color-sidebar-active-text: #ffffff;
+  --color-brand-mark-bg: #d9e7de;
+  --color-brand-mark-text: #1f2b25;
+  --color-badge: #f08a74;
+
+  /* Spacing, on a 4 px scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Shape and sizes */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-pill: 999px;
+  --control-height: 36px;
+  --sidebar-width: 232px;
+
+  /* Type */
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-base: 15px;
+  --font-size-title: 26px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #141816;
+    --color-surface: #1d2220;
+    --color-surface-muted: #232926;
+    --color-border: #353d39;
+    --color-control-border: #75807a;
+    --color-shadow: rgba(0, 0, 0, 0.35);
+
+    --color-text: #e6eae6;
+    --color-text-muted: #a9b4ad;
+    --color-link: #8ab8f0;
+
+    --color-accent: #2a7d52;
+    --color-accent-text: #ffffff;
+    --color-accent-hover: #33925f;
+    --color-focus: #7fb0ff;
+
+    --color-ok-bg: #1e3a2b;
+    --color-ok-text: #8fdcae;
+    --color-ok-border: #2f5d44;
+    --color-warning-bg: #3d3018;
+    --color-warning-text: #f0c674;
+    --color-warning-border: #6b5428;
+    --color-danger-bg: #44221c;
+    --color-danger-text: #f4a597;
+    --color-danger-border: #74392e;
+    --color-info-bg: #1c2e42;
+    --color-info-text: #9cc4f0;
+    --color-info-border: #34506f;
+    --color-neutral-bg: #2c322f;
+    --color-neutral-text: #c2ccc5;
+
+    --color-sidebar-bg: #0f1211;
+    --color-sidebar-text: #e4e8e3;
+    --color-sidebar-muted: #a9b4ad;
+    --color-sidebar-active-bg: #26302b;
+    --color-sidebar-active-border: #4a5c52;
+    --color-brand-mark-bg: #2a7d52;
+    --color-brand-mark-text: #ffffff;
+    --color-badge: #f4a597;
+  }
+}
+
+/* The overlay window is transparent: it must not take the page colour of either theme. */
+:root.voice-overlay-root {
+  color-scheme: normal;
+}

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">LocalFlow</title>
+  <!-- Two colours on a 16-unit grid (64 units per pixel at 16 px), so the bars stay crisp in
+       the smallest Windows icon. Regenerate the icon set with: npx tauri icon src-tauri/icons/source/icon.svg -->
+  <rect width="1024" height="1024" rx="224" fill="#12385A"/>
+  <g fill="#6FE3C6">
+    <rect x="192" y="384" width="128" height="256" rx="64"/>
+    <rect x="448" y="192" width="128" height="640" rx="64"/>
+    <rect x="704" y="320" width="128" height="384" rx="64"/>
+  </g>
+</svg>

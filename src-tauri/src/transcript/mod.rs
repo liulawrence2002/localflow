@@ -10,7 +10,33 @@
 //! This is the authoritative implementation for the native production path; the TypeScript
 //! `src/domain/personalization.ts` remains only for the browser dev preview.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+/// Compile a fixed pattern once, on first use, instead of on every dictation.
+macro_rules! fixed_regex {
+    ($name:ident, $pattern:expr) => {
+        static $name: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new($pattern).expect("fixed pattern is valid"));
+    };
+}
+
+fixed_regex!(RESTART, r"(?i)\blet me restart\b[,.]?\s*(.+)$");
+fixed_regex!(ACTUALLY, r"(?i)^(.+?)\s+actually\s+(.+)$");
+fixed_regex!(SORRY, r"(?i)^(.+?)\s+sorry\s+(.+)$");
+fixed_regex!(
+    NO_BACKTRACK,
+    r"(?i)^((?:\S+\s+){2,}\S+)\s+no\s+(\S+(?:\s+\S+){0,2})$"
+);
+fixed_regex!(FILLERS, r"(?i)\b(?:u+m+|u+h+m?|erm+|h+m+)\b");
+fixed_regex!(LIST_AFTER_BLANK_LINES, r"\n{3,}-");
+fixed_regex!(SPACE_BEFORE_PUNCTUATION, r"\s+([,.;:?!])");
+fixed_regex!(SPACE_AFTER_OPEN_PAREN, r"\(\s+");
+fixed_regex!(SPACE_BEFORE_CLOSE_PAREN, r"\s+\)");
+fixed_regex!(SPACE_BEFORE_NEWLINE, r"[ \t]+\n");
+fixed_regex!(SPACE_AFTER_NEWLINE, r"\n[ \t]+");
+fixed_regex!(REPEATED_SPACES, r"[ \t]{2,}");
 
 /// A user "exact replacement" rule (e.g. a common misrecognition -> correct spelling).
 pub struct Replacement {
@@ -24,12 +50,6 @@ pub struct Snippet {
     pub trigger: String,
     pub expansion: String,
     pub enabled: bool,
-}
-
-/// Apply the full deterministic formatting pipeline to a raw ASR transcript, with no
-/// personalization.
-pub fn apply_deterministic_formatting(raw: &str) -> String {
-    apply_deterministic_formatting_with(raw, &[], &[])
 }
 
 /// Apply deterministic formatting plus user snippets and exact replacements. Ordering
@@ -114,29 +134,25 @@ fn resolve_self_corrections(text: &str) -> String {
         return normalized;
     }
 
-    let restart = Regex::new(r"(?i)\blet me restart\b[,.]?\s*(.+)$").unwrap();
-    if let Some(captures) = restart.captures(&normalized) {
+    if let Some(captures) = RESTART.captures(&normalized) {
         return captures.get(1).unwrap().as_str().trim().to_string();
     }
 
-    let actually = Regex::new(r"(?i)^(.+?)\s+actually\s+(.+)$").unwrap();
-    if let Some(captures) = actually.captures(&normalized) {
+    if let Some(captures) = ACTUALLY.captures(&normalized) {
         let before = captures.get(1).unwrap().as_str();
         if word_count(before) >= 3 {
             return captures.get(2).unwrap().as_str().trim().to_string();
         }
     }
 
-    let sorry = Regex::new(r"(?i)^(.+?)\s+sorry\s+(.+)$").unwrap();
-    if let Some(captures) = sorry.captures(&normalized) {
+    if let Some(captures) = SORRY.captures(&normalized) {
         return replace_last_token(
             captures.get(1).unwrap().as_str(),
             captures.get(2).unwrap().as_str(),
         );
     }
 
-    let no = Regex::new(r"(?i)^((?:\S+\s+){2,}\S+)\s+no\s+(\S+(?:\s+\S+){0,2})$").unwrap();
-    if let Some(captures) = no.captures(&normalized) {
+    if let Some(captures) = NO_BACKTRACK.captures(&normalized) {
         return replace_last_token(
             captures.get(1).unwrap().as_str(),
             captures.get(2).unwrap().as_str(),
@@ -159,8 +175,7 @@ fn replace_last_token(before: &str, after: &str) -> String {
 
 /// Remove non-lexical fillers (um, uh, erm, hmm and their elongations) as whole words.
 fn remove_fillers(text: &str) -> String {
-    let fillers = Regex::new(r"(?i)\b(?:u+m+|u+h+m?|erm+|h+m+)\b").unwrap();
-    collapse_inline_whitespace(&fillers.replace_all(text, ""))
+    collapse_inline_whitespace(&FILLERS.replace_all(text, ""))
 }
 
 /// Collapse immediately repeated words (stutters) such as "the the" -> "the".
@@ -217,19 +232,19 @@ fn apply_spoken_punctuation(text: &str) -> String {
 /// *after* punctuation, which would corrupt URLs, emails, and decimals — spoken-punctuation
 /// tokens are already space-separated, so a trailing space is present when it should be.
 fn normalize_whitespace(text: &str) -> String {
-    let steps: [(Regex, &str); 7] = [
-        (Regex::new(r"\n{3,}-").unwrap(), "\n\n-"),
-        (Regex::new(r"\s+([,.;:?!])").unwrap(), "$1"),
-        (Regex::new(r"\(\s+").unwrap(), "("),
-        (Regex::new(r"\s+\)").unwrap(), ")"),
-        (Regex::new(r"[ \t]+\n").unwrap(), "\n"),
-        (Regex::new(r"\n[ \t]+").unwrap(), "\n"),
-        (Regex::new(r"[ \t]{2,}").unwrap(), " "),
+    let steps: [(&Regex, &str); 7] = [
+        (&LIST_AFTER_BLANK_LINES, "\n\n-"),
+        (&SPACE_BEFORE_PUNCTUATION, "$1"),
+        (&SPACE_AFTER_OPEN_PAREN, "("),
+        (&SPACE_BEFORE_CLOSE_PAREN, ")"),
+        (&SPACE_BEFORE_NEWLINE, "\n"),
+        (&SPACE_AFTER_NEWLINE, "\n"),
+        (&REPEATED_SPACES, " "),
     ];
 
     let mut result = text.to_string();
-    for (pattern, replacement) in steps.iter() {
-        result = pattern.replace_all(&result, *replacement).into_owned();
+    for (pattern, replacement) in steps {
+        result = pattern.replace_all(&result, replacement).into_owned();
     }
     result.trim().to_string()
 }
@@ -283,6 +298,41 @@ fn word_count(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pipeline with no personalization.
+    fn apply_deterministic_formatting(raw: &str) -> String {
+        apply_deterministic_formatting_with(raw, &[], &[])
+    }
+
+    #[test]
+    fn every_fixed_pattern_compiles() {
+        for pattern in [
+            &RESTART,
+            &ACTUALLY,
+            &SORRY,
+            &NO_BACKTRACK,
+            &FILLERS,
+            &LIST_AFTER_BLANK_LINES,
+            &SPACE_BEFORE_PUNCTUATION,
+            &SPACE_AFTER_OPEN_PAREN,
+            &SPACE_BEFORE_CLOSE_PAREN,
+            &SPACE_BEFORE_NEWLINE,
+            &SPACE_AFTER_NEWLINE,
+            &REPEATED_SPACES,
+        ] {
+            LazyLock::force(pattern);
+        }
+    }
+
+    #[test]
+    fn repeated_calls_give_the_same_result() {
+        let input = "um so the the plan comma uh is ready period new line next";
+        let first = apply_deterministic_formatting(input);
+        assert_eq!(first, "So the plan, is ready.\nNext");
+        for _ in 0..3 {
+            assert_eq!(apply_deterministic_formatting(input), first);
+        }
+    }
 
     #[test]
     fn converts_spoken_punctuation_and_capitalizes() {
